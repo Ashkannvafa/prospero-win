@@ -14,8 +14,10 @@ DRM, anti-cheat and kernel drivers are out of scope.
   protection, dependency classification, verification and release.
 - **Measured:** the tested LDT route is refused; low allocations and
   mprotect RW-to-RX/RWX work in a title.
-- **Next:** PE64 execution/ABI tests, private Pinball inventory and an early
-  x86 translator prototype.
+- **Host progress:** 25 translated instructions from the original Pinball
+  startup; 207 static imports inventoried and cross-referenced against Wine.
+- **Next:** reviewed Win32 subsystem reuse, guest ABI services and broader
+  execution-engine coverage. Wine references are not implemented APIs.
 - **Not yet implemented:** a complete execution engine, Win32 API surface
   or a running Windows game.
 
@@ -47,6 +49,7 @@ make native PS5LOG_DEV_CONF=/private/path/dev.conf
 [Roadmap](docs/ROADMAP.md) · [Pinball target](docs/PINBALL_TARGET.md) ·
 [Architecture](docs/ARCHITECTURE.md) ·
 [Execution model](docs/EXECUTION_MODEL.md) ·
+[Import plan](docs/IMPORT_PLAN.md) · [Wine reuse audit](docs/WINE_REUSE_AUDIT.md) ·
 [Development workflow](docs/DEVELOPMENT.md) ·
 [Telemetry](docs/TELEMETRY.md)
 

@@ -51,6 +51,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_x86_differential.py
 	python3 tests/test_trace_x86_entry.py
 	python3 tests/test_inventory_imports.py
+	python3 tests/test_audit_wine_imports.py
 	rm -rf build tools/__pycache__ tests/__pycache__
 
 audit:

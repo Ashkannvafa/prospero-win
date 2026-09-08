@@ -4,6 +4,7 @@ docs/COMPAT32_PHASE0A.md
 docs/DEVELOPMENT.md
 docs/EXECUTION_MODEL.md
 docs/IMPORT_PLAN.md
+docs/WINE_REUSE_AUDIT.md
 docs/X86_EXECUTION.md
 docs/PE_MAPPING_PHASE0.md
 docs/PINBALL_TARGET.md
@@ -90,6 +91,8 @@ tools/audit_publication.py
 tools/build_native.sh
 tools/inspect_pe.c
 tools/inventory_imports.py
+tools/audit_wine_imports.py
+tests/test_audit_wine_imports.py
 tests/test_inventory_imports.py
 tools/trace_x86_entry.c
 tests/test_trace_x86_entry.py

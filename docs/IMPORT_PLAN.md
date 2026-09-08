@@ -1,5 +1,7 @@
 # Import-first implementation plan
 
+Export routing and reviewed CRT/platform dependencies: see WINE_REUSE_AUDIT.md.
+
 Plan the Win32 surface from a complete normal-import inventory before adding
 individual API handlers. Runtime tracing validates integration and discovers
 dynamic dependencies; it is not the primary API-discovery workflow.
