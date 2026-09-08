@@ -160,16 +160,25 @@ int pw_compat32_ps5_diagnose(PwLdtAttempt *out, uint32_t capacity,
     return PW_OK;
 }
 
-static void *map_fixed(uint32_t base, int protection)
+/*
+ * Requests a page at a specific low address using a hint, never MAP_FIXED.
+ *
+ * Measured on FW 12.02: this kernel ignores MAP_EXCL, and a plain MAP_FIXED
+ * silently replaces whatever is already mapped at the target — a live
+ * mapping's contents were observed being overwritten. MAP_FIXED is
+ * therefore unusable here without first proving the range is free. The hint
+ * form cannot displace anything and is honoured exactly when the range is
+ * available, so the address is simply verified afterwards.
+ */
+static void *map_low(uint32_t base, int protection)
 {
     void *page = mmap((void *)(uintptr_t)base, PW_COMPAT32_PAGE_BYTES,
-                      protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
-                      -1, 0);
+                      protection, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
     if (page == MAP_FAILED)
         return NULL;
     if ((uintptr_t)page != (uintptr_t)base) {
-        /* MAP_FIXED was ignored: the address is unusable for 32-bit code. */
+        /* The hint was declined; that address is occupied or unusable. */
         (void)munmap(page, PW_COMPAT32_PAGE_BYTES);
         return NULL;
     }
@@ -193,13 +202,13 @@ static int reserve_low(void *context, void **code_out, uint32_t *code_base,
 
         ++state->attempted_bases;
         /* Writable first; it is sealed executable once the stub is written. */
-        code = map_fixed(base, PROT_READ | PROT_WRITE);
+        code = map_low(base, PROT_READ | PROT_WRITE);
         if (!code) {
             state->last_errno = errno;
             continue;
         }
-        data = map_fixed(base + PW_COMPAT32_PAGE_BYTES,
-                         PROT_READ | PROT_WRITE);
+        data = map_low(base + PW_COMPAT32_PAGE_BYTES,
+                       PROT_READ | PROT_WRITE);
         if (!data) {
             state->last_errno = errno;
             (void)munmap(code, PW_COMPAT32_PAGE_BYTES);

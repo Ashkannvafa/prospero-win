@@ -17,6 +17,7 @@
 #include "../src/pw_gate.h"
 #include "../src/pw_vm_posix.h"
 #include "pw_compat32_ps5.h"
+#include "pw_lowmem_ps5.h"
 #include "pw_file_ps5.h"
 #include "ps5log/ps5log.h"
 
@@ -204,6 +205,33 @@ int main(int argc, char **argv)
      * 32-bit programs run natively through ABI thunking or need
      * recompilation, and it costs one syscall to ask.
      */
+    {
+        /*
+         * Low-address availability. A 32-bit guest needs its address space
+         * below 4 GiB for a register used as an address to be correct
+         * without translation, so this bounds the JIT recompilation route
+         * that the compatibility-mode refusal leaves as the alternative.
+         */
+        PwLowMemReport lowmem;
+
+        if (pw_lowmem_ps5_probe(&lowmem) == PW_OK) {
+            for (uint32_t index = 0; index < lowmem.attempts && index < 8u;
+                 ++index)
+                PS5LOG_LOG("PW_LOWMEM_TRY bytes=%llu addr=0x%llx "
+                           "honoured=%u below4g=%u",
+                           (unsigned long long)lowmem.results[index].requested_bytes,
+                           (unsigned long long)lowmem.results[index].address,
+                           lowmem.results[index].honoured_hint,
+                           lowmem.results[index].below_four_gib);
+            PS5LOG_LOG("PW_LOWMEM largest_low_bytes=%llu base=0x%llx "
+                       "write_read=%d mprotect_rx=%d mprotect_rwx=%d",
+                       (unsigned long long)lowmem.largest_low_bytes,
+                       (unsigned long long)lowmem.largest_low_base,
+                       lowmem.write_read_ok, lowmem.mprotect_rx,
+                       lowmem.mprotect_rwx);
+        }
+    }
+
     {
         /*
          * The argument matrix first. A single EINVAL cannot distinguish an

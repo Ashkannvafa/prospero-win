@@ -172,3 +172,44 @@ share one protectable page and the mapper applies the union — a `.text` and
 rejects any run with writable-executable pages unless `--allow-wx` is
 given. The weakening is real, so it is measured and acknowledged rather
 than discovered later.
+
+## Measured: what the JIT route would have to work with
+
+Compatibility mode is refused, so JIT recompilation is the only route to the
+32-bit catalogue. Its two hard prerequisites were measured on 2026-09-08
+rather than assumed, because a 32-bit guest can only avoid address
+translation entirely if its whole address space sits below 4 GiB — writing a
+32-bit register zeroes the upper half, so `[ebx]` and `[rbx]` then compute
+the same address for free.
+
+| Question | Answer | Source |
+| --- | --- | --- |
+| Is the low 4 GiB available? | Yes, and nearly empty: the image occupies about `0x400000`–`0x584000` and little else | `tools/lowmem-probe`, `KERN_PROC_VMMAP` |
+| Are low addresses grantable? | Yes. A plain `mmap` **hint** is honoured exactly | Both payload and title |
+| How much contiguous, in a title? | **256 MiB** at `0x10000000`. 1 GiB and above fail | `PW_LOWMEM` |
+| How much in an `elfldr` payload? | 3 GiB contiguous | `lowmem-probe` |
+| Writable and executable? | Yes, in a title: `mprotect` to `r-x` and to `rwx` both succeed | `PW_LOWMEM` |
+| `MAP_32BIT`? | Ignored; returns high memory | `lowmem-probe` |
+
+The title-versus-payload gap is the point of measuring in the right
+context. It is not an address-range restriction: it matches the
+laboratory's already-recorded anonymous ceiling for a title, 432 MiB
+verified and 448 MiB refused. So the low address space is fully usable, but
+a title can only commit a few hundred megabytes of it at once — which means
+a guest address space has to be mapped on demand rather than reserved flat.
+A real loader does that anyway.
+
+Two consequences worth carrying forward:
+
+- **The free address-computation property holds.** Guest pointers can live
+  below 4 GiB, so a translator does not have to rewrite memory operands —
+  the single largest saving available on this route, and the reason
+  x86-32 to x86-64 is much cheaper than a cross-architecture translation.
+- **A code cache can be `rwx` directly.** `mprotect` to read-write-execute
+  succeeds from a title, so a JIT does not need the `jitshm` double mapping.
+  The laboratory's preference for that double mapping was about avoiding
+  *concurrent* protection transitions, which remains sound advice, but it is
+  not a feasibility barrier.
+
+Neither of these makes the route cheap. They bound it, which is what a
+scope decision needs.

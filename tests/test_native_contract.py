@@ -115,9 +115,13 @@ def test_compat32_adapter_asks_the_kernel_correctly() -> None:
     # once: it writes the stub, then seals the page.
     assert "PROT_WRITE | PROT_EXEC" not in text
     assert "PROT_READ | PROT_EXEC" in text
-    assert "MAP_FIXED" in text
-    # MAP_FIXED can be honoured by returning a different address; a stub at
-    # the wrong address would fault far from its cause.
+    # MAP_FIXED silently replaces live mappings on this firmware, and
+    # MAP_EXCL is ignored there, so a low address is requested with a hint
+    # and verified afterwards, never demanded. Matched on the flag
+    # combination rather than the bare word, which appears in the comment
+    # explaining exactly this.
+    assert "MAP_ANONYMOUS | MAP_FIXED" not in text
+    assert "MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)" in text
     assert "(uintptr_t)page != (uintptr_t)base" in text
 
 

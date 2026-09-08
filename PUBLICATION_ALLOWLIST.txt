@@ -21,6 +21,8 @@ native/pw_compat32_ps5.c
 native/pw_compat32_ps5.h
 native/pw_file_ps5.c
 native/pw_file_ps5.h
+native/pw_lowmem_ps5.c
+native/pw_lowmem_ps5.h
 NOTICE.md
 PUBLICATION_ALLOWLIST.txt
 README.md
