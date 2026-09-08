@@ -89,7 +89,9 @@ int main(int argc,char **argv)
     for(;events<256;events++) {
         int dispatched=pw_win32_dispatch(&runtime,&state);
         if(dispatched==PW_OK) {
-            printf("kind=host-api dll=%s name=%s result=0x%08x\n",runtime.last_dll,runtime.last_name,state.gpr[0]);
+            if(runtime.callback_pending)
+                printf("kind=host-callback-enter dll=%s name=%s target=0x%08x depth=%u\n",runtime.last_dll,runtime.last_name,state.eip,runtime.init_depth);
+            else printf("kind=host-api dll=%s name=%s result=0x%08x\n",runtime.last_dll,runtime.last_name,state.gpr[0]);
             continue;
         }
         if(dispatched!=PW_ERR_NOT_FOUND){

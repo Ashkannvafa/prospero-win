@@ -80,7 +80,7 @@ guest FP-state services, not a claim of generic cdecl compatibility.
 `pw_win32.c` uses the generated factual code/data catalog for Pinball's 207
 imports. Unknown names/ordinals are refused. All 205 function imports bind
 to unique dispatcher tokens, not host addresses. Initial handlers cover
-`GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode`, `__p__commode` and `_controlfp`.
+`GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp` and `_initterm`.
 Named-module arguments and other API calls stop explicitly without guest-state mutation or a false
 success. A bound function is not necessarily an implemented function.
 
@@ -104,8 +104,8 @@ failure atomicity when the argument is outside the guest stack.
 Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
-`__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp` and stops after 73 instructions
-at the pending `_initterm` API. The pointer getters now have original-game
+`__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm` and stops after 77 instructions
+at an unsupported instruction. The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
 dispatch and return, plus a
@@ -128,3 +128,28 @@ state, invalid/uninitialized calls, and unchanged host x87/MXCSR controls.
 This is **control-state support only**: no x87 register stack, arithmetic,
 exception delivery or SSE execution is implemented. Future instruction and
 CRT math handlers must consume this same per-thread state, not host defaults.
+
+## Initializer callbacks
+
+`_initterm(start,end)` uses a checked, half-open guest pointer table, skips null
+entries and schedules cdecl callbacks through `pw_guest_callback_enter`.
+It never invokes a guest address as a host function. A successful dispatch
+with `callback_pending=1` is a yield to guest EIP, **not API completion**.
+The dispatcher must intercept reserved return tokens at 0xe1000000 + depth*16
+before fetching code. These tokens and the API-token range must remain unmapped.
+Runtime storage is guest-thread-owned. Code execution permissions remain the
+execution dispatcher's responsibility; each table read requires guest readability.
+
+The initial bounds are 1,024 entries and eight nested initializer calls.
+Misaligned/reversed tables, unavailable memory, excessive depth/length and
+out-of-order or ABI-invalid returns stop explicitly. Completed callback side
+effects are not rolled back on a later fault. Caller stack cleanup is cdecl;
+the API is counted complete only after its table finishes.
+
+`test_pw_initterm` executes synthetic translated callbacks with persistent
+memory effects, null entries, nested empty and nonempty initializers, and
+checks malformed tables, permissions/ranges, stale tokens and damaged
+callee-saved register returns. Pinball's first observed `_initterm` returns
+without scheduling callbacks, so actual-game callbacks are not yet proven.
+Host telemetry labels scheduled work `host-callback-enter` separately from
+the API-return records. No PS5 callback execution is claimed.

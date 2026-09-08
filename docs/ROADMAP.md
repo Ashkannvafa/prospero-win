@@ -73,10 +73,11 @@ structured ps5log/1 evidence and an independently checked result.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
   See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing now executes 73 instructions, GetModuleHandleA(NULL),
-  __set_app_type, both CRT mode-pointer getters and _controlfp after binding all 207 imports.
-  The next stop is `_initterm`, requiring guest callback-table dispatch;
-  all five implemented API cases have unit tests. FP control state exists;
+  Bounded host tracing now executes 77 instructions, GetModuleHandleA(NULL),
+  __set_app_type, both CRT mode-pointer getters, _controlfp and _initterm after binding all 207 imports.
+  The next stop is an unsupported instruction. Initializer callbacks have
+  translated synthetic tests, not actual-game callback evidence yet.
+  All six implemented API cases have unit tests. FP control state exists;
   x87/SSE arithmetic and exception execution remain pending.
   This is not application entry or PS5 execution evidence; most APIs are pending.
 - [ ] Implement the observed Win32 surface: process/error state, heap,

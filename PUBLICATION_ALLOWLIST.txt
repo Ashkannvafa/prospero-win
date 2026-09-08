@@ -115,3 +115,4 @@ tools/validate_pe_map_evidence.py
 src/pw_guest_fp.c
 src/pw_guest_fp.h
 tests/test_pw_guest_fp.c
+tests/test_pw_initterm.c
