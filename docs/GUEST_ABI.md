@@ -104,8 +104,9 @@ failure atomicity when the argument is outside the guest stack.
 Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
-`__set_app_type` and stops after 45 instructions at an unsupported instruction.
-The pointer getters have host unit evidence, not original-game execution yet.
+`__set_app_type`, `__p__fmode`, `__p__commode` and stops after 53 instructions
+at an unsupported instruction. The pointer getters now have original-game
+host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
 dispatch and return, plus a
 named stop for a pending API. No PS5 execution of this integration is claimed.

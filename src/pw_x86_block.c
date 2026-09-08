@@ -49,14 +49,14 @@ static void stack_bounds(Emitter *e)
 static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write,unsigned width)
 {
     uint64_t end=(uint64_t)address+width;
-    unsigned permission=write?PW_X86_WRITE:PW_X86_READ;
+    unsigned permission=write==2?(PW_X86_READ|PW_X86_WRITE):write?PW_X86_WRITE:PW_X86_READ;
     if (!address || (width!=2 && width!=4) || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
         return 0;
     if(address>=state->stack_low && end<=state->stack_high)return address;
     for(unsigned i=0;i<state->memory_count;i++) {
         const PwX86Memory *m=&state->memory[i];
         if(m->high<=0x100000000ull && address>=m->low && end<=m->high &&
-           (m->permissions&permission))return address;
+           (m->permissions&permission)==permission)return address;
     }
     return 0;
 }
@@ -196,19 +196,20 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         const uint8_t op = source[cursor];
         size_t length;
         Operand operand;
-        unsigned compare=0,short_imm=0,word_operand=0,conditional=0,movzx=0,setcc=0;
+        unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,movzx=0,setcc=0;
         int terminal = 0;
-        if(op==0x66 || op==0x81 || op==0x83 || op==0x3d) {
+        if(op==0x66 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=op==0x66?1:0;
             if(bytes-cursor<=prefix)return PW_ERR_TRUNCATED;
             unsigned cmpop=source[cursor+prefix];
-            if(cmpop!=0x81 && cmpop!=0x83 && cmpop!=0x3d)return PW_ERR_UNSUPPORTED;
+            unsigned accumulator=cmpop<=0x3d && (cmpop&7)==5;
+            if(cmpop!=0x81 && cmpop!=0x83 && !accumulator)return PW_ERR_UNSUPPORTED;
             word_operand=(unsigned)prefix;short_imm=cmpop==0x83;compare=1;
-            if(cmpop==0x3d) {memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;}
+            if(accumulator) {memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;alu=cmpop>>3;}
             else {
                 int result=decode_operand(source+cursor+prefix+1,bytes-cursor-prefix-1,&operand);
                 if(result!=PW_OK)return result;
-                if(operand.reg!=7)return PW_ERR_UNSUPPORTED;
+                alu=operand.reg;
             }
             length=prefix+1+operand.bytes+(short_imm?1:word_operand?2:4);
         } else if(op>=0x70 && op<=0x7f) {conditional=1;length=2;}
@@ -265,9 +266,8 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         } else if(compare || movzx) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {
-                effective_address(&e,&operand);memory_address_width(&e,0,(word_operand || movzx)?2:4);
-                if(word_operand || movzx){byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x00);}
-                else {byte(&e,0x8b);byte(&e,0x00);}
+                effective_address(&e,&operand);memory_address_width(&e,compare && alu!=7?2:0,(word_operand || movzx)?2:4);
+                if(movzx){byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x00);}
             }
             if(movzx) {
                 byte(&e,0x25);word(&e,0xffff);store_eax(&e,operand.reg*4);
@@ -275,10 +275,20 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                 const uint8_t *imm=source+cursor+length-(short_imm?1:word_operand?2:4);
                 uint32_t value=short_imm?(uint32_t)(int32_t)(int8_t)*imm:
                     word_operand?(uint32_t)imm[0]|(uint32_t)imm[1]<<8:read32(imm);
+                /* Import only guest CF for ADC/SBB, never guest control flags. */
+                if(alu==2 || alu==3) {
+                    byte(&e,0x0f);byte(&e,0xba);byte(&e,0x67);
+                    byte(&e,offsetof(PwX86State,eflags));byte(&e,0);
+                }
                 if(word_operand)byte(&e,0x66);
-                byte(&e,0x3d);
+                if(operand.mod==3)byte(&e,(uint8_t)(5+alu*8));
+                else {byte(&e,0x81);byte(&e,(uint8_t)(alu*8));}
                 if(word_operand){byte(&e,(uint8_t)value);byte(&e,(uint8_t)(value>>8));}else word(&e,value);
-                save_arithmetic_flags(&e,0x8d5);
+                if(operand.mod==3 && alu!=7) {
+                    if(word_operand)byte(&e,0x66);
+                    store_eax(&e,operand.rm*4);
+                }
+                save_arithmetic_flags(&e,(alu==1 || alu==4 || alu==6)?0x8c5:0x8d5);
             }
         } else if(conditional) {
             unsigned condition=(op==0x0f?source[cursor+1]:op)&15;

@@ -29,7 +29,8 @@ typedef struct PwX86Block {
 /* Initial bounded DBT subset: push immediate/register, pop register,
  * mov register/immediate, register/register or registered memory (ModRM/SIB),
  * MOV immediate/register or memory, register ADD/SUB/XOR with arithmetic flags,
- * CMP immediate 16/32-bit or register/memory 32-bit, MOVZX word,
+ * immediate ALU 16/32-bit (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP),
+ * CMP register/memory 32-bit, MOVZX word,
  * short/near Jcc and register-byte SETcc using guest arithmetic flags,
  * LEA, FS moffs32/EAX, nop,
  * direct/indirect near call/jump and ret. No copied 32-bit stack instructions. A successful

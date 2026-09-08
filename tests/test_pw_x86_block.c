@@ -105,6 +105,59 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void immediate_tests(void)
+{
+    const uint32_t inputs[]={0,1,5,0x7fff,0x8000,0x7fffffff,0x80000000,0xffffffff};
+    for(unsigned width=0;width<2;width++)for(unsigned op=0;op<8;op++)
+    for(unsigned cf=0;cf<2;cf++)for(unsigned sample=0;sample<8;sample++)
+    for(unsigned memory=0;memory<2;memory++)for(unsigned encoding=0;encoding<3;encoding++) {
+        if(memory && encoding==2)continue;
+        uint32_t mask=width?0xffff:UINT32_MAX,sign=width?0x8000:0x80000000;
+        uint32_t a=inputs[sample]&mask,b=3,result;
+        unsigned carry=(op==2 || op==3)?cf:0,logical=op==1 || op==4 || op==6;
+        uint64_t wide;
+        if(op==0 || op==2){wide=(uint64_t)a+b+carry;result=(uint32_t)wide&mask;}
+        else if(op==1){wide=0;result=a|b;}
+        else if(op==4){wide=0;result=a&b;}
+        else if(op==6){wide=0;result=a^b;}
+        else {wide=(uint64_t)b+carry;result=(a-(uint32_t)wide)&mask;}
+        unsigned flags=0x202;
+        if(logical)flags|=0x10; /* undefined AF retained */
+        else {
+            unsigned sub=op==3 || op==5 || op==7;
+            if(sub?a<wide:wide>mask)flags|=1;
+            if((a^b^result)&16)flags|=16;
+            if((sub?((a^b)&(a^result)):(~(a^b)&(a^result)))&sign)flags|=0x800;
+        }
+        if(!result)flags|=0x40;
+        if(result&sign)flags|=0x80;
+        unsigned parity=0;for(unsigned bit=0;bit<8;bit++)parity^=(result>>bit)&1;
+        if(!parity)flags|=4;
+        uint32_t initial=inputs[sample];state.gpr[0]=initial;state.gpr[1]=state.stack_low;
+        memcpy(stack.write_base,&initial,4);state.eflags=0x212|cf;
+        uint8_t bytes[8];size_t n=0;if(width)bytes[n++]=0x66;
+        if(encoding==2)bytes[n++]=(uint8_t)(5+op*8);
+        else {bytes[n++]=encoding?0x81:0x83;bytes[n++]=(uint8_t)((memory?1:0xc0)|(op<<3));}
+        bytes[n++]=3;
+        if(encoding){bytes[n++]=0;if(!width){bytes[n++]=0;bytes[n++]=0;}}
+        assert(run(bytes,n,0x5000)==0 && state.eflags==flags);
+        uint32_t actual=state.gpr[0];if(memory)memcpy(&actual,stack.write_base,4);
+        uint32_t expected=op==7?initial:(initial&~mask)|result;
+        assert(actual==expected);
+    }
+    /* RMW requires both permissions, unlike CMP's read-only access. */
+    uint32_t low=state.stack_low,high=state.stack_high;
+    state.stack_low=state.stack_high=0;state.memory_count=1;
+    state.gpr[0]=low;
+    const uint8_t update[]={0x83,0x08,1};
+    for(unsigned permission=1;permission<=2;permission++) {
+        state.memory[0]=(PwX86Memory){low,high,permission};state.eflags=0x246;
+        uint32_t before;memcpy(&before,stack.write_base,4);
+        assert(run(update,3,0x5100)==-1 && state.eflags==0x246 && state.eip==0x5100);
+        uint32_t after;memcpy(&after,stack.write_base,4);assert(after==before);
+    }
+    state.stack_low=low;state.stack_high=high;state.memory_count=0;
+}
 static void comparison_tests(void)
 {
     for(unsigned flags=0;flags<32;flags++)for(unsigned condition=0;condition<16;condition++) {
@@ -271,6 +324,7 @@ int main(int argc, char **argv)
     addressing_tests();
     arithmetic_tests();
     comparison_tests();
+    immediate_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};
