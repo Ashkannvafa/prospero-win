@@ -28,6 +28,7 @@ review. No result here authorizes automatic extraction of a source file.
 | Imports / subsystem | Reviewed Wine location | Required guest contract |
 |---|---|---|
 | GetModuleHandleA | kernelbase/loader.c; kernel32 imports kernelbase | Guest module registry, handles and last-error behavior; no native host module handles |
+| __set_app_type, __p__fmode, __p__commode | msvcrt/data.c; include/msvcrt/fcntl.h | cdecl void state setter and stable writable guest pointers; fmode initializes to _O_TEXT (0x4000), commode to zero. Initial handlers and host regressions now implemented; file semantics remain pending |
 | __getmainargs, _acmdln | msvcrt/data.c | Guest argv/env storage, 32-bit pointer arrays, command-line initialization and allocation lifetime |
 | _initterm | msvcrt/data.c | Walk guest 32-bit function-pointer tables and reenter the guest execution engine; never call guest addresses as host function pointers |
 | _except_handler3 | msvcrt/except_i386.c | Guest exception records, scope tables, frame registers and unwind callbacks; native host stack unwinding is not equivalent |

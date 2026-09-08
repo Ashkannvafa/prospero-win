@@ -36,6 +36,32 @@ int main(void)
     state.eip=(uint32_t)target.address;before=state;
     assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_UNSUPPORTED);
     assert(!strcmp(runtime.last_name,"GetLastError") && memcmp(&state,&before,sizeof(state))==0);
+    const char *crt_names[]={"__set_app_type","__p__fmode","__p__commode"};
+    for(unsigned i=0;i<3;i++) {
+        strcpy(symbol.name,crt_names[i]);
+        assert(pw_win32_resolve(&runtime,"MSVCRT.DLL",&symbol,&target)==PW_OK);
+        state.gpr[4]=state.stack_high-8;state.eip=(uint32_t)target.address;
+        state.gpr[0]=0xaabbccdd;state.eflags=0x246;
+        words[1]=2;memcpy((void *)(uintptr_t)state.gpr[4],words,8);
+        assert(pw_win32_dispatch(&runtime,&state)==PW_OK);
+        assert(state.gpr[4]==state.stack_high-4 && state.eip==words[0] && state.eflags==0x246);
+        if(!i)assert(runtime.app_type==2 && state.gpr[0]==0xaabbccdd);
+        else {
+            assert(state.gpr[0]==runtime.crt_data+(i==1?8:12));
+            uint32_t value;memcpy(&value,(void *)(uintptr_t)state.gpr[0],4);
+            assert(value==(i==1?0x4000u:0));
+            value=123;memcpy((void *)(uintptr_t)state.gpr[0],&value,4);
+            state.gpr[4]=state.stack_high-8;state.eip=(uint32_t)target.address;
+            assert(pw_win32_dispatch(&runtime,&state)==PW_OK);
+            memcpy(&value,(void *)(uintptr_t)state.gpr[0],4);assert(value==123);
+        }
+    }
+    strcpy(symbol.name,"__set_app_type");
+    assert(pw_win32_resolve(&runtime,"msvcrt.dll",&symbol,&target)==PW_OK);
+    state.gpr[4]=state.stack_high-4;state.eip=(uint32_t)target.address;before=state;
+    unsigned calls=runtime.calls;
+    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_VM);
+    assert(!memcmp(&state,&before,sizeof(state)) && runtime.app_type==2 && runtime.calls==calls);
     strcpy(symbol.name,"NotInCatalog");
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_NOT_FOUND);
     symbol.by_ordinal=1;symbol.ordinal=42;

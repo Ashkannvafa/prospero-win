@@ -9,9 +9,11 @@ int pw_win32_init(PwWin32 *runtime,uint32_t main,uint32_t data,const char *line)
         return PW_ERR_PRECONDITION;
     size_t length=strlen(line);
     if(length>4096-17)return PW_ERR_LIMIT;
-    uint32_t pointer=data+16,zero=0;
+    uint32_t pointer=data+16,zero=0,text_mode=0x4000;
     memcpy((void *)(uintptr_t)data,&pointer,4);
     memcpy((void *)(uintptr_t)(data+4),&zero,4);
+    memcpy((void *)(uintptr_t)(data+8),&text_mode,4);
+    memcpy((void *)(uintptr_t)(data+12),&zero,4);
     memcpy((void *)(uintptr_t)(data+16),line,length+1);
     *runtime=(PwWin32){.main_base=main,.crt_data=data};return PW_OK;
 }
@@ -42,6 +44,25 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
     if(offset%16 || index>=sizeof(pw_catalog)/sizeof(pw_catalog[0]) ||
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
+    if(!strcmp(r->last_dll,"msvcrt.dll")) {
+        unsigned set_type=!strcmp(r->last_name,"__set_app_type");
+        unsigned fmode=!strcmp(r->last_name,"__p__fmode");
+        unsigned commode=!strcmp(r->last_name,"__p__commode");
+        if(!set_type && !fmode && !commode)return PW_ERR_UNSUPPORTED;
+        PwGuestCall call={0};uint32_t type=0;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_CDECL,set_type?4:0,0);
+        if(status!=PW_OK)return status;
+        if(set_type) {
+            status=pw_guest_call_u32(&call,0,&type);
+            if(status!=PW_OK)return status;
+        }
+        status=pw_guest_call_finish(&call,set_type?0:32,r->crt_data+(fmode?8:12));
+        if(status==PW_OK) {
+            if(set_type)r->app_type=type;
+            r->calls++;
+        }
+        return status;
+    }
     if(strcmp(r->last_dll,"kernel32.dll") || strcmp(r->last_name,"GetModuleHandleA"))
         return PW_ERR_UNSUPPORTED;
     PwGuestCall call={0};uint32_t name;

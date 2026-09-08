@@ -73,8 +73,9 @@ structured ps5log/1 evidence and an independently checked result.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
   See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing now executes 44 instructions and GetModuleHandleA(NULL)
-  after binding all 207 imports. The next stop is the pending CRT `__set_app_type` API.
+  Bounded host tracing now executes 45 instructions, GetModuleHandleA(NULL)
+  and __set_app_type after binding all 207 imports. The next stop is an
+  unsupported instruction. CRT mode-pointer getters also have host unit tests.
   This is not application entry or PS5 execution evidence; most APIs are pending.
 - [ ] Implement the observed Win32 surface: process/error state, heap,
   virtual memory, files/resources, registry subset if needed, clocks and

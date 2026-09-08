@@ -5,7 +5,7 @@
 #include "pw_guest_call.h"
 enum { PW_WIN32_TOKEN_BASE=0xe0000000u };
 typedef struct PwWin32 {
-    uint32_t main_base,crt_data;
+    uint32_t main_base,crt_data,app_type;
     const char *last_dll,*last_name;
     unsigned calls;
 } PwWin32;
@@ -17,6 +17,7 @@ int pw_win32_init(PwWin32 *runtime,uint32_t main_base,uint32_t crt_data,
 int pw_win32_resolve(void *,const char *,const PeImportSymbol *,PwImportTarget *);
 /* PW_ERR_NOT_FOUND: not a token; UNSUPPORTED: named API/argument not covered.
  * No pending API reports success. Dispatcher must intercept tokens before
- * code fetch. The initial implemented surface is GetModuleHandleA(NULL). */
+ * code fetch. Initial surface: GetModuleHandleA(NULL), __set_app_type,
+ * __p__fmode and __p__commode. CRT pointer results refer to live guest words. */
 int pw_win32_dispatch(PwWin32 *,PwX86State *);
 #endif

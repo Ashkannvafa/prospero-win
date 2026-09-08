@@ -100,21 +100,24 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-44 instructions and one implemented API call after adding comparisons and
-conditional execution:
+45 instructions and two implemented API calls after adding comparisons,
+conditional execution and initial CRT state services:
 
 ```
 kind=host-import-bind total=207 functions=205 data=2
 kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
-kind=host-api-stop dll=msvcrt.dll name=__set_app_type status=-5
-kind=host-entry-trace steps=44 stop=unimplemented-api eip=0xe0000550 esp=0x030fff64 ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
+kind=host-api dll=msvcrt.dll name=__set_app_type result=0x00000000
+kind=host-entry-trace steps=45 stop=unsupported eip=0x0102100a esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
 ```
 
-The next stop is the catalogued CRT API `__set_app_type`, not an unknown
-import. This reproduced under ASan/UBSan. Regression tests cover all 16
+The next stop is an unsupported instruction after the CRT state setter.
+The 45-instruction trace reproduced under ASan/UBSan; the expanded runtime
+also compiles with the PS5 target compiler. Neither is hardware execution.
+The tracer's `result` field reports EAX; `__set_app_type` returns void, so
+that field is not a CRT return value. Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: one narrow Win32 API case has run,
+This is host evidence only: two narrow API cases have run,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget

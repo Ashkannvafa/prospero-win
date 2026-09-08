@@ -79,9 +79,9 @@ guest FP-state services, not a claim of generic cdecl compatibility.
 
 `pw_win32.c` uses the generated factual code/data catalog for Pinball's 207
 imports. Unknown names/ordinals are refused. All 205 function imports bind
-to unique dispatcher tokens, not host addresses; only
-`GetModuleHandleA(NULL)` is implemented initially. Named-module arguments
-and other API calls stop explicitly without guest-state mutation or a false
+to unique dispatcher tokens, not host addresses. Initial handlers cover
+`GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode` and `__p__commode`.
+Named-module arguments and other API calls stop explicitly without guest-state mutation or a false
 success. A bound function is not necessarily an implemented function.
 
 The two CRT data imports bind to separate guest words: `_acmdln` points to
@@ -91,9 +91,21 @@ region; this is not yet the full CRT startup/environment implementation.
 The tracer uses a virtual `C:\\game\\<input basename>` command line; no
 filesystem adapter is implied by that namespace.
 
+CRT bootstrap contracts are implemented independently from the reviewed Wine
+`msvcrt/data.c` behavior (pinned revision in WINE_REUSE_AUDIT.md):
+`__set_app_type(int)` stores process-local state and returns void via cdecl;
+the two zero-argument pointer getters return writable guest words at CRT
+offsets 8 and 12. File mode starts at `_O_TEXT` (0x4000), as after Wine CRT
+initialization, and commit mode starts at zero. Repeated calls preserve guest
+writes. This does not implement file I/O or commit semantics yet. Tests cover
+cdecl stack cleanup, void return, persistent pointer identity, defaults and
+failure atomicity when the argument is outside the guest stack.
+
 Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
-GetModuleHandleA(NULL), returns its actual mapped base and stops at the pending
-CRT API `__set_app_type` after 44 instructions. Synthetic PE tests cover binding,
+GetModuleHandleA(NULL), returns its actual mapped base, then calls
+`__set_app_type` and stops after 45 instructions at an unsupported instruction.
+The pointer getters have host unit evidence, not original-game execution yet.
+Synthetic PE tests cover binding,
 dispatch and return, plus a
 named stop for a pending API. No PS5 execution of this integration is claimed.
