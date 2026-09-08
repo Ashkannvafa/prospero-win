@@ -4,6 +4,31 @@
 It does not resolve imports or implement a Win32 API. These services are
 shared prerequisites identified by the complete Pinball import inventory.
 
+## Function/data IAT binding
+
+`pw_import_bind32` is a shared PE32 binding operation. It parses preserved
+name/ordinal lookups, asks an injected resolver for explicitly typed guest
+destinations, and validates every slot before writing any IAT entry. Unknown
+imports, zero/oversized targets, invalid kinds or overlapping slots fail
+without changing the mapped image. A report separates functions from data.
+This lets the reviewed catalog bind `_acmdln` as storage rather than a
+function trampoline. It does not allocate or initialize that storage itself.
+
+Binding must happen before final mapping protections. PE64 and delay imports
+are refused; the workspace currently caps one image at 512 imports. Resolver
+side effects are not rolled back by the binder and must be managed by the
+owner. The resolver must not modify mappings or the IAT while planning.
+It must supply live guest storage or dispatcher-owned function destinations,
+not unresolved Windows addresses. The binder does not implement forwarders,
+load external DLLs, infer API signatures or turn pending APIs into success
+stubs. The canonical artifact verification precedes binding; runtime
+evidence must account for subsequent deliberate IAT modifications.
+
+Synthetic tests cover named/ordinal imports, function/data classification,
+late resolver failure without partial writes, invalid targets, overlapping
+IATs and refusal after final protections. The service compiles for PS5 but
+has not yet been integrated into the original-game trace or console runner.
+
 ## Guest calls into an adapter
 
 Start a zero-initialized `PwGuestCall` with the guest state, calling

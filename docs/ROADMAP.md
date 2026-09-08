@@ -61,6 +61,9 @@ structured ps5log/1 evidence and an independently checked result.
   explicit policy: core host modules, API sets, application overrides and
   host fallback. Local d3d9.dll/dinput8.dll wrappers must not be silently
   bypassed. Add resolver conformance fixtures.
+  A shared PE32 IAT binder now plans all name/ordinal destinations before
+  writing, distinguishes function/data imports and rejects partial failures.
+  The actual catalog, forwarders and dynamic resolver remain to integrate.
 - [ ] **0.4 Initialisation.** Dependency ordering, TLS, CRT entry, DllMain
   and teardown required by the target. Track unsupported features.
 - [ ] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling

@@ -68,6 +68,9 @@ src/pw_x86_block.c
 src/pw_x86_block.h
 src/pw_guest_call.c
 src/pw_guest_call.h
+src/pw_import_bind.c
+src/pw_import_bind.h
+tests/test_pw_import_bind.c
 tests/test_pw_guest_call.c
 tests/test_pw_x86_block.c
 tests/test_pw_x86_reference.S
