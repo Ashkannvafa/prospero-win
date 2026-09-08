@@ -156,6 +156,23 @@ they will all stand on.
 | Ownership | `mapped=2 released=2`, `opens=2 closes=2 failures=0` | Nothing leaked |
 | User selectors | `cs64=0x43 ds64=0x3b` | Recorded for the thunk work gate 0.2a would have needed |
 
+### Reproducible across runs
+
+Three accepted runs of the gate — `...T111650513Z`, `...T113831241Z` and
+`...T114138626Z`, the last an accidental relaunch from a stale background
+job — placed both images at the same addresses every time
+(`sample.exe` at `0x200084000`, `binkw32.dll` at `0x200090000`) and produced
+byte-identical mapping checksums, `0x5c0e2e3c67bddbdf` and
+`0x2bb5ff8c09c83227`.
+
+That is a stronger statement than it looks. The checksum covers the whole
+mapped image including the pointers relocation rewrote, so it can only match
+across runs if the reservations landed identically. Anonymous placement here
+is therefore deterministic for an identical allocation sequence from a fresh
+process — useful to know, and equally important not to depend on: nothing in
+the loader assumes an address, and the PE32 refusal exists precisely because
+these addresses are above 4 GiB.
+
 The writable-executable page is the finding that matters, and it is not a
 defect in the mapper: it is what a 4 KiB-aligned image costs at this
 granularity. The ways out are to accept it, to lay images out on 16 KiB
