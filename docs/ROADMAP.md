@@ -95,8 +95,12 @@ structured ps5log/1 evidence and an independently checked result.
   __set_app_type, both CRT mode-pointer getters, _controlfp, _initterm and __getmainargs after binding all 207 imports.
   UTC/tick/counter/ID, GetStartupInfoA, LoadStringA and lstrlenA also complete; the
   next stop is malloc, requiring a reusable guest-addressable heap rather than
-  direct host allocation. Resource lookup and exact CP1252 string conversion have
-  synthetic tests and original-game host evidence; broader locale/MUI and
+  direct host allocation. A separate guest heap core is now available:
+  alloc/calloc/realloc/free pass host
+  ownership/fragmentation tests. CRT dispatch and error/new-handler integration
+  remain pending; this does not advance original execution beyond malloc.
+  Resource lookup and exact CP1252 string conversion have synthetic tests and
+  original-game host evidence; broader locale/MUI and
   best-fit/default-character conversion remain pending. See GUEST_ABI.md.
   RET imm16 also has an actual translated stdcall callback regression.
   Six time/counter and identity handlers have injected-service tests; PS5 clock backends remain pending.

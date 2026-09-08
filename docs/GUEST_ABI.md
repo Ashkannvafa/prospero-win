@@ -115,6 +115,41 @@ Synthetic PE tests cover binding,
 dispatch and return, plus a
 named stop for a pending API. No PS5 execution of this integration is claimed.
 
+## Guest heap core
+
+`pw_guest_heap` implements alloc/calloc/realloc/free over owner-supplied live
+RW identity-mapped memory below 4 GiB. Metadata is separate host-owned storage,
+not headers in guest allocations; the game's four-byte wrapper header remains
+untouched. The owner maps/registers the arena and releases it at teardown.
+The core does not allocate virtual memory, synchronize threads or execute code.
+
+First-fit blocks are 16-byte aligned. Splits reuse caller-provided metadata;
+neighboring free blocks coalesce. If splitting needs an unavailable metadata
+slot, the allocation retains the larger block. Realloc shrinks/grows in place
+where possible, otherwise allocates, copies the requested prefix and frees the
+old block. Failed resize preserves the old allocation and output argument.
+Zero-size allocation returns a unique freeable block; realloc(NULL,0) does the
+same, while realloc(p,0) frees p and returns zero. Calloc checks 32-bit product
+overflow and clears exactly the requested bytes. Invalid/interior/double-free
+pointers and damaged metadata are classified errors, not successful frees.
+Exhaustion returns PW_ERR_LIMIT to the future CRT adapter, not a native pointer.
+
+Original host tests cover zero sizes, alignment, coalescing, metadata exhaustion,
+moving/in-place/shrinking realloc, ordinary and overflow allocation failure,
+calloc sentinels, invalid pointers and 4000 deterministic fragmentation steps
+with live-data pattern checks and partition validation after every operation.
+The Wine reference's msvcrt/tests/heap.c test_malloc/test_calloc and heap.c
+were reviewed for zero-size, overflow and realloc behavior. This is not an
+executed differential comparison against Wine or a claim of full CRT fidelity.
+The native forbidden-call gate now strips C comments/literals before scanning
+call tokens; regression cases ensure documented function names do not fail the
+gate while actual forbidden calls still do. This remains a lexical check,
+not a full preprocessor or link-symbol audit.
+
+Pending: CRT cdecl dispatch, guest errno/new_mode/new-handler behavior, arena
+registration in the tracer and PS5 runtime, and original-executable integration.
+The existing trace still stops at malloc; no new original API call is claimed.
+
 ## Guest string lengths
 
 `lstrlenA` uses stdcall with one 32-bit guest pointer. NULL returns zero;

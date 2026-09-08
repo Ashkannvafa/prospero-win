@@ -124,3 +124,6 @@ src/pe_resource.c
 src/pe_resource.h
 tests/test_pe_resource.c
 docs/STARTUP_ANALYSIS.md
+src/pw_guest_heap.c
+src/pw_guest_heap.h
+tests/test_pw_guest_heap.c

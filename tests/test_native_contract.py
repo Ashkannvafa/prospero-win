@@ -51,6 +51,22 @@ def includes(text: str) -> list[str]:
     return re.findall(r'^\s*#include\s+(<[^>]+>)', text, re.M)
 
 
+def code_without_literals_or_comments(text: str) -> str:
+    """Lexical call check: documentation and string contents are not calls."""
+    tokens = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*'
+    return re.sub(tokens, lambda m: ''.join('\n' if c == '\n' else ' ' for c in m[0]),
+                  text, flags=re.S)
+
+
+def test_forbidden_call_lexing() -> None:
+    pattern = r'\bmalloc\s*\('
+    for source in ('/* malloc(4) */', '// malloc(4)\n', '"malloc(4)"',
+                   '"\\\"/* malloc(4) */"'):
+        assert not re.search(pattern, code_without_literals_or_comments(source))
+    for source in ('malloc(4)', '"/*"; malloc(4)', '/* docs */ malloc /* gap */ (4)'):
+        assert re.search(pattern, code_without_literals_or_comments(source))
+
+
 def test_core_imports_nothing_surprising() -> None:
     for name in CORE_SOURCES + [path.name for path in (ROOT / "src").glob("*.h")]:
         relative = f"src/{name}"
@@ -59,8 +75,9 @@ def test_core_imports_nothing_surprising() -> None:
             continue                    # the one deliberate POSIX backend
         for header in includes(text):
             assert header in CORE_HEADERS, f"{relative} includes {header}"
+        code = code_without_literals_or_comments(text)
         for symbol in FORBIDDEN_CORE:
-            assert not re.search(rf"\b{symbol}\s*\(", text), \
+            assert not re.search(rf"\b{symbol}\s*\(", code), \
                 f"{relative} calls {symbol}"
 
 
