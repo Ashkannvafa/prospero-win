@@ -16,6 +16,7 @@
  */
 #include "../src/pw_gate.h"
 #include "../src/pw_vm_posix.h"
+#include "pw_compat32_ps5.h"
 #include "pw_file_ps5.h"
 #include "ps5log/ps5log.h"
 
@@ -37,10 +38,20 @@
 #ifndef PW_ROOT_MODULE
 #define PW_ROOT_MODULE "sample.exe"
 #endif
+/*
+ * Gate 0.2a. Stage one installs the descriptors and reports; it cannot
+ * fault. Stage two performs the far transfer and can, which is why it is
+ * opt-in and why the stage-one record is flushed before it runs.
+ */
+#ifndef PW_COMPAT32_TRANSFER
+#define PW_COMPAT32_TRANSFER 0
+#endif
 
 static PwFilePs5 files;
 static PwFileProvider provider;
 static PwVmBackend backend;
+static PwCompat32Ps5 compat32_state;
+static PwCompat32Platform compat32_platform;
 
 static uint64_t now_ns(void)
 {
@@ -127,6 +138,36 @@ int main(int argc, char **argv)
     if (status != PW_OK) {
         ps5log_close("pe-map-filesystem-unusable");
         _exit(0);
+    }
+
+    /*
+     * Gate 0.2a, once telemetry and the filesystem are known good: can a
+     * title reach 32-bit compatibility mode? The answer decides whether
+     * 32-bit programs run natively through ABI thunking or need
+     * recompilation, and it costs one syscall to ask.
+     */
+    if (pw_compat32_ps5_platform(&compat32_state, &compat32_platform) ==
+        PW_OK) {
+        PwCompat32Report compat32;
+        PwGateReport *probe_report = report;
+        const int compat_status =
+            pw_compat32_probe(&compat32_platform, PW_COMPAT32_TRANSFER,
+                              &compat32);
+
+        probe_report->line_count = 0u;
+        probe_report->truncated = 0u;
+        if (pw_gate_compat32(probe_report, &compat32) == PW_OK) {
+            for (uint32_t index = 0; index < probe_report->line_count; ++index)
+                PS5LOG_LOG("%s", probe_report->lines[index]);
+        }
+        PS5LOG_LOG("PW_COMPAT32_PLATFORM status=%s bases_tried=%u "
+                   "chosen_base=0x%x last_errno=%d transfer_build=%d",
+                   pw_result_name(compat_status),
+                   compat32_state.attempted_bases,
+                   compat32_state.chosen_base, compat32_state.last_errno,
+                   PW_COMPAT32_TRANSFER);
+        probe_report->line_count = 0u;
+        probe_report->truncated = 0u;
     }
 
     (void)pw_file_ps5_provider(&files, &provider);

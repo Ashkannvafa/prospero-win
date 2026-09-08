@@ -89,7 +89,8 @@ class EvidenceTest(unittest.TestCase):
         write = {key: kwargs.pop(key) for key in list(kwargs)
                  if key in self.WRITE_KEYS}
         options = {"root": None, "expect_modules": None, "expect_local": None,
-                   "expect_host": None, "allow_i386": False, "allow_wx": False}
+                   "expect_host": None, "allow_i386": False,
+                   "allow_wx": False, "expect_compat32": "any"}
         options.update(kwargs)
         return write, options
 
@@ -268,6 +269,79 @@ class EvidenceTest(unittest.TestCase):
                                expect_local=None, expect_host=None,
                                allow_i386=False, allow_wx=False)
         self.assertIn("error record", str(caught.exception))
+
+    # --- gate 0.2a --------------------------------------------------
+    COMPAT32_BASE = (
+        "PW_COMPAT32 schema=1 install=ok install_errno=0 ldt_index=0 "
+        "code_sel=0x7 data_sel=0xf cs64=0x33 ds64=0x0 reserve=ok "
+        "code_base=0x20000000 data_base=0x20001000 build=ok seal=ok "
+        "seal_errno=0 transfer=ok attempted=1 returned=1 result=3 "
+        "cs_seen=0x7 expected=3 proven=1"
+    )
+
+    def with_compat32(self, record: str) -> list[str]:
+        return [self.records[0], record, *self.records[1:]]
+
+    def test_accepts_a_proven_compat32_probe(self) -> None:
+        summary = self.accept(self.with_compat32(self.COMPAT32_BASE),
+                              expect_compat32="proven")
+        self.assertEqual(summary["compat32"], "proven")
+        self.assertEqual(summary["compat32_result"], "3")
+
+    def test_accepts_a_refused_compat32_probe(self) -> None:
+        # A refusal is a legitimate measurement, not a failed run.
+        refused = (
+            "PW_COMPAT32 schema=1 install=unsupported install_errno=78 "
+            "ldt_index=0 code_sel=0x0 data_sel=0x0 cs64=0x33 ds64=0x0 "
+            "reserve=precondition code_base=0x0 data_base=0x0 "
+            "build=precondition seal=ok seal_errno=0 "
+            "transfer=precondition attempted=0 returned=0 result=0 "
+            "cs_seen=0x0 expected=3 proven=0"
+        )
+        summary = self.accept(self.with_compat32(refused),
+                              expect_compat32="refused")
+        self.assertEqual(summary["compat32"], "refused")
+        # And the operator cannot mistake it for a pass.
+        self.reject(self.with_compat32(refused), expect_compat32="proven",
+                    message="expected compat32 proven, observed refused")
+
+    def test_rejects_compat32_claiming_more_than_it_showed(self) -> None:
+        # Proof asserted although the descriptor was never installed.
+        self.reject(self.with_compat32(
+            self.COMPAT32_BASE.replace("install=ok", "install=unsupported")),
+            message="claims a transfer after installation failed")
+        # Proof asserted without ever attempting the transfer.
+        self.reject(self.with_compat32(
+            self.COMPAT32_BASE.replace("attempted=1", "attempted=0")),
+            message="claims proof without attempting")
+        # Proof asserted without coming back.
+        self.reject(self.with_compat32(
+            self.COMPAT32_BASE.replace("returned=1", "returned=0")),
+            message="claims proof without returning")
+        # The wrong result value cannot be reported as proof.
+        self.reject(self.with_compat32(
+            self.COMPAT32_BASE.replace("result=3", "result=0")),
+            message="disagrees with its own result")
+        # Running under a selector other than the installed one.
+        self.reject(self.with_compat32(
+            self.COMPAT32_BASE.replace("cs_seen=0x7", "cs_seen=0x33")),
+            message="disagrees with its own result")
+        # A step that failed cannot coexist with proof.
+        self.reject(self.with_compat32(
+            self.COMPAT32_BASE.replace("seal=ok", "seal=vm")),
+            message="proven but seal=vm")
+
+    def test_requires_the_record_when_an_outcome_is_expected(self) -> None:
+        self.reject(expect_compat32="proven",
+                    message="no PW_COMPAT32 record")
+        # Absent by default is fine: the pe-map gate can run without it.
+        summary = self.accept()
+        self.assertEqual(summary["compat32"], "absent")
+
+    def test_rejects_duplicate_compat32_records(self) -> None:
+        records = self.with_compat32(self.COMPAT32_BASE)
+        records.insert(1, self.COMPAT32_BASE)
+        self.reject(records, message="exactly one PW_COMPAT32")
 
     def test_rejects_a_truncated_sequence(self) -> None:
         manifest = self.write(self.records)

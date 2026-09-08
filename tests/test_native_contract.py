@@ -100,6 +100,38 @@ def test_adapter_uses_measured_platform_calls() -> None:
     assert re.search(r"\bmalloc\(", text) is None
 
 
+def test_compat32_adapter_asks_the_kernel_correctly() -> None:
+    text = read("native/pw_compat32_ps5.c")
+    # The syscall this gate exists to measure, named explicitly.
+    assert "extern int sysarch(int number, void *args);" in text
+    assert "PW_I386_SET_LDT = 1" in text
+    assert "PW_LDT_AUTO_ALLOC = 0xffffffff" in text
+    # FreeBSD packs the descriptor pointer at offset 4 on amd64. Getting it
+    # wrong hands the kernel a garbage pointer, so it is asserted at compile
+    # time rather than trusted.
+    assert text.count("_Static_assert") >= 3
+    assert "offsetof(struct pw_ldt_args, descs) == 4" in text
+    # The probe must never ask for memory that is writable and executable at
+    # once: it writes the stub, then seals the page.
+    assert "PROT_WRITE | PROT_EXEC" not in text
+    assert "PROT_READ | PROT_EXEC" in text
+    assert "MAP_FIXED" in text
+    # MAP_FIXED can be honoured by returning a different address; a stub at
+    # the wrong address would fault far from its cause.
+    assert "(uintptr_t)page != (uintptr_t)base" in text
+
+
+def test_compat32_stub_stays_below_two_gib() -> None:
+    text = read("src/pw_compat32.c")
+    # `mov rsp, imm32` sign-extends and every far pointer holds a 32-bit
+    # offset, so both pages must sit in the low 2 GiB.
+    assert "base < 0x80000000u" in text
+    # The mode proof must be the three bytes that only decode as `inc eax`
+    # in 32-bit mode; a plain magic constant would prove nothing.
+    assert text.count("0x40,") >= 3
+    assert "PW_COMPAT32_EXPECTED_RESULT" in read("src/pw_compat32.h")
+
+
 def test_adapter_reports_before_it_parses() -> None:
     text = read("native/main.c")
     assert "PW_BEGIN" in text
@@ -114,6 +146,10 @@ def test_adapter_reports_before_it_parses() -> None:
     # The registry is far too large for the libc heap.
     assert "reserve_scratch(sizeof(*loader))" in text
     assert re.search(r"\bmalloc\(", text) is None
+    # Gate 0.2a runs before the loader and its stage-two transfer is opt-in.
+    probe = text.index("pw_compat32_probe")
+    assert probe < gate, "the compatibility-mode probe must precede the loader"
+    assert "PW_COMPAT32_TRANSFER" in text
 
 
 def test_builder_compiles_every_core_source() -> None:

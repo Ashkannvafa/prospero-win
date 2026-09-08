@@ -216,6 +216,68 @@ def check_modules(records: list[str], *, allow_i386: bool,
     return {"by_index": by_index, "graph": graph, "mapped": mapped_indices}
 
 
+def check_compat32(records: list[str], expectation: str) -> dict[str, object]:
+    """Validates the gate 0.2a record, without prejudging its answer.
+
+    Whether this firmware allows 32-bit compatibility mode is the thing
+    being measured, so a refusal is a valid result. What is checked is that
+    the record is internally consistent and cannot claim more than it
+    demonstrated; the operator asserts the expected outcome explicitly.
+    """
+    found = many(records, "PW_COMPAT32")
+    if not found:
+        if expectation != "any":
+            fail(f"expected compat32={expectation} but no PW_COMPAT32 record")
+        return {"compat32": "absent"}
+    if len(found) != 1:
+        fail(f"expected exactly one PW_COMPAT32, found {len(found)}")
+    record = found[0]
+    require(record, "schema", SCHEMA)
+
+    install = record.get("install")
+    proven = as_int(record, "proven")
+    attempted = as_int(record, "attempted")
+    returned = as_int(record, "returned")
+
+    if install != "ok":
+        # Descriptor installation was refused: nothing may have been run.
+        if attempted != 0 or returned != 0 or proven != 0:
+            fail("compat32 claims a transfer after installation failed")
+        outcome = "refused"
+    elif attempted == 0:
+        if proven != 0:
+            fail("compat32 claims proof without attempting the transfer")
+        outcome = "installed"
+    elif returned == 0:
+        if proven != 0:
+            fail("compat32 claims proof without returning")
+        outcome = "entered-no-return"
+    else:
+        expected = as_int(record, "expected")
+        result = as_int(record, "result")
+        genuine = result == expected and \
+            record.get("cs_seen") == record.get("code_sel")
+        if bool(proven) != genuine:
+            fail("compat32 proven flag disagrees with its own result and "
+                 "selector")
+        if proven:
+            for key in ("reserve", "build", "seal", "transfer"):
+                if record.get(key) != "ok":
+                    fail(f"compat32 proven but {key}={record.get(key)}")
+        outcome = "proven" if proven else "returned-wrong-result"
+
+    if expectation == "proven" and outcome != "proven":
+        fail(f"expected compat32 proven, observed {outcome}")
+    if expectation == "refused" and outcome != "refused":
+        fail(f"expected compat32 refused, observed {outcome}")
+    return {
+        "compat32": outcome,
+        "compat32_install": install,
+        "compat32_result": record.get("result"),
+        "compat32_cs_seen": record.get("cs_seen"),
+    }
+
+
 def check_order(records: list[str], by_index: dict[int, dict[str, str]],
                 graph: dict[str, str]) -> None:
     order = many(records, "PW_ORDER")
@@ -265,7 +327,8 @@ def check_order(records: list[str], by_index: dict[int, dict[str, str]],
 
 def validate(manifest_path: Path, *, root: str | None, expect_modules: int | None,
              expect_local: int | None, expect_host: int | None,
-             allow_i386: bool, allow_wx: bool) -> dict[str, object]:
+             allow_i386: bool, allow_wx: bool,
+             expect_compat32: str = "any") -> dict[str, object]:
     manifest_path = manifest_path.resolve()
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -286,6 +349,8 @@ def validate(manifest_path: Path, *, root: str | None, expect_modules: int | Non
         fail("PW_BOOT reports an empty root image")
     if as_int(boot, "page_bytes") == 0:
         fail("PW_BOOT reports no protection granularity")
+
+    compat32 = check_compat32(records, expect_compat32)
 
     checked = check_modules(records, allow_i386=allow_i386, allow_wx=allow_wx)
     by_index: dict[int, dict[str, str]] = checked["by_index"]  # type: ignore[assignment]
@@ -315,7 +380,7 @@ def validate(manifest_path: Path, *, root: str | None, expect_modules: int | Non
         if expected is not None and counts[key] != expected:
             fail(f"expected {key}={expected}, found {key}={counts[key]}")
 
-    return {
+    summary: dict[str, object] = {
         "title": TITLE,
         "app": APP,
         "root": boot.get("root"),
@@ -330,6 +395,8 @@ def validate(manifest_path: Path, *, root: str | None, expect_modules: int | Non
         "records": len(records),
         "sha256": manifest.get("sha256"),
     }
+    summary.update(compat32)
+    return summary
 
 
 def main() -> int:
@@ -344,6 +411,9 @@ def main() -> int:
     parser.add_argument("--allow-wx", action="store_true",
                         help="accept writable-executable pages forced by a "
                              "coarse mapping granularity")
+    parser.add_argument("--expect-compat32", default="any",
+                        choices=("any", "proven", "refused"),
+                        help="assert the gate 0.2a outcome explicitly")
     arguments = parser.parse_args()
 
     try:
@@ -352,7 +422,8 @@ def main() -> int:
                            expect_local=arguments.expect_local,
                            expect_host=arguments.expect_host,
                            allow_i386=arguments.allow_i386,
-                           allow_wx=arguments.allow_wx)
+                           allow_wx=arguments.allow_wx,
+                           expect_compat32=arguments.expect_compat32)
     except EvidenceError as error:
         print(f"pe-map evidence rejected: {error}")
         return 1

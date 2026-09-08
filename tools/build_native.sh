@@ -12,6 +12,9 @@
 #   PW_ROOT_MODULE         root image inside that directory (default sample.exe)
 #   PW_SAMPLE              1 stages generated synthetic images instead of a
 #                          private directory (default 0)
+#   PW_COMPAT32_TRANSFER   1 attempts the gate 0.2a far transfer into 32-bit
+#                          compatibility mode (default 0: install and report
+#                          the descriptors only, which cannot fault)
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -22,9 +25,12 @@ dev_conf=${PS5LOG_DEV_CONF:-$root/dev.conf}
 stage_input=${PW_STAGE_INPUT:-}
 root_module=${PW_ROOT_MODULE:-sample.exe}
 use_sample=${PW_SAMPLE:-0}
+compat32_transfer=${PW_COMPAT32_TRANSFER:-0}
 
 [[ $use_sample == 0 || $use_sample == 1 ]] || {
     echo "PW_SAMPLE must be 0 or 1" >&2; exit 2; }
+[[ $compat32_transfer == 0 || $compat32_transfer == 1 ]] || {
+    echo "PW_COMPAT32_TRANSFER must be 0 or 1" >&2; exit 2; }
 [[ $root_module =~ ^[A-Za-z0-9_.-]+$ ]] || {
     echo "PW_ROOT_MODULE must be a bare file name" >&2; exit 2; }
 if [[ $use_sample == 0 && -z $stage_input ]]; then
@@ -82,13 +88,15 @@ common=(-O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections
         -I"$root/include" -I"$root/src" -I"$root/native"
         -I"$root/native/ps5log"
         -DPW_STAGE_DIR='"/app0/win"'
-        -DPW_ROOT_MODULE="\"$root_module\"")
+        -DPW_ROOT_MODULE="\"$root_module\""
+        -DPW_COMPAT32_TRANSFER="$compat32_transfer")
 
 sources=(
-    native/main.c native/pw_file_ps5.c
+    native/main.c native/pw_file_ps5.c native/pw_compat32_ps5.c
     src/pe_image.c src/pe_import.c src/pe_layout.c src/pe_reloc.c
-    src/pw_gate.c src/pw_loader.c src/pw_map.c src/pw_module_name.c
-    src/pw_result.c src/pw_vm.c src/pw_vm_posix.c
+    src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
+    src/pw_module_name.c src/pw_result.c src/pw_segment.c src/pw_vm.c
+    src/pw_vm_posix.c
 )
 objects=()
 for source in "${sources[@]}"; do

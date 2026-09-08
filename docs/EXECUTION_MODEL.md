@@ -59,7 +59,9 @@ set, so it describes FreeBSD, not necessarily what Sony's kernel permits a
 sandboxed title to do. Prospero may have removed LDT support, or may filter
 `sysarch` down to the `fsbase`/`gsbase` operations a normal title needs.
 
-That is a measurement, not a conclusion, and nobody has taken it.
+That is a measurement, not a conclusion. The probe that takes it is built
+and works on an ordinary x86-64 host; only the console answer is missing.
+See `COMPAT32_PHASE0A.md`.
 
 ## The probe that decides the scope
 
@@ -104,7 +106,11 @@ real and should be sized before committing:
 - **Every crossing needs hand-written assembly**, in both directions, with
   a stack switch: game to host on an API call, and host to game on every
   callback — window procedures, DirectSound mixing callbacks, comparison
-  functions handed to `qsort`.
+  functions handed to `qsort`. The stack switch is not optional and not a
+  detail: the host run of gate 0.2a showed that the 64-bit stack pointer
+  does not survive a round trip, because compatibility mode leaves only
+  `ESP` meaningful and `RSP` returns with its upper half zeroed. The
+  transfer stub saves and restores it explicitly for that reason.
 - **Signal and exception delivery while in compatibility mode** is the
   biggest unknown. FreeBSD builds 32-bit signal frames for i386
   *processes*; whether it does so for a 32-bit thread inside a 64-bit

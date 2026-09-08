@@ -10,14 +10,13 @@ accepts. Order inside a phase is the intended iteration order.
       parser, section mapping, base relocation, page protection, recursive
       third-party dependency resolution. Host-complete; the console gate is
       specified in `PE_MAPPING_PHASE0.md` and has not been run.
-- [ ] **0.2a The compatibility-mode probe.** `sysarch(I386_SET_LDT, ...)`
-      with a ring-3 32-bit code descriptor, then a far transfer into it and
-      back. The smallest experiment in the project and the one that decides
-      its architecture: if the kernel installs the descriptor and the round
-      trip returns, 32-bit games run natively through ABI thunking with
-      zero instruction emulation; if it refuses, the choice narrows to JIT
-      recompilation or 64-bit-only scope. Runs before any scope decision.
-      See `EXECUTION_MODEL.md`.
+- [x] **0.2a The compatibility-mode probe — built and host-validated.**
+      `sysarch(I386_SET_LDT, ...)` with a ring-3 32-bit code descriptor,
+      then a far transfer into it and back. The round trip works on an
+      x86-64 host inside `make test`, running the same builder and the same
+      stub the console will, from a sealed non-writable code page. The
+      console measurement is pending; its four possible outcomes and what
+      each one means are in `COMPAT32_PHASE0A.md`.
 - [ ] **0.2b Executable memory and the first call.** The aliased
       write/execute backend for this firmware, with its own smoke test,
       then calling one function in a mapped 64-bit image and returning
@@ -79,7 +78,8 @@ accepts. Order inside a phase is the intended iteration order.
 
 | Risk | Where it bites | Current position |
 | --- | --- | --- |
-| Whether 32-bit images can execute at all | Gate 0.2a, and most of the intended catalogue | Open, and deliberately untested rather than assumed. The mechanism (`sysarch(I386_SET_LDT)`, declared by the pinned SDK) and the probe that settles it are in `EXECUTION_MODEL.md`. The loader refuses to pretend either way |
+| Whether 32-bit images can execute at all | Gate 0.2a, and most of the intended catalogue | Probe built and proven on a host; the console answer is pending. The loader refuses to pretend either way. `COMPAT32_PHASE0A.md` |
+| Signal delivery to a thread in 32-bit mode | The first long-running thunked code | Unmeasured, and the largest unknown even if 0.2a passes: FreeBSD builds 32-bit signal frames for i386 processes, not necessarily for a 32-bit thread in a 64-bit process |
 | Thunk surface if the probe passes | Phase 1 | Every Win32 entry point would need a 32-bit stub and a marshalling thunk, plus a below-4-GiB reservation, far-transfer stubs both ways, and a signal-frame answer. Sized in `EXECUTION_MODEL.md` before committing |
 | No read-write to read-execute transition | Gate 0.2 | The memory contract carries two aliases from the start and the mapper already relocates against the executing one |
 | Coarse protection granularity versus 4 KiB PE sections | Gate 0.1 onwards | Union applied, merged and writable-executable pages counted, validator rejects them unless acknowledged |

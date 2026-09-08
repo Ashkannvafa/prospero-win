@@ -16,7 +16,7 @@ endef
 
 CORE := src/pe_image.c src/pe_layout.c src/pe_reloc.c src/pe_import.c \
 	src/pw_map.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c \
-	src/pw_loader.c src/pw_result.c
+	src/pw_loader.c src/pw_result.c src/pw_segment.c src/pw_compat32.c
 
 $(eval $(call test_rule,test_pe_image,tests/test_pe_image.c src/pe_image.c src/pw_result.c,))
 $(eval $(call test_rule,test_pe_layout,tests/test_pe_layout.c src/pe_image.c src/pe_layout.c src/pw_result.c,))
@@ -26,11 +26,14 @@ $(eval $(call test_rule,test_pw_module_name,tests/test_pw_module_name.c src/pw_m
 $(eval $(call test_rule,test_pw_vm,tests/test_pw_vm.c src/pw_vm.c src/pw_vm_posix.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_map,tests/test_pw_map.c $(CORE),))
 $(eval $(call test_rule,test_pw_loader,tests/test_pw_loader.c $(CORE),))
+$(eval $(call test_rule,test_pw_segment,tests/test_pw_segment.c src/pw_segment.c src/pw_result.c,))
+$(eval $(call test_rule,test_pw_compat32,tests/test_pw_compat32.c src/pw_compat32.c src/pw_segment.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_gate,tests/test_pw_gate.c $(CORE) src/pw_gate.c,))
 $(eval $(call test_rule,inspect_pe,tools/inspect_pe.c $(CORE) src/pw_file_posix.c,))
 
 TESTS := test_pe_image test_pe_layout test_pe_reloc test_pe_import \
-	test_pw_module_name test_pw_vm test_pw_map test_pw_loader test_pw_gate
+	test_pw_module_name test_pw_vm test_pw_map test_pw_loader \
+	test_pw_segment test_pw_compat32 test_pw_gate
 
 # The Python suites drive the built binaries: the evidence validator is
 # tested against a transcript the real gate produced, and the Python PE

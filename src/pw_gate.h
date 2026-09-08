@@ -14,6 +14,7 @@
 #ifndef PROSPERO_WIN_GATE_H
 #define PROSPERO_WIN_GATE_H
 
+#include "pw_compat32.h"
 #include "pw_loader.h"
 
 enum {
@@ -47,5 +48,11 @@ typedef struct PwGateRequest {
 int pw_gate_run(PwGateReport *report, PwLoader *loader,
                 const PwFileProvider *provider, const PwVmBackend *backend,
                 const PwGateRequest *request);
+
+/*
+ * Appends the gate 0.2a record. Emitted whatever the outcome: a refusal is
+ * the measurement, so it has to be as attributable as a success.
+ */
+int pw_gate_compat32(PwGateReport *report, const PwCompat32Report *probe);
 
 #endif

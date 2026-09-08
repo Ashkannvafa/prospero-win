@@ -276,6 +276,39 @@ static void record_exit(PwGateReport *report, uint32_t module_total,
     commit_line(report, &line);
 }
 
+int pw_gate_compat32(PwGateReport *report, const PwCompat32Report *probe)
+{
+    Line line;
+
+    if (!report || !probe)
+        return PW_ERR_PRECONDITION;
+    if (!next_line(report, &line, "PW_COMPAT32"))
+        return PW_ERR_LIMIT;
+    field_u64(&line, "schema", 1u);
+    field_text(&line, "install", pw_result_name(probe->install_result));
+    field_u64(&line, "install_errno", (uint64_t)(unsigned)probe->install_errno);
+    field_u64(&line, "ldt_index", probe->ldt_index);
+    field_hex(&line, "code_sel", probe->code_selector);
+    field_hex(&line, "data_sel", probe->data_selector);
+    field_hex(&line, "cs64", probe->cs64);
+    field_hex(&line, "ds64", probe->ds64);
+    field_text(&line, "reserve", pw_result_name(probe->reserve_result));
+    field_hex(&line, "code_base", probe->code_base);
+    field_hex(&line, "data_base", probe->data_base);
+    field_text(&line, "build", pw_result_name(probe->build_result));
+    field_text(&line, "seal", pw_result_name(probe->seal_result));
+    field_u64(&line, "seal_errno", (uint64_t)(unsigned)probe->seal_errno);
+    field_text(&line, "transfer", pw_result_name(probe->transfer_result));
+    field_u64(&line, "attempted", probe->transfer_attempted);
+    field_u64(&line, "returned", probe->transfer_returned);
+    field_u64(&line, "result", probe->result_value);
+    field_hex(&line, "cs_seen", probe->cs_seen);
+    field_u64(&line, "expected", PW_COMPAT32_EXPECTED_RESULT);
+    field_u64(&line, "proven", probe->compat32_proven);
+    commit_line(report, &line);
+    return PW_OK;
+}
+
 int pw_gate_run(PwGateReport *report, PwLoader *loader,
                 const PwFileProvider *provider, const PwVmBackend *backend,
                 const PwGateRequest *request)

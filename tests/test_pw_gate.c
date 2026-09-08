@@ -262,6 +262,59 @@ static void test_preconditions(void)
            PW_ERR_PRECONDITION);
 }
 
+static void test_compat32_record(void)
+{
+    PwCompat32Report probe;
+    const char *line;
+
+    memset(&report, 0, sizeof(report));
+    memset(&probe, 0, sizeof(probe));
+
+    /* A refusal is a measurement and must still be reported in full. */
+    probe.install_result = PW_ERR_UNSUPPORTED;
+    probe.install_errno = 78;
+    probe.cs64 = 0x0033u;
+    assert(pw_gate_compat32(&report, &probe) == PW_OK);
+    line = find_line("PW_COMPAT32", 0u);
+    assert(line != NULL);
+    assert(strstr(line, "install=unsupported") != NULL);
+    assert(strstr(line, "install_errno=78") != NULL);
+    assert(strstr(line, "attempted=0") != NULL);
+    assert(strstr(line, "proven=0") != NULL);
+    assert(strstr(line, "expected=3") != NULL);
+
+    /* A proven round trip carries the selector it actually ran under. */
+    memset(&report, 0, sizeof(report));
+    probe.install_result = PW_OK;
+    probe.install_errno = 0;
+    probe.reserve_result = PW_OK;
+    probe.build_result = PW_OK;
+    probe.seal_result = PW_OK;
+    probe.transfer_result = PW_OK;
+    probe.ldt_index = 0u;
+    probe.code_selector = 0x0007u;
+    probe.data_selector = 0x000fu;
+    probe.code_base = 0x20000000u;
+    probe.data_base = 0x20001000u;
+    probe.transfer_attempted = 1u;
+    probe.transfer_returned = 1u;
+    probe.result_value = PW_COMPAT32_EXPECTED_RESULT;
+    probe.cs_seen = 0x0007u;
+    probe.compat32_proven = 1u;
+    assert(pw_gate_compat32(&report, &probe) == PW_OK);
+    line = find_line("PW_COMPAT32", 0u);
+    assert(strstr(line, "install=ok") != NULL);
+    assert(strstr(line, "code_sel=0x7") != NULL);
+    assert(strstr(line, "cs_seen=0x7") != NULL);
+    assert(strstr(line, "result=3") != NULL);
+    assert(strstr(line, "proven=1") != NULL);
+    assert(strstr(line, "code_base=0x20000000") != NULL);
+    assert(strlen(line) < PW_GATE_LINE_MAX);
+
+    assert(pw_gate_compat32(NULL, &probe) == PW_ERR_PRECONDITION);
+    assert(pw_gate_compat32(&report, NULL) == PW_ERR_PRECONDITION);
+}
+
 /* Emits the report so tests/test_validate_pe_map_evidence.py can consume it. */
 static void emit_transcript(void)
 {
@@ -293,6 +346,7 @@ int main(int argc, char **argv)
     }
     test_successful_gate_report();
     test_failed_gate_is_still_attributable();
+    test_compat32_record();
     test_preconditions();
     return 0;
 }
