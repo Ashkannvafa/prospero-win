@@ -35,7 +35,13 @@ static int host_clock(void *opaque,PwClockDomain domain,uint64_t *ns)
 
 int main(int argc,char **argv)
 {
-    if(argc!=2) {fprintf(stderr,"usage: trace_x86_entry private.exe\n");return 1;}
+    if(argc!=2 && argc!=3) {fprintf(stderr,"usage: trace_x86_entry private.exe [max-events:1..65536]\n");return 1;}
+    unsigned max_events=256;
+    if(argc==3) {
+        char *end;unsigned long parsed=strtoul(argv[2],&end,10);
+        if(!*argv[2] || *end || parsed<1 || parsed>65536)return 1;
+        max_events=(unsigned)parsed;
+    }
     int result=1;
     FILE *file=fopen(argv[1],"rb");
     if(!file)return 1;
@@ -103,7 +109,7 @@ int main(int argc,char **argv)
     *(uint32_t *)thread.write_base=0xffffffffu;
     unsigned steps=0,events=0;
     const char *stop="budget";
-    for(;events<256;events++) {
+    for(;events<max_events;events++) {
         int dispatched=pw_win32_dispatch(&runtime,&state);
         if(dispatched==PW_OK) {
             if(runtime.callback_pending)

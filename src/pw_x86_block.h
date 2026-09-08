@@ -32,6 +32,7 @@ typedef struct PwX86Block {
  * mov register/immediate, register/register or registered memory (ModRM/SIB),
  * MOV immediate/register or memory, register/memory ADD/SUB/XOR with arithmetic flags,
  * NOT/NEG register/memory, LEAVE,
+ * byte MOV/CMP/TEST (including high registers), register INC/DEC,
  * immediate ALU 16/32-bit (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP),
  * CMP register/memory 32-bit, TEST 32-bit register/memory/immediate, MOVZX word,
  * short/near Jcc and register-byte SETcc using guest arithmetic flags,

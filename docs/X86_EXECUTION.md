@@ -9,6 +9,8 @@ Supported encodings: push imm8/imm32/r32 and r32/memory (FF /6), pop r32, mov r3
 mov r32/r32 and r32/memory (89/8B ModRM/SIB), LEA,
 MOV immediate/r32 or memory (C7 /0), register/memory ADD (01/03), SUB (29/2B), XOR (31/33),
 NOT/NEG r32/memory (F7 /2,/3), LEAVE (C9),
+byte MOV (88/8A, C6 /0, B0-B7), byte CMP (38/3A, 80 /7, 3C),
+byte TEST (84), register INC/DEC (40-4F),
 Immediate ADD/OR/ADC/SBB/AND/SUB/XOR/CMP 16/32-bit (81/83 and accumulator
 forms, optional 66 prefix), CMP r32/memory
 (39/3B), TEST 32-bit register/memory or immediate (85, A9, F7 /0),
@@ -21,7 +23,7 @@ lives in the state structure, independently from native RSP. No guest stack
 opcode is copied as a 64-bit push/pop/call/ret.
 
 The caller supplies a live RW low-address guest stack and keeps it mapped
-for the full execution lifetime. Generated bounds checks verify each 2- or 4-byte
+for the full execution lifetime. Generated bounds checks verify each 1-, 2- or 4-byte
 access and preserve the faulting guest PC on failure. Prior completed guest
 instructions remain committed. The translator emits into writable scratch;
 only successful translations may be published RX. Unsupported or truncated
@@ -96,14 +98,15 @@ and sections with their logical access permissions. A typed catalog binds
 function tokens and CRT data, with unsupported APIs stopped by identity.
 The current tracer requires mapping at the preferred base; it rejects an
 alternate base instead of executing with inconsistent guest addresses.
-It stops at 256 dispatch/instruction events, unsupported decoding/API behavior
+It stops at 256 dispatch/instruction events by default, unsupported decoding/API behavior
 or memory-bound failure. The printed steps count excludes API dispatch events.
 
 On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-129 instructions and thirteen completed API calls (twelve distinct APIs) after
+282 instructions and thirteen completed API calls (twelve distinct APIs),
+using the optional 4096-event limit (`trace_x86_entry private.exe 4096`), after
 adding memory arithmetic and initializer epilogue support, clock services, logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
@@ -124,11 +127,12 @@ kind=host-api dll=kernel32.dll name=GetCurrentThreadId result=0x00000002
 kind=host-api dll=kernel32.dll name=GetTickCount result=0x2891c09b
 kind=host-api dll=kernel32.dll name=QueryPerformanceCounter result=0x00000001
 kind=host-api dll=msvcrt.dll name=_initterm result=0x00000000
-kind=host-entry-trace steps=129 stop=unsupported eip=0x010210b0 esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000206
+kind=host-api-stop dll=kernel32.dll name=GetStartupInfoA status=-5
+kind=host-entry-trace steps=282 stop=unimplemented-api eip=0xe00002b0 esp=0x030fff64 ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
 ```
 
-The next stop is an unsupported instruction after the second `_initterm`
-returns. Its original-game callback has completed through the translator and
+The next stop is GetStartupInfoA, after the CRT walks the command line and
+the second `_initterm` returns. Its original-game callback has completed through the translator and
 guest ABI bridge. Clock values (and derived flags) vary across live runs;
 the transcript above is one observed run, not a fixed-value invariant.
 Synthetic tests separately exercise nested callbacks. `_controlfp` now
@@ -144,9 +148,13 @@ Undefined AF is retained deterministically, as with the other logical operations
 Memory-arithmetic tests cover operand order, aliasing of address/destination
 registers, results/flags and bounds. NOT/NEG tests cover register/memory forms
 and signed overflow; LEAVE/RET tests cover full frame teardown and invalid EBP.
-The 129-instruction run, including the original callback return, reproduces
-under ASan/UBSan. The translator compiles with the PS5 toolchain; live guest
-execution remains host-only. Next unsupported encoding: byte CMP (80 /7).
+Byte tests cover all low/high register MOV combinations, partial-register
+preservation, comparison/test flags, last-byte memory access and crossing
+faults. INC/DEC preserve guest CF while updating the other arithmetic flags.
+The tracer accepts an optional maximum of 1..65536 events, validated before
+opening the executable. Default-budget and explicit-budget regressions remain.
+The 282-instruction trace with 4096 events reproduces under ASan/UBSan; the
+translator compiles for PS5. Actual guest execution remains host-only.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses

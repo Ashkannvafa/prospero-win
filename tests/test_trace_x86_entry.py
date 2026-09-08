@@ -30,6 +30,14 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
                                 capture_output=True, text=True, timeout=5)
         assert result.returncode == 2, result.stderr
         assert f"steps={steps} stop={reason} " in result.stdout, result.stdout
+        if reason == "budget":
+            limited = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), "8"],
+                                     capture_output=True, text=True, timeout=5)
+            assert limited.returncode == 2 and "steps=8 stop=budget " in limited.stdout
+            for invalid in ("0", "65537", "no", "12bad", "-1", ""):
+                rejected = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), invalid],
+                                          capture_output=True, text=True, timeout=5)
+                assert rejected.returncode == 1 and not rejected.stdout
     # Full synthetic PE -> IAT binding -> translated call -> Win32 return.
     for api, reason in [("GetModuleHandleA", "unsupported"), ("GetLastError", "unimplemented-api")]:
         code=bytearray.fromhex("6a00 ff1500000000 cc")

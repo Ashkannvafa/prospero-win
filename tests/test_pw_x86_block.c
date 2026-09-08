@@ -105,6 +105,48 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void byte_tests(void)
+{
+    for(unsigned src=0;src<8;src++)for(unsigned dst=0;dst<8;dst++)for(unsigned direction=0;direction<2;direction++) {
+        for(unsigned i=0;i<4;i++)state.gpr[i]=0x778899aau+i*0x1101;
+        uint32_t before[8];memcpy(before,state.gpr,sizeof(before));state.eflags=0xad7;
+        unsigned shift=(dst>>2)*8,source_shift=(src>>2)*8;
+        uint32_t value=(before[src&3]>>source_shift)&255;
+        const uint8_t mov[]={direction?0x8a:0x88,(uint8_t)(0xc0|((direction?dst:src)<<3)|(direction?src:dst))};
+        assert(run(mov,2,0xb000)==0 && state.eflags==0xad7);
+        before[dst&3]=(before[dst&3]&~(255u<<shift))|(value<<shift);
+        assert(!memcmp(before,state.gpr,sizeof(before)));
+    }
+    for(unsigned reg=0;reg<8;reg++) {
+        unsigned shift=(reg>>2)*8;state.gpr[reg&3]=0x11223344;
+        const uint8_t imm[]={(uint8_t)(0xb0+reg),0xfe};
+        assert(run(imm,2,0xb010)==0 && state.gpr[reg&3]==((0x11223344u&~(255u<<shift))|(254u<<shift)));
+        const uint8_t cmp[]={0x80,(uint8_t)(0xf8|reg),0xfe};state.eflags=0x202;
+        assert(run(cmp,3,0xb020)==0 && state.eflags==0x246);
+    }
+    state.gpr[1]=state.stack_high-1;state.gpr[0]=0x11228044;state.eflags=0xad7;
+    const uint8_t store[]={0x88,0x21},load[]={0x8a,0x01}; /* AH -> [ECX], [ECX] -> AL */
+    assert(run(store,2,0xb030)==0 && *((uint8_t *)stack.write_base+stack.bytes-1)==0x80);
+    assert(run(load,2,0xb040)==0 && state.gpr[0]==0x11228080 && state.eflags==0xad7);
+    const uint8_t cmp_mem[]={0x80,0x39,0x7f};
+    assert(run(cmp_mem,3,0xb050)==0 && state.eflags==0xa12); /* -128 - 127 overflows */
+    const uint8_t immediate_store[]={0xc6,0x01,0x7f};
+    assert(run(immediate_store,3,0xb060)==0 && *((uint8_t *)stack.write_base+stack.bytes-1)==0x7f);
+    const uint8_t reverse[]={0x3a,0x01};
+    assert(run(reverse,2,0xb070)==0 && state.eflags==0xa12);
+    const uint8_t direct[]={0x38,0x01};
+    assert(run(direct,2,0xb080)==0 && state.eflags==0xa87);
+    const uint8_t test[]={0x84,0x01};
+    assert(run(test,2,0xb090)==0 && state.eflags==0x246);
+    state.gpr[1]=state.stack_high;uint32_t old=state.gpr[0];
+    assert(run(load,2,0xb0a0)==-1 && state.gpr[0]==old && state.eflags==0x246);
+    for(unsigned dec=0;dec<2;dec++)for(unsigned carry=0;carry<2;carry++) {
+        state.gpr[6]=dec?0x80000000:0x7fffffff;state.eflags=0x202|carry;
+        const uint8_t op[]={(uint8_t)(dec?0x4e:0x46)};
+        assert(run(op,1,0xb0b0)==0 && state.gpr[6]==(dec?0x7fffffff:0x80000000));
+        assert(state.eflags==((dec?0xa16u:0xa96u)|carry));
+    }
+}
 static void unary_leave_tests(void)
 {
     for(unsigned memory=0;memory<2;memory++)for(unsigned negate=0;negate<2;negate++) {
@@ -441,6 +483,7 @@ int main(int argc, char **argv)
     logical_test_tests();
     arithmetic_memory_tests();
     unary_leave_tests();
+    byte_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};
