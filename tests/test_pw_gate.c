@@ -262,6 +262,61 @@ static void test_preconditions(void)
            PW_ERR_PRECONDITION);
 }
 
+static char streamed[64][PW_GATE_LINE_MAX];
+static uint32_t streamed_count;
+
+static void capture(const char *line, void *context)
+{
+    assert(context == (void *)0x1234);
+    if (streamed_count < 64u) {
+        size_t length = 0;
+
+        while (line[length] != '\0' && length + 1u < PW_GATE_LINE_MAX)
+            ++length;
+        memcpy(streamed[streamed_count], line, length);
+        streamed[streamed_count][length] = '\0';
+    }
+    ++streamed_count;
+}
+
+/*
+ * Records must reach the sink as they are produced. The first hardware run
+ * crashed mid-gate and lost every record because they were only emitted
+ * after the run returned.
+ */
+static void test_records_stream_as_they_are_produced(void)
+{
+    static const char *const root_imports[] = {"binkw32.dll"};
+    PwVmBackend backend;
+    PwGateRequest request;
+
+    file_count = 0u;
+    add(NULL, 0, root_imports, 1u);
+    add("binkw32.dll", 1, NULL, 0u);
+    streamed_count = 0u;
+    memset(streamed, 0, sizeof(streamed));
+
+    assert(pw_vm_posix_backend(&backend) == PW_OK);
+    memset(&request, 0, sizeof(request));
+    request.root_bytes = images[0];
+    request.root_size = sizes[0];
+    request.root_name = "game.exe";
+    request.sink = capture;
+    request.sink_context = (void *)0x1234;
+
+    assert(pw_gate_run(&report, &loader, &provider, &backend, &request) ==
+           PW_OK);
+    /* Every buffered record was also streamed, in the same order. */
+    assert(streamed_count == report.line_count);
+    for (uint32_t index = 0; index < report.line_count; ++index)
+        assert(strcmp(streamed[index], report.lines[index]) == 0);
+    /* Including the first and the last, so nothing is lost at either end. */
+    assert(strncmp(streamed[0], "PW_BOOT ", 8) == 0);
+    assert(strncmp(streamed[streamed_count - 1u], "PW_EXIT ", 8) == 0);
+    /* The sink survives the report reset pw_gate_run performs. */
+    assert(report.sink == capture);
+}
+
 static void test_compat32_record(void)
 {
     PwCompat32Report probe;
@@ -347,6 +402,7 @@ int main(int argc, char **argv)
     test_successful_gate_report();
     test_failed_gate_is_still_attributable();
     test_compat32_record();
+    test_records_stream_as_they_are_produced();
     test_preconditions();
     return 0;
 }

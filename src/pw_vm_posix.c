@@ -36,6 +36,7 @@ static int posix_reserve(void *context, size_t bytes, size_t alignment,
 {
     const size_t page = page_bytes();
     size_t effective;
+    size_t reserved;
     size_t span;
     uint8_t *raw;
     uintptr_t aligned;
@@ -48,24 +49,38 @@ static int posix_reserve(void *context, size_t bytes, size_t alignment,
         return PW_ERR_PRECONDITION;
     /* A PE section alignment below the page size still needs page granularity. */
     effective = alignment < page ? page : alignment;
-    if (bytes > (size_t)-1 - effective)
+    if (bytes > (size_t)-1 - (page - 1u))
         return PW_ERR_OVERFLOW;
-    span = bytes + effective;
+    /*
+     * Round the reservation up to whole pages before trimming. A PE image
+     * is section-aligned, commonly to 4 KiB, while the platform page can be
+     * larger — 16 KiB on this console — and then the tail address below is
+     * not page aligned. munmap of a misaligned address either fails, which
+     * leaves the padding mapped, or is rounded into the region being kept.
+     * A 4 KiB-page host never sees this, because there an image size is
+     * already a whole number of pages.
+     */
+    reserved = (bytes + page - 1u) & ~(page - 1u);
+    if (reserved > (size_t)-1 - effective)
+        return PW_ERR_OVERFLOW;
+    span = reserved + effective;
 
     raw = mmap(NULL, span, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (raw == MAP_FAILED)
         return PW_ERR_VM;
     aligned = ((uintptr_t)raw + effective - 1u) & ~(uintptr_t)(effective - 1u);
     head = (size_t)(aligned - (uintptr_t)raw);
-    tail = span - head - bytes;
+    tail = span - head - reserved;
+    /* Both ends fall on page boundaries now: `aligned` is `effective`
+     * aligned, and `effective` is itself a multiple of the page size. */
     if (head != 0u)
         (void)munmap(raw, head);
     if (tail != 0u)
-        (void)munmap((uint8_t *)aligned + bytes, tail);
+        (void)munmap((uint8_t *)aligned + reserved, tail);
 
     out->write_base = (void *)aligned;
     out->exec_base = (void *)aligned;
-    out->bytes = bytes;
+    out->bytes = reserved;
     out->alignment = effective;
     out->handle = NULL;
     return PW_OK;

@@ -59,9 +59,16 @@ set, so it describes FreeBSD, not necessarily what Sony's kernel permits a
 sandboxed title to do. Prospero may have removed LDT support, or may filter
 `sysarch` down to the `fsbase`/`gsbase` operations a normal title needs.
 
-That is a measurement, not a conclusion. The probe that takes it is built
-and works on an ordinary x86-64 host; only the console answer is missing.
-See `COMPAT32_PHASE0A.md`.
+**Measured on 2026-09-08: refused.** `sysarch(I386_SET_LDT, ...)` returns
+`EINVAL` from a title on FW 12.02, so no local descriptor can be installed
+and compatibility mode cannot be entered. The same probe completes a full
+round trip on an ordinary x86-64 Linux host, which is what makes the console
+result attributable to the platform rather than to the stub. See
+`COMPAT32_PHASE0A.md`.
+
+ABI thunking is therefore **not** available here. The remainder of this
+section stays because it documents what was tried and why the answer is
+credible, not because the route is still open.
 
 ## The probe that decides the scope
 
@@ -138,12 +145,14 @@ foundations, not a research gamble.
 
 - 64-bit (PE32+/AMD64) programs: the premise holds literally. No
   interpretation, no translation, no thunking. The bytes run on Zen 2.
-- 32-bit (PE32/i386) programs: parsed, laid out, relocated and mapped by
-  the current gate, and **not yet executable**, pending the `sysarch`
-  probe. If that probe passes they become natively executable through ABI
-  thunking with zero instruction emulation. If it fails, reaching them
-  requires JIT recompilation, which is not emulation either but does alter
-  the instruction path, and that is a scope decision for the owner.
+- 32-bit (PE32/i386) programs: parsed, laid out and relocated by the
+  current gate, and **not executable on this firmware**. Compatibility mode
+  is refused, so ABI thunking is off the table; reaching them requires JIT
+  recompilation, which is not emulation either but does alter the
+  instruction path. That is a scope decision for the owner, and it is now
+  informed by a measurement rather than an assumption. A further obstacle is
+  already recorded: anonymous reservations land near `0x200080000`, so a
+  PE32 image could not be rebased into the low 4 GiB even if it could run.
 
 The loader reflects exactly this and claims nothing more.
 `pe_image_machine_is_native()` is true only for AMD64;

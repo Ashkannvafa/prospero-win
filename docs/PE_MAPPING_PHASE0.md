@@ -4,9 +4,22 @@
 executable: parse it without an operating system, place its sections in owned
 memory, and resolve its third-party dependency chain.
 
-**Status: host-complete, hardware pending.** Every contract in `make test`
-passes. No console run has happened, so nothing below is claimed as proven on
-FW 12.02. When the gate runs, this document records the accepted run.
+**Status: passed on FW 12.02 on 2026-09-08.** Run
+`20260908T111650513Z_PPSA99995_prospero-win_0xf65743b2ac43`: the console
+parsed, mapped, rebased, relocated, verified and released a Windows
+executable and the third-party DLL it imports, resolved the whole dependency
+chain, and treated the Win32 modules as host bindings without reading them
+from disk. 25 structured records, gap-free `BYE`, `PW_EXIT result=0`.
+Transcript SHA-256
+`a8e48cacd667b0c726ef6e484e4a18e21a854dccccff8313f3fd0c9b04ec1ceb`;
+ELF/fSELF SHA-256
+`cea37ddd8404a958b90d2971d070bed13ea116132adb5aff01cc57b61b6ac5de` /
+`207e89e428e1e4725932f6c3fd7b75734de7b68bb621b7c58eb772c13d8a2efb`.
+
+Accepted by `tools/validate_pe_map_evidence.py --root sample.exe
+--expect-modules 4 --expect-local 1 --expect-host 2 --allow-wx
+--expect-compat32 refused`. Without `--allow-wx` it is refused, which is the
+intended behaviour: see the page-granularity measurement below.
 
 ## What is built
 
@@ -130,13 +143,50 @@ delay-load descriptor is read, no exception directory is registered and
 nothing is executed. Those belong to later gates, and gate 1 is the thing
 they will all stand on.
 
-## Open questions for the first run
+## What the run measured
 
-1. What is the console's actual protection granularity for these mappings?
-   `PW_BOOT page_bytes` answers it, and `PW_PROTECT merged`/`wx` say what it
-   costs a 4 KiB-aligned PE.
-2. Does `read`/`lseek` on a `sceKernelOpen` descriptor behave for a
-   multi-megabyte image as it does for the small files already measured?
-   `PW_FS_SMOKE` plus `PW_FILES bytes` answer it.
-3. How large a reservation is comfortable? `PW_GRAPH reserved_bytes` against
-   the laboratory's measured direct-memory and anonymous-heap budgets.
+| Fact | Value | Consequence |
+| --- | --- | --- |
+| Protection granularity | **16384** (`PW_BOOT page_bytes`) | Four times the 4 KiB a PE is aligned to, so section protections merge |
+| Protection merging | `sample.exe`: 2 pages, `merged=2`, `wx=1`. `binkw32.dll`: 2 pages, `merged=1`, `wx=1` | A 28 KiB image occupies two protectable pages and one of them ends up writable **and** executable |
+| Filesystem path | `PW_FS_SMOKE status=ok`, every call 0, `magic=0x4d5a` | `sceKernelStat`/`sceKernelOpen` with libc `read`/`lseek` and `sceKernelClose` work together, and the console read a DOS header |
+| `sysconf(_SC_PAGESIZE)` | Works, returns 16384 | An import previously flagged as unmeasured is now measured |
+| Rebasing | `sample.exe` `0x140000000` to `0x200084000`; `binkw32.dll` `0x180000000` to `0x200090000`; both `reloc_applied=1` | Neither image got its preferred base, and both were relocated |
+| Reservation | `reserved_bytes=65536` for two images, landing near `0x200080000` | Anonymous mappings are placed high; a PE32 image could not be rebased here at all |
+| Ownership | `mapped=2 released=2`, `opens=2 closes=2 failures=0` | Nothing leaked |
+| User selectors | `cs64=0x43 ds64=0x3b` | Recorded for the thunk work gate 0.2a would have needed |
+
+The writable-executable page is the finding that matters, and it is not a
+defect in the mapper: it is what a 4 KiB-aligned image costs at this
+granularity. The ways out are to accept it, to lay images out on 16 KiB
+boundaries — which the RVAs baked into the code forbid — or to relocate
+sections individually. The validator refuses any run containing one unless
+the operator passes `--allow-wx`, so it cannot pass unnoticed.
+
+## The defect this run found
+
+Two attempts crashed before the gate emitted anything:
+
+```text
+PW_SIGNAL sig=11 code=1 addr=200088000 pc=20001c210 main=400180
+```
+
+`posix_reserve()` over-allocated, aligned, then trimmed the padding with
+`munmap`. A PE image is section-aligned — here to 4 KiB — so the reservation
+was `0x7000` bytes and the tail address was `base + 0x7000`, not a multiple
+of a 16 KiB page. FreeBSD's `munmap` truncates a misaligned address
+**downward** and extends the length to match, so instead of releasing the
+padding it released the last three pages of the live region. The reservation
+now rounds up to whole pages before trimming, so both ends always land on
+page boundaries.
+
+A 4 KiB-page host never sees this: there an image size is already a whole
+number of pages, the trim is well formed, and every test passed. The
+regression test now reserves a deliberately non-page-multiple size and
+writes the first, middle and last byte of the region it was handed.
+
+Two instrumentation gaps cost the first two runs and are both closed:
+records are streamed to the log as they are produced rather than after the
+gate returns, and a `sigaction` reporter turns a fault into `PW_SIGNAL` with
+the program counter relative to `main` instead of a silently truncated
+transcript.

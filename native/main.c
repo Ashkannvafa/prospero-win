@@ -101,6 +101,14 @@ static void install_signal_reporter(void)
         (void)sigaction(signals[index], &act, NULL);
 }
 
+/* Streams one gate record as soon as it exists, so a fault cannot take the
+ * evidence with it. */
+static void emit_line(const char *line, void *context)
+{
+    (void)context;
+    PS5LOG_LOG("%s", line);
+}
+
 static uint64_t now_ns(void)
 {
     struct timespec value;
@@ -206,10 +214,9 @@ int main(int argc, char **argv)
 
         probe_report->line_count = 0u;
         probe_report->truncated = 0u;
-        if (pw_gate_compat32(probe_report, &compat32) == PW_OK) {
-            for (uint32_t index = 0; index < probe_report->line_count; ++index)
-                PS5LOG_LOG("%s", probe_report->lines[index]);
-        }
+        probe_report->sink = emit_line;
+        probe_report->sink_context = NULL;
+        (void)pw_gate_compat32(probe_report, &compat32);
         PS5LOG_LOG("PW_COMPAT32_PLATFORM status=%s bases_tried=%u "
                    "chosen_base=0x%x last_errno=%d transfer_build=%d",
                    pw_result_name(compat_status),
@@ -254,12 +261,27 @@ int main(int argc, char **argv)
     request.root_size = root.size;
     request.root_name = root_name;
     request.provider_path = stage_dir;
+    request.sink = emit_line;
+    request.sink_context = NULL;
 
-    PS5LOG_LOG("PW_STEP name=gate root_bytes=%llu",
-               (unsigned long long)root.size);
+    {
+        /*
+         * A stack anchor. The first crash faulted with the fault address
+         * equal to rsp and SEGV_MAPERR, which is the stack pointer standing
+         * on an unmapped page; comparing this against the rsp in PW_SIGNAL
+         * says how far the stack actually fell before it ran out.
+         */
+        const int anchor = 0;
+
+        PS5LOG_LOG("PW_STEP name=gate root_bytes=%llu stack_anchor=%p "
+                   "loader=%p report=%p",
+                   (unsigned long long)root.size, (const void *)&anchor,
+                   (void *)loader, (void *)report);
+    }
+    /* Records reach the log through the sink as they are produced, so
+     * nothing is emitted here: a crash mid-gate must not cost the evidence
+     * that was already gathered. */
     status = pw_gate_run(report, loader, &provider, &backend, &request);
-    for (uint32_t index = 0; index < report->line_count; ++index)
-        PS5LOG_LOG("%s", report->lines[index]);
 
     provider.close(provider.context, &root);
     PS5LOG_LOG("PW_FILES opens=%u closes=%u failures=%u bytes=%llu",

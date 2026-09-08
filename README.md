@@ -14,18 +14,19 @@ making the console read and understand a raw Windows executable.
 
 | Phase | State | What it establishes |
 | --- | --- | --- |
-| 0.1 — Image loader | **Host-complete, hardware pending** | Minimal PE reader, section mapping, base relocation, page protection and recursive third-party DLL resolution |
-| 0.2a — Compatibility mode | **Host-validated, hardware pending** | Whether a title may enter 32-bit mode at all: LDT descriptor, far transfer, and the round trip proven on a host from a sealed code page |
-| 0.2b — Executable memory | Next | Read-execute publication through the console's double-mapping path, and the first call into mapped code |
+| 0.1 — Image loader | **Passed on FW 12.02** | Minimal PE reader, section mapping, base relocation, page protection and recursive third-party DLL resolution, proven on hardware |
+| 0.2a — Compatibility mode | **Answered: refused** | A title cannot install an LDT descriptor (`EINVAL`), so 32-bit code cannot run natively here |
+| 0.2b — Executable memory | Next | Read-execute publication through the console's double-mapping path, and the first call into mapped 64-bit code |
 | 1 — Win32 core | Later | `kernel32`/`msvcrt` process, memory, file, time and threading surface; import binding; TLS; `DllMain` ordering |
 | 2 — Presentation and input | Later | DirectDraw/GDI blitting to VideoOut, DirectInput/DirectSound onto ScePad and SceAudioOut |
 | 3 — First program end to end | Later | One classic title running from its own files, with a soak and a reproducible release |
 
-Nothing here is claimed as proven on hardware yet. Every host contract in
-`make test` is green; the console gate defined in
-[`docs/PE_MAPPING_PHASE0.md`](docs/PE_MAPPING_PHASE0.md) has not been run.
-That distinction is the point of the laboratory's evidence rules and this
-table will only change against a `ps5log/1` manifest.
+Phase 0.1 is proven on one PS5 on firmware 12.02, against an accepted
+`ps5log/1` manifest; nothing beyond it is claimed. Gate 0.2a is answered in
+the negative, which settles the project's scope question rather than
+advancing it. Details, evidence and the two defects the hardware runs
+exposed are in [`docs/PE_MAPPING_PHASE0.md`](docs/PE_MAPPING_PHASE0.md) and
+[`docs/COMPAT32_PHASE0A.md`](docs/COMPAT32_PHASE0A.md).
 
 ## What gate 1 does
 
@@ -80,9 +81,9 @@ make native-release PW_STAGE_INPUT=/private/path/game \
   32-bit code natively in compatibility mode, so the target architecture is
   WoW64-style ABI thunking — the game's own opcodes on the silicon, with
   translation only at API boundaries and no interpretation anywhere.
-  Whether a title may enter that mode hinges on one syscall this firmware
-  has not been asked yet; gate 0.2a is the probe that settles it, and it
-  already works on an ordinary x86-64 host. Until then an `i386` image parses,
+  That route is now measured and **closed on this firmware**: the syscall
+  that installs the required descriptor returns `EINVAL` to a title, though
+  the same probe round-trips on an ordinary x86-64 host. Until then an `i386` image parses,
   maps and relocates here but is not executed, and the loader says exactly
   that rather than pretending either way.
   [`docs/EXECUTION_MODEL.md`](docs/EXECUTION_MODEL.md) has the mechanism,

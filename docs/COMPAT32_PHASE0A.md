@@ -6,9 +6,29 @@ classic 32-bit programs run through WoW64-style ABI thunking — their own
 opcodes on the silicon, zero instruction emulation — or whether reaching
 them needs JIT recompilation instead.
 
-**Status: host-validated, hardware pending.** The full round trip works on
-an x86-64 Linux host and runs inside `make test`. Nothing has been measured
-on FW 12.02.
+**Status: answered on FW 12.02 on 2026-09-08. Compatibility mode is
+refused.**
+
+```text
+PW_COMPAT32 install=unsupported install_errno=22 cs64=0x43 ds64=0x3b
+            attempted=0 returned=0 proven=0
+```
+
+`sysarch(I386_SET_LDT, ...)` returns `EINVAL`. A title cannot install a
+local descriptor on this firmware, so it cannot enter 32-bit compatibility
+mode, and WoW64-style ABI thunking is **not available**. Reaching the 32-bit
+catalogue now means JIT recompilation or restricting scope to 64-bit
+programs; that is an owner decision, and it is no longer a guess.
+
+Everything downstream reported `precondition` and claimed nothing: the
+descriptors were never installed, so the pages were never reserved and the
+transfer was never attempted. The two-stage split did exactly what it was
+built for, and the host-validated stub was never reached on the console.
+
+The round trip still works on an x86-64 Linux host inside `make test`, which
+is what makes the console result attributable to the platform rather than to
+a defect in the stub. Observed for the record: the console's user selectors
+are `cs=0x43` and `ds=0x3b`.
 
 ## Why this is a measurement and not a lookup
 
@@ -127,7 +147,7 @@ either answer.
 
 | Observation | Meaning | Next step |
 | --- | --- | --- |
-| `install` failed | The kernel refuses LDT descriptors to a title. ABI thunking is out on this firmware | Scope narrows to 64-bit-only or JIT recompilation. Record the `errno` and stop guessing |
+| `install` failed | **This is what happened.** `EINVAL`. The kernel refuses LDT descriptors to a title, so ABI thunking is out on this firmware | Scope narrows to 64-bit-only or JIT recompilation |
 | `install=ok`, `seal` failed | Descriptors work; a read-write to read-execute transition does not | Gate 0.2b first: the `jitshm` double mapping, then retry |
 | `install=ok`, transfer attempted, no return | The descriptor was accepted but the transfer or its fault path is broken | Ghidra on the kernel's LDT and trap paths — the inspection layer the playbook reserves for an ambiguous platform result |
 | `proven=1` | 32-bit code executes natively on the console | Phase 1 gains a second dimension: a 32-bit stub and a marshalling thunk per Win32 entry point. Size it against `EXECUTION_MODEL.md` |

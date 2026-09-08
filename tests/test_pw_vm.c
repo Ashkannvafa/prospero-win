@@ -82,6 +82,40 @@ static void test_commit_and_protect(void)
     assert(backend.release(backend.context, &region) == PW_OK);
 }
 
+/*
+ * A reservation whose size is not a whole number of platform pages must
+ * still hand back a page-granular region. On a 4 KiB-page host a PE image
+ * size is already page aligned, so this only bites on a console with larger
+ * pages: the trim then targets a misaligned address and either fails,
+ * leaving the padding mapped, or is rounded into the live region.
+ */
+static void test_reserve_rounds_to_whole_pages(void)
+{
+    PwVmBackend backend;
+    PwVmRegion region;
+    volatile uint8_t *bytes;
+
+    assert(pw_vm_posix_backend(&backend) == PW_OK);
+    /* Deliberately not a multiple of any plausible page size. */
+    assert(backend.reserve(backend.context, 0x7001u, 0x1000u, &region) ==
+           PW_OK);
+    assert(region.bytes >= 0x7001u);
+    assert(region.bytes % backend.page_bytes == 0u);
+    assert(((uintptr_t)region.write_base & (backend.page_bytes - 1u)) == 0u);
+
+    /* Every byte of the reported region must be usable, first to last. */
+    assert(backend.commit(backend.context, &region, 0u, region.bytes,
+                          PW_PROT_READ | PW_PROT_WRITE) == PW_OK);
+    bytes = region.write_base;
+    bytes[0] = 0x11u;
+    bytes[0x7000u] = 0x22u;
+    bytes[region.bytes - 1u] = 0x33u;
+    assert(bytes[0] == 0x11u);
+    assert(bytes[0x7000u] == 0x22u);
+    assert(bytes[region.bytes - 1u] == 0x33u);
+    assert(backend.release(backend.context, &region) == PW_OK);
+}
+
 static void test_region_bounds(void)
 {
     PwVmRegion region;
@@ -105,6 +139,7 @@ int main(void)
     test_backend_validation();
     test_reserve_alignment_and_release();
     test_commit_and_protect();
+    test_reserve_rounds_to_whole_pages();
     test_region_bounds();
     return 0;
 }

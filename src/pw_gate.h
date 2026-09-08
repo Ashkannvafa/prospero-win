@@ -22,11 +22,22 @@ enum {
     PW_GATE_MAX_LINES = 256,
 };
 
+/*
+ * Records are handed to the sink the moment they are complete, not after
+ * the run finishes. A crash mid-gate otherwise takes every record with it,
+ * which is exactly what happened on the first hardware run: the transcript
+ * ended at the last marker main() had emitted itself and said nothing about
+ * how far the loader had got.
+ */
+typedef void (*PwGateSink)(const char *line, void *context);
+
 typedef struct PwGateReport {
     char lines[PW_GATE_MAX_LINES][PW_GATE_LINE_MAX];
     uint32_t line_count;
     uint32_t truncated;      /* lines that did not fit the buffer */
     int result;              /* the loader's result, echoed for the caller */
+    PwGateSink sink;         /* optional; called per completed record */
+    void *sink_context;
 } PwGateReport;
 
 typedef struct PwGateRequest {
@@ -34,6 +45,8 @@ typedef struct PwGateRequest {
     size_t root_size;
     const char *root_name;
     const char *provider_path;   /* provenance only, may be NULL */
+    PwGateSink sink;             /* survives the report's own reset */
+    void *sink_context;
 } PwGateRequest;
 
 /*

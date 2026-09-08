@@ -6,17 +6,17 @@ accepts. Order inside a phase is the intended iteration order.
 
 ## Phase 0 — the image loader
 
-- [x] **0.1 Read and understand a raw Windows executable.** Minimal PE
-      parser, section mapping, base relocation, page protection, recursive
-      third-party dependency resolution. Host-complete; the console gate is
-      specified in `PE_MAPPING_PHASE0.md` and has not been run.
-- [x] **0.2a The compatibility-mode probe — built and host-validated.**
-      `sysarch(I386_SET_LDT, ...)` with a ring-3 32-bit code descriptor,
-      then a far transfer into it and back. The round trip works on an
-      x86-64 host inside `make test`, running the same builder and the same
-      stub the console will, from a sealed non-writable code page. The
-      console measurement is pending; its four possible outcomes and what
-      each one means are in `COMPAT32_PHASE0A.md`.
+- [x] **0.1 Read and understand a raw Windows executable — passed on
+      FW 12.02.** Minimal PE parser, section mapping, base relocation, page
+      protection and recursive third-party dependency resolution, proven on
+      hardware: `sample.exe` and `binkw32.dll` mapped, rebased, relocated,
+      verified and released, with `kernel32`/`msvcrt` recorded as host
+      bindings and never read from disk. `PE_MAPPING_PHASE0.md`.
+- [x] **0.2a The compatibility-mode probe — answered: refused.**
+      `sysarch(I386_SET_LDT, ...)` returns `EINVAL` on FW 12.02, so a title
+      cannot enter 32-bit mode and ABI thunking is unavailable. The same
+      probe round-trips on an x86-64 host, so the result is the platform's,
+      not the stub's. `COMPAT32_PHASE0A.md`.
 - [ ] **0.2b Executable memory and the first call.** The aliased
       write/execute backend for this firmware, with its own smoke test,
       then calling one function in a mapped 64-bit image and returning
@@ -78,7 +78,8 @@ accepts. Order inside a phase is the intended iteration order.
 
 | Risk | Where it bites | Current position |
 | --- | --- | --- |
-| Whether 32-bit images can execute at all | Gate 0.2a, and most of the intended catalogue | Probe built and proven on a host; the console answer is pending. The loader refuses to pretend either way. `COMPAT32_PHASE0A.md` |
+| Whether 32-bit images can execute at all | Most of the intended catalogue | **Answered: they cannot, natively.** Compatibility mode is refused with `EINVAL`. JIT recompilation or 64-bit-only scope; an owner decision now backed by a measurement |
+| Coarse protection granularity versus 4 KiB PE sections | Every mapped image | **Measured: 16 KiB pages.** A 28 KiB image gets 2 protectable pages, merged protections and one writable-executable page. Counted per module and refused by the validator unless acknowledged |
 | Signal delivery to a thread in 32-bit mode | The first long-running thunked code | Unmeasured, and the largest unknown even if 0.2a passes: FreeBSD builds 32-bit signal frames for i386 processes, not necessarily for a 32-bit thread in a 64-bit process |
 | Thunk surface if the probe passes | Phase 1 | Every Win32 entry point would need a 32-bit stub and a marshalling thunk, plus a below-4-GiB reservation, far-transfer stubs both ways, and a signal-frame answer. Sized in `EXECUTION_MODEL.md` before committing |
 | No read-write to read-execute transition | Gate 0.2 | The memory contract carries two aliases from the start and the mapper already relocates against the executing one |

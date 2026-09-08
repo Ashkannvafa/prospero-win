@@ -117,6 +117,10 @@ static void commit_line(PwGateReport *report, const Line *line)
         ++report->truncated;
         return;
     }
+    /* Emitted before the counter advances, so a fault inside the sink
+     * cannot leave a half-published record counted as complete. */
+    if (report->sink)
+        report->sink(report->lines[report->line_count], report->sink_context);
     ++report->line_count;
 }
 
@@ -325,6 +329,8 @@ int pw_gate_run(PwGateReport *report, PwLoader *loader,
         !pw_vm_backend_valid(backend))
         return PW_ERR_PRECONDITION;
     memset(report, 0, sizeof(*report));
+    report->sink = request->sink;
+    report->sink_context = request->sink_context;
     memset(missing, 0, sizeof(missing));
 
     record_boot(report, request, backend);
