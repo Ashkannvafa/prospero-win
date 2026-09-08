@@ -15,7 +15,7 @@ making the console read and understand a raw Windows executable.
 | Phase | State | What it establishes |
 | --- | --- | --- |
 | 0.1 — Image loader | **Host-complete, hardware pending** | Minimal PE reader, section mapping, base relocation, page protection and recursive third-party DLL resolution |
-| 0.2 — Executable memory | Next | Read-execute publication through the console's double-mapping path, and the first call into mapped code |
+| 0.2 — Execution | Next | The compatibility-mode probe that decides 32-bit scope, read-execute publication through the console's double-mapping path, and the first call into mapped code |
 | 1 — Win32 core | Later | `kernel32`/`msvcrt` process, memory, file, time and threading surface; import binding; TLS; `DllMain` ordering |
 | 2 — Presentation and input | Later | DirectDraw/GDI blitting to VideoOut, DirectInput/DirectSound onto ScePad and SceAudioOut |
 | 3 — First program end to end | Later | One classic title running from its own files, with a soak and a reproducible release |
@@ -74,11 +74,18 @@ make native-release PW_STAGE_INPUT=/private/path/game \
 
 ## Scope and honesty
 
-- **Zero emulation applies to 64-bit programs.** The console runs 64-bit user
-  code only, so an `i386` image parses and maps here but cannot execute
-  without instruction translation. The loader says so instead of pretending
-  otherwise; the analysis and the options are in
-  [`docs/EXECUTION_MODEL.md`](docs/EXECUTION_MODEL.md).
+- **Zero emulation holds literally for 64-bit programs today.** For 32-bit
+  ones it is an open question with a known answer shape: Zen 2 executes
+  32-bit code natively in compatibility mode, so the target architecture is
+  WoW64-style ABI thunking — the game's own opcodes on the silicon, with
+  translation only at API boundaries and no interpretation anywhere.
+  Whether a title may enter that mode hinges on one unmeasured syscall, and
+  gate 0.2a is the probe that settles it. Until then an `i386` image parses,
+  maps and relocates here but is not executed, and the loader says exactly
+  that rather than pretending either way.
+  [`docs/EXECUTION_MODEL.md`](docs/EXECUTION_MODEL.md) has the mechanism,
+  the probe and the fallbacks, including why JIT recompilation is not
+  emulation.
 - **No game or third-party binary is committed.** `.exe` and `.dll` files are
   ignored repository-wide and the publication audit refuses any tracked file
   that begins with a DOS header. Tests run against images the repository

@@ -10,10 +10,18 @@ accepts. Order inside a phase is the intended iteration order.
       parser, section mapping, base relocation, page protection, recursive
       third-party dependency resolution. Host-complete; the console gate is
       specified in `PE_MAPPING_PHASE0.md` and has not been run.
-- [ ] **0.2 Executable memory and the first call.** The aliased
-      write/execute backend for this firmware, with its own smoke test, then
-      calling one function in a mapped image and returning from it. This is
-      where the 32-bit question in `EXECUTION_MODEL.md` has to be answered.
+- [ ] **0.2a The compatibility-mode probe.** `sysarch(I386_SET_LDT, ...)`
+      with a ring-3 32-bit code descriptor, then a far transfer into it and
+      back. The smallest experiment in the project and the one that decides
+      its architecture: if the kernel installs the descriptor and the round
+      trip returns, 32-bit games run natively through ABI thunking with
+      zero instruction emulation; if it refuses, the choice narrows to JIT
+      recompilation or 64-bit-only scope. Runs before any scope decision.
+      See `EXECUTION_MODEL.md`.
+- [ ] **0.2b Executable memory and the first call.** The aliased
+      write/execute backend for this firmware, with its own smoke test,
+      then calling one function in a mapped 64-bit image and returning
+      from it.
 - [ ] **0.3 Import binding.** Fill the address tables: local exports
       resolved through each module's export directory, host imports pointed
       at native implementations. Forwarders and ordinal-only exports
@@ -71,7 +79,8 @@ accepts. Order inside a phase is the intended iteration order.
 
 | Risk | Where it bites | Current position |
 | --- | --- | --- |
-| 32-bit images cannot execute in long mode | Gate 0.2, and most of the intended catalogue | Measured and documented in `EXECUTION_MODEL.md`; the loader refuses to pretend. An owner decision, not an implementation detail |
+| Whether 32-bit images can execute at all | Gate 0.2a, and most of the intended catalogue | Open, and deliberately untested rather than assumed. The mechanism (`sysarch(I386_SET_LDT)`, declared by the pinned SDK) and the probe that settles it are in `EXECUTION_MODEL.md`. The loader refuses to pretend either way |
+| Thunk surface if the probe passes | Phase 1 | Every Win32 entry point would need a 32-bit stub and a marshalling thunk, plus a below-4-GiB reservation, far-transfer stubs both ways, and a signal-frame answer. Sized in `EXECUTION_MODEL.md` before committing |
 | No read-write to read-execute transition | Gate 0.2 | The memory contract carries two aliases from the start and the mapper already relocates against the executing one |
 | Coarse protection granularity versus 4 KiB PE sections | Gate 0.1 onwards | Union applied, merged and writable-executable pages counted, validator rejects them unless acknowledged |
 | libc heap ceiling of roughly 8 MiB | Every phase | All large allocations go to anonymous mappings; the loader takes memory only from its injected backend |
