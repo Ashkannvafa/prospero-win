@@ -45,6 +45,18 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
     if(!strcmp(r->last_dll,"msvcrt.dll")) {
+        if(!strcmp(r->last_name,"_controlfp")) {
+            PwGuestCall call={0};uint32_t value,mask,result;
+            int status=pw_guest_call_begin(&call,state,PW_GUEST_CDECL,8,0);
+            if(status!=PW_OK)return status;
+            if((status=pw_guest_call_u32(&call,0,&value))!=PW_OK)return status;
+            if((status=pw_guest_call_u32(&call,4,&mask))!=PW_OK)return status;
+            PwGuestFp next=state->fp;
+            if((status=pw_guest_fp_control(&next,value,mask,&result))!=PW_OK)return status;
+            status=pw_guest_call_finish(&call,32,result);
+            if(status==PW_OK){state->fp=next;r->calls++;}
+            return status;
+        }
         unsigned set_type=!strcmp(r->last_name,"__set_app_type");
         unsigned fmode=!strcmp(r->last_name,"__p__fmode");
         unsigned commode=!strcmp(r->last_name,"__p__commode");

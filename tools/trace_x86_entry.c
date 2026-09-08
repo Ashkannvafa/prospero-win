@@ -50,6 +50,7 @@ int main(int argc,char **argv)
     if(vm.commit(NULL,&stack,0,stack.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK ||
        vm.commit(NULL,&thread,0,thread.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
     PwX86State state={0};
+    pw_guest_fp_init(&state.fp);
     if(pe_layout_plan(&layout,&image)!=PW_OK ||
        layout.section_count+2>PW_X86_MEMORY_REGIONS ||
        image.image_base+image.size_of_image>PW_WIN32_TOKEN_BASE)goto cleanup;

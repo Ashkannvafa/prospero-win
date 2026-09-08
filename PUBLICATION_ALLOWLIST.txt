@@ -112,3 +112,6 @@ tests/test_trace_x86_entry.py
 tools/make_icon.py
 tools/make_test_pe.py
 tools/validate_pe_map_evidence.py
+src/pw_guest_fp.c
+src/pw_guest_fp.h
+tests/test_pw_guest_fp.c

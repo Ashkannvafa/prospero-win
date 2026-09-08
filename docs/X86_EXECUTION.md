@@ -101,7 +101,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-66 instructions and four implemented API calls after adding absolute MOV, immediate ALU
+73 instructions and five implemented API calls after adding guest FP control, absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
 
 ```
@@ -110,16 +110,18 @@ kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
 kind=host-api dll=msvcrt.dll name=__set_app_type result=0x00000000
 kind=host-api dll=msvcrt.dll name=__p__fmode result=0x03300008
 kind=host-api dll=msvcrt.dll name=__p__commode result=0x0330000c
-kind=host-api-stop dll=msvcrt.dll name=_controlfp status=-5
-kind=host-entry-trace steps=66 stop=unimplemented-api eip=0xe00005b0 esp=0x030fff5c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000202
+kind=host-api dll=msvcrt.dll name=_controlfp result=0x0009001f
+kind=host-api-stop dll=msvcrt.dll name=_initterm status=-5
+kind=host-entry-trace steps=73 stop=unimplemented-api eip=0xe00005f0 esp=0x030fff60 ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000202
 ```
 
-The next stop is the catalogued `_controlfp` API. It requires a guest FP-state
-contract, not an unconditional success or changes to the host thread's FP
-environment. Absolute MOV tests exercise independent read/write permissions,
+The next stop is the catalogued `_initterm` API. It requires walking guest
+function-pointer tables and dispatching guest callbacks. `_controlfp` now
+updates guest control state without modifying host FP controls; arithmetic
+execution remains pending. Absolute MOV tests exercise independent read/write permissions,
 last-valid and crossing-boundary addresses, unchanged flags and fault atomicity.
-The 66-instruction trace reproduces under ASan/UBSan and the translator compiles
-with the PS5 target toolchain; neither is proof of PS5 guest execution.
+The 73-instruction trace reproduces under ASan/UBSan. The guest FP service and
+its Win32 adapter compile with the PS5 toolchain; this is not hardware execution.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses
@@ -129,7 +131,7 @@ The tracer's `result` field reports EAX; `__set_app_type` returns void, so
 that field is not a CRT return value. Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: four narrow API cases have run,
+This is host evidence only: five narrow API cases have run,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget

@@ -3,6 +3,7 @@
 #define PW_X86_BLOCK_H
 #include <stddef.h>
 #include <stdint.h>
+#include "pw_guest_fp.h"
 #include "../include/prospero_win.h"
 
 enum { PW_X86_MEMORY_REGIONS=8, PW_X86_READ=1, PW_X86_WRITE=2 };
@@ -19,6 +20,7 @@ typedef struct PwX86State {
     uint32_t eflags; /* guest flags; never installed as host control flags */
     unsigned memory_count;
     PwX86Memory memory[PW_X86_MEMORY_REGIONS]; /* live identity-mapped ranges */
+    PwGuestFp fp;
 } PwX86State;
 
 typedef struct PwX86Block {

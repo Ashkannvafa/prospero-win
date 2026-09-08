@@ -80,7 +80,7 @@ guest FP-state services, not a claim of generic cdecl compatibility.
 `pw_win32.c` uses the generated factual code/data catalog for Pinball's 207
 imports. Unknown names/ordinals are refused. All 205 function imports bind
 to unique dispatcher tokens, not host addresses. Initial handlers cover
-`GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode` and `__p__commode`.
+`GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode`, `__p__commode` and `_controlfp`.
 Named-module arguments and other API calls stop explicitly without guest-state mutation or a false
 success. A bound function is not necessarily an implemented function.
 
@@ -104,9 +104,27 @@ failure atomicity when the argument is outside the guest stack.
 Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
-`__set_app_type`, `__p__fmode`, `__p__commode` and stops after 66 instructions
-at the pending `_controlfp` API. The pointer getters now have original-game
+`__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp` and stops after 73 instructions
+at the pending `_initterm` API. The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
 dispatch and return, plus a
 named stop for a pending API. No PS5 execution of this integration is claimed.
+
+## Guest floating-point control
+
+`PwX86State.fp` owns raw x87 control and MXCSR words. Initialize each guest
+thread using `pw_guest_fp_init`: CRT defaults are 0x027f and 0x1f80.
+`pw_guest_fp_control` implements the reviewed i386/SSE2 `_controlfp` control
+mapping entirely with integer operations: mask filtering (including preserved
+denormal exception mask), rounding, x87 precision/infinity control, SSE
+denormal modes and ambiguous x87/SSE exception/rounding reports. Changes to
+SSE controls clear its exception-status bits as in the pinned Wine reference;
+queries preserve status. The cdecl adapter reads two 32-bit arguments and
+commits FP changes only after successful ABI return.
+
+Tests cover the field mappings, defaults, status handling, queries, ambiguous
+state, invalid/uninitialized calls, and unchanged host x87/MXCSR controls.
+This is **control-state support only**: no x87 register stack, arithmetic,
+exception delivery or SSE execution is implemented. Future instruction and
+CRT math handlers must consume this same per-thread state, not host defaults.

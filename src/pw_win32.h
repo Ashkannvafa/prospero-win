@@ -18,6 +18,7 @@ int pw_win32_resolve(void *,const char *,const PeImportSymbol *,PwImportTarget *
 /* PW_ERR_NOT_FOUND: not a token; UNSUPPORTED: named API/argument not covered.
  * No pending API reports success. Dispatcher must intercept tokens before
  * code fetch. Initial surface: GetModuleHandleA(NULL), __set_app_type,
- * __p__fmode and __p__commode. CRT pointer results refer to live guest words. */
+ * __p__fmode, __p__commode and _controlfp (requires initialized state.fp).
+ * CRT pointer results refer to live guest words. */
 int pw_win32_dispatch(PwWin32 *,PwX86State *);
 #endif

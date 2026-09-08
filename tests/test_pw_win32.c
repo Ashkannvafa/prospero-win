@@ -62,6 +62,18 @@ int main(void)
     unsigned calls=runtime.calls;
     assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_VM);
     assert(!memcmp(&state,&before,sizeof(state)) && runtime.app_type==2 && runtime.calls==calls);
+    strcpy(symbol.name,"_controlfp");
+    assert(pw_win32_resolve(&runtime,"msvcrt.dll",&symbol,&target)==PW_OK);
+    state.gpr[4]=state.stack_high-12;state.eip=(uint32_t)target.address;
+    uint32_t fp_args[]={0x01001234,0x200,0x300};
+    memcpy((void *)(uintptr_t)state.gpr[4],fp_args,sizeof(fp_args));before=state;
+    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_STATE && !memcmp(&state,&before,sizeof(state)));
+    pw_guest_fp_init(&state.fp);
+    assert(pw_win32_dispatch(&runtime,&state)==PW_OK);
+    assert(state.gpr[0]==0x9021f && state.gpr[4]==state.stack_high-8 && state.eip==fp_args[0]);
+    assert((state.fp.x87_control&0xc00)==0x800 && (state.fp.mxcsr&0x6000)==0x4000);
+    state.gpr[4]=state.stack_high-8;state.eip=(uint32_t)target.address;before=state;
+    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_VM && !memcmp(&state,&before,sizeof(state)));
     strcpy(symbol.name,"NotInCatalog");
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_NOT_FOUND);
     symbol.by_ordinal=1;symbol.ordinal=42;
