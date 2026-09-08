@@ -18,7 +18,7 @@ int pw_win32_init(PwWin32 *runtime,uint32_t main,uint32_t data,const char *line)
     memcpy(buffer,&pointer,4);memcpy(buffer+8,&text_mode,4);
     memcpy(buffer+16,line,length+1);
     memcpy((void *)(uintptr_t)data,buffer,sizeof(buffer));
-    *runtime=(PwWin32){.main_base=main,.crt_data=data,.args=args};return PW_OK;
+    *runtime=(PwWin32){.main_base=main,.crt_data=data,.args=args,.startup_show=1};return PW_OK;
 }
 int pw_win32_resolve(void *opaque,const char *dll,const PeImportSymbol *symbol,PwImportTarget *target)
 {
@@ -95,6 +95,24 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
     unsigned kernel=!strcmp(r->last_dll,"kernel32.dll");
+    if(kernel && !strcmp(r->last_name,"GetStartupInfoA")) {
+        /* Serialize STARTUPINFOA32, never the host's pointer-sized structure.
+         * GUI launch: show policy supplied, no inherited console handles,
+         * title/desktop override, geometry override or reserved CRT data. */
+        if(r->startup_show>11 || r->startup_show==10)return PW_ERR_UNSUPPORTED;
+        PwGuestCall call={0};uint32_t address;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&address))!=PW_OK)return status;
+        if(address>UINT32_MAX-67)return PW_ERR_VM;
+        for(unsigned offset=0;offset<68;offset+=4)
+            if((status=word_access(state,address+offset,PW_X86_WRITE))!=PW_OK)return status;
+        uint8_t info[68]={0};uint32_t size=68,flags=1;
+        memcpy(info,&size,4);memcpy(info+44,&flags,4);memcpy(info+48,&r->startup_show,2);
+        status=pw_guest_call_finish(&call,0,0);
+        if(status!=PW_OK)return status;
+        memcpy((void *)(uintptr_t)address,info,sizeof(info));r->calls++;return PW_OK;
+    }
     unsigned wall=kernel && !strcmp(r->last_name,"GetSystemTimeAsFileTime");
     unsigned counter=kernel && !strcmp(r->last_name,"QueryPerformanceCounter");
     unsigned tick=(kernel && !strcmp(r->last_name,"GetTickCount")) ||

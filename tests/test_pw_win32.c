@@ -92,6 +92,27 @@ int main(void)
         uint32_t after[3];memcpy(after,(void *)(uintptr_t)(state.stack_high-16),12);
         assert(!memcmp(&state,&before,sizeof(state)) && !memcmp(after,outputs,sizeof(after)));
     }
+    strcpy(symbol.name,"GetStartupInfoA");
+    assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_OK);
+    for(unsigned show=0;show<3;show++) {
+        runtime.startup_show=(uint16_t)show;
+        uint32_t address=state.stack_low+1; /* unaligned output is supported */
+        memset((void *)(uintptr_t)state.stack_low,0xcc,72);
+        state.gpr[4]=state.stack_high-8;state.eip=(uint32_t)target.address;state.gpr[0]=0xaabbccdd;
+        uint32_t startup_frame[]={0x01001234,address};memcpy((void *)(uintptr_t)state.gpr[4],startup_frame,8);
+        assert(pw_win32_dispatch(&runtime,&state)==PW_OK && state.gpr[0]==0xaabbccdd && state.gpr[4]==state.stack_high);
+        uint8_t expected[68]={0};expected[0]=68;expected[44]=1;expected[48]=(uint8_t)show;
+        assert(!memcmp((void *)(uintptr_t)address,expected,68));
+        assert(*(uint8_t *)(uintptr_t)state.stack_low==0xcc && *(uint8_t *)(uintptr_t)(address+68)==0xcc);
+    }
+    state.gpr[4]=state.stack_high-8;state.eip=(uint32_t)target.address;
+    uint32_t startup_bad[]={0x01001234,state.stack_high-67};
+    memcpy((void *)(uintptr_t)state.gpr[4],startup_bad,8);before=state;
+    uint8_t snapshot[67];memcpy(snapshot,(void *)(uintptr_t)startup_bad[1],sizeof(snapshot));
+    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_VM && !memcmp(&state,&before,sizeof(state)));
+    assert(!memcmp(snapshot,(void *)(uintptr_t)startup_bad[1],sizeof(snapshot)));
+    runtime.startup_show=10;
+    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_UNSUPPORTED && !memcmp(&state,&before,sizeof(state)));
     strcpy(symbol.name,"NotInCatalog");
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_NOT_FOUND);
     symbol.by_ordinal=1;symbol.ordinal=42;

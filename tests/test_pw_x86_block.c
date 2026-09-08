@@ -123,10 +123,19 @@ static void byte_tests(void)
         assert(run(imm,2,0xb010)==0 && state.gpr[reg&3]==((0x11223344u&~(255u<<shift))|(254u<<shift)));
         const uint8_t cmp[]={0x80,(uint8_t)(0xf8|reg),0xfe};state.eflags=0x202;
         assert(run(cmp,3,0xb020)==0 && state.eflags==0x246);
+        state.eflags=0xad7;
+        const uint8_t test_imm[]={0xf6,(uint8_t)(0xc0|reg),1};
+        assert(run(test_imm,3,0xb021)==0 && state.eflags==0x256);
     }
+    state.gpr[0]=0x11223380;state.eflags=0xad7;
+    const uint8_t test_al[]={0xa8,0xff};
+    assert(run(test_al,2,0xb022)==0 && state.gpr[0]==0x11223380 && state.eflags==0x292);
     state.gpr[1]=state.stack_high-1;state.gpr[0]=0x11228044;state.eflags=0xad7;
     const uint8_t store[]={0x88,0x21},load[]={0x8a,0x01}; /* AH -> [ECX], [ECX] -> AL */
     assert(run(store,2,0xb030)==0 && *((uint8_t *)stack.write_base+stack.bytes-1)==0x80);
+    const uint8_t test_memory[]={0xf6,0x01,0x80};
+    assert(run(test_memory,3,0xb031)==0 && state.eflags==0x292);
+    state.eflags=0xad7;
     assert(run(load,2,0xb040)==0 && state.gpr[0]==0x11228080 && state.eflags==0xad7);
     const uint8_t cmp_mem[]={0x80,0x39,0x7f};
     assert(run(cmp_mem,3,0xb050)==0 && state.eflags==0xa12); /* -128 - 127 overflows */

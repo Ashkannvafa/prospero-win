@@ -24,6 +24,7 @@ typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
     PwGuestArgs args;
     uint32_t new_mode;
+    uint16_t startup_show; /* explicit GUI launch profile: SW_SHOWNORMAL by default */
     PwWin32Services services;
     const char *last_dll,*last_name;
     unsigned calls;

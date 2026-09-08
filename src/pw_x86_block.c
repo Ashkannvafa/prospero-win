@@ -198,12 +198,12 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         Operand operand;
         unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,movzx=0,setcc=0;
         int terminal = 0;
-        if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84) {
+        if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if(result!=PW_OK)return result;
-            if((op==0x80 && operand.reg!=7) || (op==0xc6 && operand.reg!=0))return PW_ERR_UNSUPPORTED;
-            length=1+operand.bytes+(op==0x80 || op==0xc6);
-        } else if(op==0x3c || (op>=0xb0 && op<=0xb7))length=2;
+            if((op==0x80 && operand.reg!=7) || ((op==0xc6 || op==0xf6) && operand.reg!=0))return PW_ERR_UNSUPPORTED;
+            length=1+operand.bytes+(op==0x80 || op==0xc6 || op==0xf6);
+        } else if(op==0x3c || op==0xa8 || (op>=0xb0 && op<=0xb7))length=2;
         else if(op>=0x40 && op<=0x4f)length=1;
         else if(op==0x85 || op==0xf7 || op==0xa9) {
             if(op==0xa9){memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;length=5;}
@@ -267,9 +267,9 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         } else if(op>=0xb0 && op<=0xb7) {
             unsigned reg=op&7;
             byte(&e,0xc6);byte(&e,0x47);byte(&e,(reg&3)*4+(reg>>2));byte(&e,source[cursor+1]);
-        } else if(op==0x3c) {
-            load_eax(&e,0);byte(&e,0x3c);byte(&e,source[cursor+1]);save_arithmetic_flags(&e,0x8d5);
-        } else if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84) {
+        } else if(op==0x3c || op==0xa8) {
+            load_eax(&e,0);byte(&e,op);byte(&e,source[cursor+1]);save_arithmetic_flags(&e,op==0xa8?0x8c5:0x8d5);
+        } else if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
             unsigned dest=(operand.rm&3)*4+(operand.rm>>2),reg=(operand.reg&3)*4+(operand.reg>>2);
             unsigned write=op==0x88 || op==0xc6;
             if(operand.mod!=3){effective_address(&e,&operand);memory_address_width(&e,write,1);}
@@ -288,13 +288,13 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                 if(operand.mod==3)byte(&e,dest);
                 if(op==0x8a){byte(&e,0x88);byte(&e,0x47);byte(&e,reg);}
                 else {
-                    if(op==0x80){byte(&e,0x3c);byte(&e,source[cursor+length-1]);}
+                    if(op==0x80 || op==0xf6){byte(&e,op==0xf6?0xa8:0x3c);byte(&e,source[cursor+length-1]);}
                     else if(op==0x3a) {
                         byte(&e,0x89);byte(&e,0xc1);
                         byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x47);byte(&e,reg);
                         byte(&e,0x38);byte(&e,0xc8);
                     } else {byte(&e,op==0x84?0x84:0x3a);byte(&e,0x47);byte(&e,reg);}
-                    save_arithmetic_flags(&e,op==0x84?0x8c5:0x8d5);
+                    save_arithmetic_flags(&e,(op==0x84 || op==0xf6)?0x8c5:0x8d5);
                 }
             }
         } else if(op==0xc9) {

@@ -81,7 +81,7 @@ guest FP-state services, not a claim of generic cdecl compatibility.
 imports. Unknown names/ordinals are refused. All 205 function imports bind
 to unique dispatcher tokens, not host addresses. Initial handlers cover
 `GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm` and `__getmainargs`.
-Six time/identity handlers are also available through explicit services below.
+Six time/identity handlers and GetStartupInfoA are also available as described below.
 Named-module arguments and other API calls stop explicitly without guest-state mutation or a false
 success. A bound function is not necessarily an implemented function.
 
@@ -106,7 +106,7 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and the time/identity calls, then stops at GetStartupInfoA after 282 instructions
+and the time/identity calls plus GetStartupInfoA, then stops after 317 instructions
 (4096-event host limit), after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
@@ -211,3 +211,19 @@ last-error/failure-return emulation remains future work. Tests use injected
 clock values to verify epochs, units, wraparound, ABI returns and failure
 atomicity. UTC, tick, counter and both IDs now have original-game host evidence;
 timeGetTime remains unit-tested only.
+
+## GUI startup profile
+
+`GetStartupInfoA` serializes the 68-byte PE32 layout, not a host-sized struct.
+The launcher profile specifies STARTF_USESHOWWINDOW and `startup_show`
+(default SW_SHOWNORMAL=1), with no inherited console handles, title/desktop
+override, geometry override or reserved CRT block. The supported show values
+exclude SW_SHOWDEFAULT, as required by the
+[STARTUPINFOA contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa).
+Future ShowWindow handling must consume this same first-show policy; this
+API by itself neither creates nor displays a window.
+
+All 68 output bytes are validated before modification; the stdcall return is
+void. Tests verify byte-exact PE32 fields, alternate show modes, unaligned
+output, adjacent-byte preservation and failure atomicity for a truncated range.
+The original CRT now reads this profile and continues past its startup call.
