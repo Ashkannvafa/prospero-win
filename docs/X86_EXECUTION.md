@@ -7,7 +7,9 @@ by Pinball's entry. It is not a complete decoder or CPU implementation.
 
 Supported encodings: push imm8/imm32/r32, pop r32, mov r32/imm32,
 mov r32/r32 and r32/memory (89/8B ModRM/SIB), LEA,
-MOV immediate/r32 or memory (C7 /0), register SUB (29/2B), XOR (31/33),
+MOV immediate/r32 or memory (C7 /0), register ADD (01/03), SUB (29/2B), XOR (31/33),
+CMP immediate 16/32-bit (81/83 /7, 3D; optional 66 prefix), CMP r32/memory
+(39/3B), MOVZX word (0F B7), all short/near Jcc and register-byte SETcc,
 FS-prefixed A1/A3 moffs32 loads/stores
 through EAX, nop, direct call rel32, indirect near call/jump (FF /2,/4),
 jmp rel8/rel32 and ret. Calls push a 32-bit guest return PC and yield the
@@ -16,7 +18,7 @@ lives in the state structure, independently from native RSP. No guest stack
 opcode is copied as a 64-bit push/pop/call/ret.
 
 The caller supplies a live RW low-address guest stack and keeps it mapped
-for the full execution lifetime. Generated bounds checks verify each 4-byte
+for the full execution lifetime. Generated bounds checks verify each 2- or 4-byte
 access and preserve the faulting guest PC on failure. Prior completed guest
 instructions remain committed. The translator emits into writable scratch;
 only successful translations may be published RX. Unsupported or truncated
@@ -98,16 +100,21 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-26 instructions and one implemented API call:
+44 instructions and one implemented API call after adding comparisons and
+conditional execution:
 
 ```
 kind=host-import-bind total=207 functions=205 data=2
 kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
-kind=host-entry-trace steps=26 stop=unsupported eip=0x01020fac esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
+kind=host-api-stop dll=msvcrt.dll name=__set_app_type status=-5
+kind=host-entry-trace steps=44 stop=unimplemented-api eip=0xe0000550 esp=0x030fff64 ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
 ```
 
-The next unsupported instruction is a 16-bit immediate compare against
-memory. This is host evidence only: one narrow Win32 API case has run,
+The next stop is the catalogued CRT API `__set_app_type`, not an unknown
+import. This reproduced under ASan/UBSan. Regression tests cover all 16
+conditions across 32 arithmetic-flag combinations, register-byte writes,
+word-access boundaries, compare operand order and immediate sign extension.
+This is host evidence only: one narrow Win32 API case has run,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget

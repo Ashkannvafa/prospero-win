@@ -14,7 +14,7 @@ DRM, anti-cheat and kernel drivers are out of scope.
   protection, dependency classification, verification and release.
 - **Measured:** the tested LDT route is refused; low allocations and
   mprotect RW-to-RX/RWX work in a title.
-- **Host progress:** 26 translated instructions and GetModuleHandleA(NULL)
+- **Host progress:** 44 translated instructions and GetModuleHandleA(NULL)
   from original Pinball startup; 207 imports bound as 205 functions/2 data.
   Other function handlers remain pending, not implicitly successful.
 - **Next:** reviewed Win32 subsystem reuse, guest ABI services and broader

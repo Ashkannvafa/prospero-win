@@ -46,11 +46,11 @@ static void stack_bounds(Emitter *e)
     byte(e,0x83); byte(e,0xea); byte(e,4);
     byte(e,0x39); byte(e,0xd0); require_condition(e,0x76);
 }
-static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write)
+static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write,unsigned width)
 {
-    uint64_t end=(uint64_t)address+4;
+    uint64_t end=(uint64_t)address+width;
     unsigned permission=write?PW_X86_WRITE:PW_X86_READ;
-    if (!address || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
+    if (!address || (width!=2 && width!=4) || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
         return 0;
     if(address>=state->stack_low && end<=state->stack_high)return address;
     for(unsigned i=0;i<state->memory_count;i++) {
@@ -60,12 +60,13 @@ static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned writ
     }
     return 0;
 }
-static void memory_address(Emitter *e,unsigned write)
+static void memory_address_width(Emitter *e,unsigned write,unsigned width)
 {
     /* Effective address is EAX. SysV helper checks the live memory registry.
      * Save context RDI and align native RSP before the call. */
     byte(e,0x89);byte(e,0xc6); /* esi = address */
     byte(e,0xba);word(e,write);
+    byte(e,0xb9);word(e,width);
     byte(e,0x57);
     byte(e,0x48);byte(e,0xb8);
     uint64_t target=(uint64_t)(uintptr_t)&memory_pointer;
@@ -73,6 +74,31 @@ static void memory_address(Emitter *e,unsigned write)
     byte(e,0xff);byte(e,0xd0);byte(e,0x5f);
     byte(e,0x48);byte(e,0x85);byte(e,0xc0);
     require_condition(e,0x75);
+}
+static void memory_address(Emitter *e,unsigned write){memory_address_width(e,write,4);}
+static int branch_condition(PwX86State *s,unsigned condition)
+{
+    unsigned f=s->eflags,of=!!(f&0x800),sf=!!(f&0x80),zf=!!(f&0x40),cf=f&1,pf=!!(f&4),answer;
+    switch(condition>>1) {
+    case 0:answer=of;break;case 1:answer=cf;break;case 2:answer=zf;break;
+    case 3:answer=cf||zf;break;case 4:answer=sf;break;case 5:answer=pf;break;
+    case 6:answer=sf!=of;break;default:answer=zf || sf!=of;break;
+    }
+    return (int)(answer^(condition&1));
+}
+static void condition_value(Emitter *e,unsigned condition)
+{
+    byte(e,0xbe);word(e,condition);byte(e,0x57);byte(e,0x48);byte(e,0xb8);
+    uint64_t fn=(uint64_t)(uintptr_t)&branch_condition;
+    word(e,(uint32_t)fn);word(e,(uint32_t)(fn>>32));
+    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);
+}
+static void conditional_target(Emitter *e,unsigned condition,uint32_t next,uint32_t target)
+{
+    condition_value(e,condition);
+    store(e,offsetof(PwX86State,eip),next);
+    byte(e,0x85);byte(e,0xc0);byte(e,0x74);byte(e,7);
+    store(e,offsetof(PwX86State,eip),target);
 }
 static void stack_address(Emitter *e, int push)
 {
@@ -170,19 +196,44 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         const uint8_t op = source[cursor];
         size_t length;
         Operand operand;
+        unsigned compare=0,short_imm=0,word_operand=0,conditional=0,movzx=0,setcc=0;
         int terminal = 0;
-        if (op == 0x64) {
+        if(op==0x66 || op==0x81 || op==0x83 || op==0x3d) {
+            size_t prefix=op==0x66?1:0;
+            if(bytes-cursor<=prefix)return PW_ERR_TRUNCATED;
+            unsigned cmpop=source[cursor+prefix];
+            if(cmpop!=0x81 && cmpop!=0x83 && cmpop!=0x3d)return PW_ERR_UNSUPPORTED;
+            word_operand=(unsigned)prefix;short_imm=cmpop==0x83;compare=1;
+            if(cmpop==0x3d) {memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;}
+            else {
+                int result=decode_operand(source+cursor+prefix+1,bytes-cursor-prefix-1,&operand);
+                if(result!=PW_OK)return result;
+                if(operand.reg!=7)return PW_ERR_UNSUPPORTED;
+            }
+            length=prefix+1+operand.bytes+(short_imm?1:word_operand?2:4);
+        } else if(op>=0x70 && op<=0x7f) {conditional=1;length=2;}
+        else if(op==0x0f) {
+            if(bytes-cursor<2)return PW_ERR_TRUNCATED;
+            if(source[cursor+1]>=0x80 && source[cursor+1]<=0x8f){conditional=1;length=6;}
+            else if(source[cursor+1]==0xb7 || (source[cursor+1]>=0x90 && source[cursor+1]<=0x9f)) {
+                int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+                if(result!=PW_OK)return result;
+                movzx=source[cursor+1]==0xb7;setcc=!movzx;
+                if(setcc && operand.mod!=3)return PW_ERR_UNSUPPORTED;
+                length=2+operand.bytes;
+            } else return PW_ERR_UNSUPPORTED;
+        } else if (op == 0x64) {
             if (bytes-cursor < 2) return PW_ERR_TRUNCATED;
             if (source[cursor+1]!=0xa1 && source[cursor+1]!=0xa3)
                 return PW_ERR_UNSUPPORTED;
             length=6;
-        } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 || op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0xff) {
+        } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 || op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0xff || op==0x01 || op==0x03 || op==0x39 || op==0x3b) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if (result!=PW_OK) return result;
             if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
             if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
             if (op==0xff && operand.reg!=2 && operand.reg!=4) return PW_ERR_UNSUPPORTED;
-            if ((op==0x29 || op==0x2b || op==0x31 || op==0x33) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
+            if ((op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0x01 || op==0x03) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
         } else if (op == 0x6a || op == 0xeb) length = 2;
@@ -194,7 +245,46 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if (op==0xff) {
+        if(setcc) {
+            condition_value(&e,source[cursor+1]&15);
+            unsigned reg=operand.rm&3,high=operand.rm>=4;
+            if(high){byte(&e,0xc1);byte(&e,0xe0);byte(&e,8);}
+            byte(&e,0x8b);byte(&e,0x57);byte(&e,reg*4);
+            byte(&e,0x81);byte(&e,0xe2);word(&e,high?0xffff00ff:0xffffff00);
+            byte(&e,0x09);byte(&e,0xc2);
+            byte(&e,0x89);byte(&e,0x57);byte(&e,reg*4);
+        } else if(op==0x39 || op==0x3b) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {effective_address(&e,&operand);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
+            if(op==0x39){byte(&e,0x3b);byte(&e,0x47);byte(&e,operand.reg*4);}
+            else {
+                byte(&e,0x89);byte(&e,0xc1);load_eax(&e,operand.reg*4);
+                byte(&e,0x39);byte(&e,0xc8);
+            }
+            save_arithmetic_flags(&e,0x8d5);
+        } else if(compare || movzx) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {
+                effective_address(&e,&operand);memory_address_width(&e,0,(word_operand || movzx)?2:4);
+                if(word_operand || movzx){byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x00);}
+                else {byte(&e,0x8b);byte(&e,0x00);}
+            }
+            if(movzx) {
+                byte(&e,0x25);word(&e,0xffff);store_eax(&e,operand.reg*4);
+            } else {
+                const uint8_t *imm=source+cursor+length-(short_imm?1:word_operand?2:4);
+                uint32_t value=short_imm?(uint32_t)(int32_t)(int8_t)*imm:
+                    word_operand?(uint32_t)imm[0]|(uint32_t)imm[1]<<8:read32(imm);
+                if(word_operand)byte(&e,0x66);
+                byte(&e,0x3d);
+                if(word_operand){byte(&e,(uint8_t)value);byte(&e,(uint8_t)(value>>8));}else word(&e,value);
+                save_arithmetic_flags(&e,0x8d5);
+            }
+        } else if(conditional) {
+            unsigned condition=(op==0x0f?source[cursor+1]:op)&15;
+            uint32_t delta=op==0x0f?read32(source+cursor+2):(uint32_t)(int32_t)(int8_t)source[cursor+1];
+            conditional_target(&e,condition,next,next+delta);terminal=1;
+        } else if (op==0xff) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {
                 effective_address(&e,&operand);memory_address(&e,0);
@@ -204,13 +294,13 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if(operand.reg==2)push_imm(&e,next);
             byte(&e,0x89);byte(&e,0x4f);byte(&e,offsetof(PwX86State,eip));
             terminal=1;
-        } else if (op==0x29 || op==0x2b || op==0x31 || op==0x33) {
-            unsigned reverse=op==0x29 || op==0x31;
+        } else if (op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0x01 || op==0x03) {
+            unsigned reverse=op==0x29 || op==0x31 || op==0x01;
             unsigned logical=op==0x31 || op==0x33;
             unsigned dest=reverse?operand.rm:operand.reg;
             unsigned src=reverse?operand.reg:operand.rm;
             load_eax(&e,dest*4);
-            byte(&e,logical?0x33:0x2b); byte(&e,0x47); byte(&e,src*4);
+            byte(&e,logical?0x33:(op==0x01 || op==0x03)?0x03:0x2b); byte(&e,0x47); byte(&e,src*4);
             store_eax(&e,dest*4);
             /* XOR's AF is undefined: retain guest AF deterministically. */
             save_arithmetic_flags(&e,logical?0x8c5:0x8d5);
@@ -280,7 +370,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             terminal = 1;
         }
-        if (op != 0xc3 && op!=0xff) store(&e,offsetof(PwX86State,eip),next);
+        if (op != 0xc3 && op!=0xff && !conditional) store(&e,offsetof(PwX86State,eip),next);
         cursor += length; ++count;
         if (terminal) break;
     }

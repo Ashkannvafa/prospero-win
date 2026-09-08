@@ -93,6 +93,7 @@ filesystem adapter is implied by that namespace.
 
 Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
-GetModuleHandleA(NULL), returns its actual mapped base and stops at the next
-unsupported instruction. Synthetic PE tests cover that full path and a
+GetModuleHandleA(NULL), returns its actual mapped base and stops at the pending
+CRT API `__set_app_type` after 44 instructions. Synthetic PE tests cover binding,
+dispatch and return, plus a
 named stop for a pending API. No PS5 execution of this integration is claimed.
