@@ -50,13 +50,20 @@ int pe_reloc_apply(uint8_t *mapped, uint32_t image_bytes,
     uint32_t cursor;
     uint32_t end;
 
-    if (!mapped || !directory || !stats || image_bytes == 0u)
+    if (!mapped || !stats || image_bytes == 0u)
         return PW_ERR_PRECONDITION;
     memset(stats, 0, sizeof(*stats));
     delta = actual_base - preferred_base;
     stats->delta = delta;
 
-    if (directory->virtual_address == 0u || directory->size == 0u)
+    /*
+     * A NULL directory means the image's data-directory array is shorter
+     * than the base-relocation slot, which is well formed and equivalent
+     * to an empty directory. It is not a caller error: reporting it as one
+     * would send the next reader hunting for a bug in the mapper.
+     */
+    if (!directory || directory->virtual_address == 0u ||
+        directory->size == 0u)
         return delta == 0u ? PW_OK : PW_ERR_UNSUPPORTED;
     if (directory->size > image_bytes ||
         directory->virtual_address > image_bytes - directory->size)

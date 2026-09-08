@@ -176,6 +176,26 @@ static void test_missing_directory(void)
                           0x180000000ull, &stats) == PW_ERR_UNSUPPORTED);
 }
 
+/*
+ * Found by mutation fuzzing: an image whose data-directory array is too
+ * short to contain the base-relocation slot made pe_image_directory()
+ * return NULL, and the mapper reported a caller-error precondition for a
+ * perfectly well-formed image.
+ */
+static void test_absent_directory_is_not_a_caller_error(void)
+{
+    PeRelocStats stats;
+
+    reset();
+    assert(pe_reloc_apply(mapped, IMAGE_BYTES, NULL, 0x140000000ull,
+                          0x140000000ull, &stats) == PW_OK);
+    assert(stats.entries == 0u);
+    assert(stats.applied == 0u);
+    /* Still unrebaseable, and reported as exactly that. */
+    assert(pe_reloc_apply(mapped, IMAGE_BYTES, NULL, 0x140000000ull,
+                          0x180000000ull, &stats) == PW_ERR_UNSUPPORTED);
+}
+
 static void test_refuses_unknown_types(void)
 {
     uint16_t table[1];
@@ -290,8 +310,6 @@ static void test_preconditions(void)
            PW_ERR_PRECONDITION);
     assert(pe_reloc_apply(mapped, 0u, &dir, 0u, 0u, &stats) ==
            PW_ERR_PRECONDITION);
-    assert(pe_reloc_apply(mapped, IMAGE_BYTES, NULL, 0u, 0u, &stats) ==
-           PW_ERR_PRECONDITION);
     assert(pe_reloc_apply(mapped, IMAGE_BYTES, &dir, 0u, 0u, NULL) ==
            PW_ERR_PRECONDITION);
 }
@@ -302,6 +320,7 @@ int main(void)
     test_zero_delta_counts_without_writing();
     test_applies_high_and_low();
     test_missing_directory();
+    test_absent_directory_is_not_a_caller_error();
     test_refuses_unknown_types();
     test_refuses_malformed_blocks();
     test_refuses_target_outside_image();

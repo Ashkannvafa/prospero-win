@@ -36,6 +36,12 @@ typedef struct PeRelocStats {
  * mapped points at the writable alias of the whole image; addresses are
  * computed from actual_base, the address the code will run at, which is the
  * executable alias when the backend uses two mappings.
+ *
+ * directory may be NULL, which is what pe_image_directory() returns for an
+ * image whose data-directory array is shorter than the base-relocation
+ * slot. That is treated as an absent directory, not a caller error: the
+ * image can still be mapped at its preferred base, and a rebase is refused
+ * with PW_ERR_UNSUPPORTED.
  */
 int pe_reloc_apply(uint8_t *mapped, uint32_t image_bytes,
                    const PeDataDirectory *directory,

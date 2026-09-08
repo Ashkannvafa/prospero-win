@@ -271,6 +271,46 @@ static void test_refuses_rebase_without_relocations(void)
            PW_ERR_UNSUPPORTED);
 }
 
+/*
+ * Found by mutation fuzzing. Some linkers and packers emit fewer than
+ * sixteen data directories; when the array stops before the
+ * base-relocation slot, the image is well formed and simply unrebaseable.
+ * It must be refused as unsupported, not as a mapper precondition failure.
+ */
+static void test_short_data_directory_is_refused_cleanly(void)
+{
+    PeFixtureSpec spec;
+    PeImage image;
+    PeLayout layout;
+    PwMappedImage mapped;
+    PwVmBackend backend;
+    size_t size;
+
+    memset(&spec, 0, sizeof(spec));
+    spec.pe32plus = 1;
+    spec.image_base = 0x140000000ull;
+    spec.directory_count = 2u;              /* stops before BASERELOC */
+    spec.section_count = 1u;
+    spec.sections[0].name = ".text";
+    spec.sections[0].characteristics =
+        PE_SCN_CNT_CODE | PE_SCN_MEM_READ | PE_SCN_MEM_EXECUTE;
+    spec.sections[0].data = code;
+    spec.sections[0].data_bytes = (uint32_t)sizeof(code);
+    spec.entry_point = 0x1000u;
+    size = pe_fixture_build(file_bytes, sizeof(file_bytes), &spec);
+
+    assert(size != 0u);
+    assert(pe_image_parse(&image, file_bytes, size) == PW_OK);
+    assert(image.directory_count == 2u);
+    assert(pe_image_directory(&image, PE_DIR_BASERELOC) == NULL);
+    assert(pe_layout_plan(&layout, &image) == PW_OK);
+    assert(layout.relocatable == 0u);
+
+    assert(pw_vm_posix_backend(&backend) == PW_OK);
+    assert(pw_map_image(&mapped, &image, &layout, &backend) ==
+           PW_ERR_UNSUPPORTED);
+}
+
 static void test_protection_at_page_granularity(void)
 {
     PwVmBackend backend;
@@ -398,6 +438,7 @@ int main(void)
     test_relocates_when_rebased();
     test_refuses_pe32_above_four_gib();
     test_refuses_rebase_without_relocations();
+    test_short_data_directory_is_refused_cleanly();
     test_protection_at_page_granularity();
     test_coarse_pages_merge_protections();
     test_preconditions();
