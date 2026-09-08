@@ -19,6 +19,45 @@
 #include <string.h>
 
 static PwLoader loader;
+static void json_string(const char *s)
+{
+    putchar('"');
+    for(const unsigned char *p=(const unsigned char *)s;*p;p++) {
+        if(*p=='"' || *p=='\\')printf("\\%c",*p);
+        else if(*p<32 || *p>=127)printf("\\u%04x",*p);
+        else putchar(*p);
+    }
+    putchar('"');
+}
+static int imports_json(const PeImage *image)
+{
+    PeImportTable table;
+    static PeImportSymbol symbols[PE_IMPORT_MAX_SYMBOLS];
+    int result=pe_import_parse(&table,image);
+    if(result!=PW_OK)return result;
+    printf("{\"schema\":\"pw-imports/1\",\"machine\":%u,\"image_base\":%llu,"
+           "\"delay_import_directory_present\":%s,\"modules\":[",image->machine,
+           (unsigned long long)image->image_base,
+           image->directories[PE_DIR_DELAY_IMPORT].size?"true":"false");
+    for(unsigned i=0;i<table.module_count;i++) {
+        const PeImportModule *m=&table.modules[i];unsigned count=0;
+        result=pe_import_enumerate(image,m,symbols,PE_IMPORT_MAX_SYMBOLS,&count);
+        if(result!=PW_OK)return result;
+        if(i)putchar(',');
+        printf("{\"dll\":");json_string(m->name);
+        printf(",\"bound\":%s,\"imports\":[",m->bound?"true":"false");
+        for(unsigned j=0;j<count;j++) {
+            if(j)putchar(',');
+            printf("{\"iat_rva\":%u,\"name\":",symbols[j].thunk_rva);
+            if(symbols[j].by_ordinal)printf("null");else json_string(symbols[j].name);
+            printf(",\"ordinal\":");
+            if(symbols[j].by_ordinal)printf("%u",symbols[j].ordinal);else printf("null");
+            putchar('}');
+        }
+        printf("]}");
+    }
+    printf("]}\n");return PW_OK;
+}
 
 static void print_image(const PeImage *image, const PeLayout *layout)
 {
@@ -104,12 +143,15 @@ int main(int argc, char **argv)
     int status;
     int exit_code = 1;
     int loader_ready = 0;
+    int json_mode = 0;
 
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--dir") == 0 && index + 1 < argc)
             directory = argv[++index];
         else if (strcmp(argv[index], "--no-map") == 0)
             map_image = 0;
+        else if (strcmp(argv[index], "--imports-json") == 0)
+            json_mode = 1;
         else if (!image_path)
             image_path = argv[index];
         else
@@ -117,7 +159,7 @@ int main(int argc, char **argv)
     }
     if (!image_path) {
         (void)fprintf(stderr,
-                      "usage: inspect_pe <image> [--dir <dir>] [--no-map]\n");
+                      "usage: inspect_pe <image> [--dir <dir>] [--no-map] [--imports-json]\n");
         return 2;
     }
 
@@ -134,11 +176,17 @@ int main(int argc, char **argv)
         return 1;
     }
     (void)pw_file_posix_provider(&files, &provider);
-    (void)printf("file=%s bytes=%zu\n", image_path, span.size);
+    if(!json_mode)(void)printf("file=%s bytes=%zu\n", image_path, span.size);
 
     status = pe_image_parse(&image, span.bytes, span.size);
     if (status != PW_OK) {
         (void)fprintf(stderr, "parse failed: %s\n", pw_result_name(status));
+        goto cleanup;
+    }
+    if(json_mode) {
+        status=imports_json(&image);
+        if(status==PW_OK)exit_code=0;
+        else fprintf(stderr,"import JSON failed: %s\n",pw_result_name(status));
         goto cleanup;
     }
     status = pe_layout_plan(&layout, &image);
@@ -212,6 +260,6 @@ cleanup:
         }
     }
     provider.close(provider.context, &span);
-    (void)printf("released opens=%u closes=%u\n", files.opens, files.closes);
+    if(!json_mode)(void)printf("released opens=%u closes=%u\n", files.opens, files.closes);
     return exit_code;
 }

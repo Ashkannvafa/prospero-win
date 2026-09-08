@@ -1,5 +1,9 @@
 # Roadmap
 
+Active implementation strategy: inventory imports first, audit Wine code and
+dependencies, then implement/test coherent subsystems. Runtime iteration is
+integration validation, not one-API-at-a-time scope discovery. See IMPORT_PLAN.md.
+
 The first game milestone is the original x86 Windows Space Cadet
 PINBALL.EXE, running without recompilation. DRM, anti-cheat and kernel
 drivers are out of scope. Each hardware milestone needs artifact identity,

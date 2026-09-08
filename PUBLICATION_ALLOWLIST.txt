@@ -3,6 +3,7 @@ docs/ARCHITECTURE.md
 docs/COMPAT32_PHASE0A.md
 docs/DEVELOPMENT.md
 docs/EXECUTION_MODEL.md
+docs/IMPORT_PLAN.md
 docs/X86_EXECUTION.md
 docs/PE_MAPPING_PHASE0.md
 docs/PINBALL_TARGET.md
@@ -88,6 +89,8 @@ tests/test_validate_pe_map_evidence.py
 tools/audit_publication.py
 tools/build_native.sh
 tools/inspect_pe.c
+tools/inventory_imports.py
+tests/test_inventory_imports.py
 tools/trace_x86_entry.c
 tests/test_trace_x86_entry.py
 tools/make_icon.py
