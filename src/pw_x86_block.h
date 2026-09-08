@@ -28,7 +28,7 @@ typedef struct PwX86Block {
     uint32_t instructions;
 } PwX86Block;
 
-/* Initial bounded DBT subset: push immediate/register, pop register,
+/* Initial bounded DBT subset: push immediate/register/memory, pop register,
  * mov register/immediate, register/register or registered memory (ModRM/SIB),
  * MOV immediate/register or memory, register ADD/SUB/XOR with arithmetic flags,
  * immediate ALU 16/32-bit (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP),

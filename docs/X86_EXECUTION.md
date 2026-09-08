@@ -5,7 +5,7 @@ The first prototype in src/pw_x86_block.c translates a bounded sequence of
 to establish 4-byte guest stack semantics and dispatcher transitions needed
 by Pinball's entry. It is not a complete decoder or CPU implementation.
 
-Supported encodings: push imm8/imm32/r32, pop r32, mov r32/imm32,
+Supported encodings: push imm8/imm32/r32 and r32/memory (FF /6), pop r32, mov r32/imm32,
 mov r32/r32 and r32/memory (89/8B ModRM/SIB), LEA,
 MOV immediate/r32 or memory (C7 /0), register ADD (01/03), SUB (29/2B), XOR (31/33),
 Immediate ADD/OR/ADC/SBB/AND/SUB/XOR/CMP 16/32-bit (81/83 and accumulator
@@ -101,7 +101,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-77 instructions and six implemented API calls after adding initializer dispatch, guest FP control, absolute MOV, immediate ALU
+85 instructions and six implemented API calls after adding operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
 
 ```
@@ -112,17 +112,21 @@ kind=host-api dll=msvcrt.dll name=__p__fmode result=0x03300008
 kind=host-api dll=msvcrt.dll name=__p__commode result=0x0330000c
 kind=host-api dll=msvcrt.dll name=_controlfp result=0x0009001f
 kind=host-api dll=msvcrt.dll name=_initterm result=0x0009001f
-kind=host-entry-trace steps=77 stop=unsupported eip=0x01021079 esp=0x030fff60 ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000202
+kind=host-api-stop dll=msvcrt.dll name=__getmainargs status=-5
+kind=host-entry-trace steps=85 stop=unimplemented-api eip=0xe0000520 esp=0x030fff4c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000202
 ```
 
-The next stop is an unsupported instruction after the first `_initterm`.
+The next stop is the pending CRT `__getmainargs` API after the first `_initterm`.
 This particular call schedules no callbacks; synthetic tests separately
 exercise translated and nested callbacks. `_controlfp` now
 updates guest control state without modifying host FP controls; arithmetic
 execution remains pending. Absolute MOV tests exercise independent read/write permissions,
 last-valid and crossing-boundary addresses, unchanged flags and fault atomicity.
-The 77-instruction trace and initializer regression suite pass under ASan/UBSan.
-The updated Win32 adapter compiles with the PS5 toolchain; this is not hardware execution.
+Operand PUSH tests cover old-ESP addressing, source and destination faults,
+flag preservation and continuation into the next instruction. PUSH checks
+the source before committing the destination or changing guest ESP.
+The 85-instruction trace reproduces under ASan/UBSan; the translator compiles
+with the PS5 target toolchain. No PS5 guest execution is claimed.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses

@@ -29,7 +29,7 @@ review. No result here authorizes automatic extraction of a source file.
 |---|---|---|
 | GetModuleHandleA | kernelbase/loader.c; kernel32 imports kernelbase | Guest module registry, handles and last-error behavior; no native host module handles |
 | __set_app_type, __p__fmode, __p__commode | msvcrt/data.c; include/msvcrt/fcntl.h | cdecl void state setter and stable writable guest pointers; fmode initializes to _O_TEXT (0x4000), commode to zero. Initial handlers and host regressions now implemented; file semantics remain pending |
-| __getmainargs, _acmdln | msvcrt/data.c | Guest argv/env storage, 32-bit pointer arrays, command-line initialization and allocation lifetime |
+| __getmainargs, _acmdln | msvcrt/data.c | Guest argv/env storage, 32-bit pointer arrays, command-line initialization and allocation lifetime. __getmainargs has five cdecl arguments: argc/argv/env output pointers, wildcard-expansion flag, optional pointer to new_mode. Validate outputs before mutation, honor argument parsing and explicitly classify unsupported wildcard expansion; never expose host environ pointers |
 | _initterm | msvcrt/data.c | Checked guest table walker and nested callback dispatch implemented; translated synthetic callbacks tested. First observed original-game call needs no callback. Never call guest addresses as host function pointers |
 | _except_handler3 | msvcrt/except_i386.c | Guest exception records, scope tables, frame registers and unwind callbacks; native host stack unwinding is not equivalent |
 | _CIacos | msvcrt/math.c, CREATE_FPU_FUNC1 | Argument/result in guest x87 state despite an empty .spec parameter list |

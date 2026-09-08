@@ -233,7 +233,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if (result!=PW_OK) return result;
             if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
             if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
-            if (op==0xff && operand.reg!=2 && operand.reg!=4) return PW_ERR_UNSUPPORTED;
+            if (op==0xff && operand.reg!=2 && operand.reg!=4 && operand.reg!=6) return PW_ERR_UNSUPPORTED;
             if ((op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0x01 || op==0x03) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
@@ -301,9 +301,17 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                 byte(&e,0x8b);byte(&e,0x00);
             }
             byte(&e,0x89);byte(&e,0xc1); /* preserve target across guest push */
-            if(operand.reg==2)push_imm(&e,next);
-            byte(&e,0x89);byte(&e,0x4f);byte(&e,offsetof(PwX86State,eip));
-            terminal=1;
+            if(operand.reg==6) {
+                /* Source is read using old ESP, before validating/publishing
+                 * the destination slot. stack_address preserves ECX. */
+                stack_address(&e,1);
+                byte(&e,0x89);byte(&e,0x08);store_eax(&e,offsetof(PwX86State,gpr[4]));
+                store(&e,offsetof(PwX86State,eip),next);
+            } else {
+                if(operand.reg==2)push_imm(&e,next);
+                byte(&e,0x89);byte(&e,0x4f);byte(&e,offsetof(PwX86State,eip));
+                terminal=1;
+            }
         } else if (op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0x01 || op==0x03) {
             unsigned reverse=op==0x29 || op==0x31 || op==0x01;
             unsigned logical=op==0x31 || op==0x33;

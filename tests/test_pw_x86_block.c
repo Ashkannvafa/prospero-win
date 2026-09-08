@@ -105,6 +105,28 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void push_operand_tests(void)
+{
+    uint32_t slot=state.stack_high-8,value=0xaabbccdd;
+    memcpy((void *)(uintptr_t)slot,&value,4);
+    state.gpr[4]=slot;state.eflags=0xad7;
+    const uint8_t from_esp[]={0xff,0x34,0x24};
+    assert(run(from_esp,3,0x7000)==0 && state.gpr[4]==slot-4 && state.eip==0x7003 && state.eflags==0xad7);
+    uint32_t pushed;memcpy(&pushed,(void *)(uintptr_t)(slot-4),4);assert(pushed==value);
+    const uint8_t reg_esp[]={0xff,0xf4};state.gpr[4]=slot;
+    assert(run(reg_esp,2,0x7010)==0);
+    memcpy(&pushed,(void *)(uintptr_t)(slot-4),4);assert(pushed==slot);
+    /* Source valid but destination underflows: do not commit ESP or memory. */
+    state.gpr[4]=state.stack_low;value=123;memcpy(stack.write_base,&value,4);
+    assert(run(from_esp,3,0x7020)==-1 && state.gpr[4]==state.stack_low && state.eflags==0xad7);
+    memcpy(&pushed,stack.write_base,4);assert(pushed==123);
+    /* Destination valid but source crosses the readable stack boundary. */
+    state.gpr[4]=state.stack_high-2;
+    assert(run(from_esp,3,0x7030)==-1 && state.gpr[4]==state.stack_high-2 && state.eip==0x7030);
+    const uint8_t continuation[]={0xff,0xf0,0x5a};
+    state.gpr[4]=slot;state.gpr[0]=42;
+    assert(run(continuation,3,0x7040)==0 && state.gpr[2]==42 && state.gpr[4]==slot && state.eip==0x7043);
+}
 static void absolute_tests(void)
 {
     uint32_t low=state.stack_low,high=state.stack_high;
@@ -347,6 +369,7 @@ int main(int argc, char **argv)
     comparison_tests();
     immediate_tests();
     absolute_tests();
+    push_operand_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};
