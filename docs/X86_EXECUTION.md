@@ -7,7 +7,8 @@ by Pinball's entry. It is not a complete decoder or CPU implementation.
 
 Supported encodings: push imm8/imm32/r32 and r32/memory (FF /6), pop r32, mov r32/imm32,
 mov r32/r32 and r32/memory (89/8B ModRM/SIB), LEA,
-MOV immediate/r32 or memory (C7 /0), register ADD (01/03), SUB (29/2B), XOR (31/33),
+MOV immediate/r32 or memory (C7 /0), register/memory ADD (01/03), SUB (29/2B), XOR (31/33),
+NOT/NEG r32/memory (F7 /2,/3), LEAVE (C9),
 Immediate ADD/OR/ADC/SBB/AND/SUB/XOR/CMP 16/32-bit (81/83 and accumulator
 forms, optional 66 prefix), CMP r32/memory
 (39/3B), TEST 32-bit register/memory or immediate (85, A9, F7 /0),
@@ -102,7 +103,8 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-104 instructions and eight completed API calls after adding clock services, logical TEST, guest arguments,
+129 instructions and thirteen completed API calls (twelve distinct APIs) after
+adding memory arithmetic and initializer epilogue support, clock services, logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
 
@@ -117,13 +119,19 @@ kind=host-api dll=msvcrt.dll name=_initterm result=0x0009001f
 kind=host-api dll=msvcrt.dll name=__getmainargs result=0x00000000
 kind=host-callback-enter dll=msvcrt.dll name=_initterm target=0x0101cd2b depth=1
 kind=host-api dll=kernel32.dll name=GetSystemTimeAsFileTime result=0x030fff34
-kind=host-entry-trace steps=104 stop=unsupported eip=0x0101cd51 esp=0x030fff28 ebp=0x030fff3c fs0=0x030fffe8 flags=0x00000246
+kind=host-api dll=kernel32.dll name=GetCurrentProcessId result=0x00000001
+kind=host-api dll=kernel32.dll name=GetCurrentThreadId result=0x00000002
+kind=host-api dll=kernel32.dll name=GetTickCount result=0x2891c09b
+kind=host-api dll=kernel32.dll name=QueryPerformanceCounter result=0x00000001
+kind=host-api dll=msvcrt.dll name=_initterm result=0x00000000
+kind=host-entry-trace steps=129 stop=unsupported eip=0x010210b0 esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000206
 ```
 
-The next stop is an unsupported instruction after `GetSystemTimeAsFileTime` inside the second `_initterm`'s
-guest callback. The first initializer call needed no callbacks; the second
-has not completed. Synthetic tests separately exercise complete translated
-and nested callbacks. `_controlfp` now
+The next stop is an unsupported instruction after the second `_initterm`
+returns. Its original-game callback has completed through the translator and
+guest ABI bridge. Clock values (and derived flags) vary across live runs;
+the transcript above is one observed run, not a fixed-value invariant.
+Synthetic tests separately exercise nested callbacks. `_controlfp` now
 updates guest control state without modifying host FP controls; arithmetic
 execution remains pending. Absolute MOV tests exercise independent read/write permissions,
 last-valid and crossing-boundary addresses, unchanged flags and fault atomicity.
@@ -133,8 +141,12 @@ the source before committing the destination or changing guest ESP.
 TEST regressions cover all five supported operand forms, sign/zero/parity
 flags, cleared carry/overflow, preserved operands, and memory-boundary faults.
 Undefined AF is retained deterministically, as with the other logical operations.
-The 104-instruction trace reproduces under ASan/UBSan. The shared Win32 adapter
-compiles for PS5, but the live clock provider is currently Linux-host-only.
+Memory-arithmetic tests cover operand order, aliasing of address/destination
+registers, results/flags and bounds. NOT/NEG tests cover register/memory forms
+and signed overflow; LEAVE/RET tests cover full frame teardown and invalid EBP.
+The 129-instruction run, including the original callback return, reproduces
+under ASan/UBSan. The translator compiles with the PS5 toolchain; live guest
+execution remains host-only. Next unsupported encoding: byte CMP (80 /7).
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses
@@ -145,7 +157,7 @@ that field is not a CRT return value (the same applies to `_initterm` and
 GetSystemTimeAsFileTime). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: eight narrow API cases have completed,
+This is host evidence only: twelve distinct API cases and one original callback have completed,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget

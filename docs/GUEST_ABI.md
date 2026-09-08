@@ -106,7 +106,7 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and `GetSystemTimeAsFileTime`, then stops after 104 instructions inside an original-game initializer callback.
+and the time/identity calls, then stops after 129 instructions after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
@@ -153,9 +153,10 @@ memory effects, null entries, nested empty and nonempty initializers, and
 checks malformed tables, permissions/ranges, stale tokens and damaged
 callee-saved register returns. Pinball's first observed `_initterm` returns
 without scheduling callbacks, so actual-game callbacks are not yet proven.
-The subsequent original-game initializer now schedules a callback and executes
-its first instructions, stopping at an unsupported instruction after its UTC call, before return.
-This is not completed original-game callback evidence.
+The subsequent original-game initializer now schedules a callback, executes
+its clock/identity calls and returns through the guest ABI bridge, allowing
+the enclosing `_initterm` to finish. This is completed original-game callback
+evidence on the host only; nested callback evidence remains synthetic.
 Host telemetry labels scheduled work `host-callback-enter` separately from
 the API-return records. No PS5 callback execution is claimed.
 
@@ -207,4 +208,5 @@ byte copies rather than alignment assumptions. Unavailable clocks, invalid
 destinations and counter overflow are classified runtime stops; Windows
 last-error/failure-return emulation remains future work. Tests use injected
 clock values to verify epochs, units, wraparound, ABI returns and failure
-atomicity. Only the UTC call has original-game host execution evidence so far.
+atomicity. UTC, tick, counter and both IDs now have original-game host evidence;
+timeGetTime remains unit-tested only.

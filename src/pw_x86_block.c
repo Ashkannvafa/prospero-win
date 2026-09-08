@@ -203,8 +203,8 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             else {
                 int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
                 if(result!=PW_OK)return result;
-                if(op==0xf7 && operand.reg!=0)return PW_ERR_UNSUPPORTED;
-                length=1+operand.bytes+(op==0xf7?4:0);
+                if(op==0xf7 && operand.reg!=0 && operand.reg!=2 && operand.reg!=3)return PW_ERR_UNSUPPORTED;
+                length=1+operand.bytes+(op==0xf7 && operand.reg==0?4:0);
             }
         } else if(op==0x66 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=op==0x66?1:0;
@@ -242,19 +242,30 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
             if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
             if (op==0xff && operand.reg!=2 && operand.reg!=4 && operand.reg!=6) return PW_ERR_UNSUPPORTED;
-            if ((op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0x01 || op==0x03) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
         } else if (op == 0x6a || op == 0xeb) length = 2;
         else if (op == 0x68 || op == 0xe8 || op == 0xe9 || op==0xa1 || op==0xa3 ||
                  (op >= 0xb8 && op <= 0xbf)) length = 5;
-        else if (op == 0xc3 || op == 0x90 || (op >= 0x50 && op <= 0x5f)) length = 1;
+        else if (op == 0xc3 || op == 0xc9 || op == 0x90 || (op >= 0x50 && op <= 0x5f)) length = 1;
         else return PW_ERR_UNSUPPORTED;
         if (length > bytes-cursor) return PW_ERR_TRUNCATED;
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if(op==0x85 || op==0xf7 || op==0xa9) {
+        if(op==0xc9) {
+            load_eax(&e,offsetof(PwX86State,gpr[5]));stack_bounds(&e);
+            byte(&e,0x8b);byte(&e,0x08);
+            byte(&e,0x83);byte(&e,0xc0);byte(&e,4);
+            store_eax(&e,offsetof(PwX86State,gpr[4]));
+            byte(&e,0x89);byte(&e,0x4f);byte(&e,offsetof(PwX86State,gpr[5]));
+        } else if(op==0xf7 && operand.reg!=0) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
+            byte(&e,0xf7);byte(&e,(operand.mod==3?0xc0:0)|(operand.reg<<3));
+            if(operand.mod==3)store_eax(&e,operand.rm*4);
+            if(operand.reg==3)save_arithmetic_flags(&e,0x8d5);
+        } else if(op==0x85 || op==0xf7 || op==0xa9) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {effective_address(&e,&operand);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
             if(op==0x85){byte(&e,0x85);byte(&e,0x47);byte(&e,operand.reg*4);}
@@ -331,9 +342,21 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             unsigned logical=op==0x31 || op==0x33;
             unsigned dest=reverse?operand.rm:operand.reg;
             unsigned src=reverse?operand.reg:operand.rm;
-            load_eax(&e,dest*4);
-            byte(&e,logical?0x33:(op==0x01 || op==0x03)?0x03:0x2b); byte(&e,0x47); byte(&e,src*4);
-            store_eax(&e,dest*4);
+            if(operand.mod==3) {
+                load_eax(&e,dest*4);
+                byte(&e,logical?0x33:(op==0x01 || op==0x03)?0x03:0x2b); byte(&e,0x47); byte(&e,src*4);
+                store_eax(&e,dest*4);
+            } else {
+                effective_address(&e,&operand);memory_address_width(&e,reverse?2:0,4);
+                if(reverse) {
+                    byte(&e,0x8b);byte(&e,0x4f);byte(&e,operand.reg*4);
+                    byte(&e,op);byte(&e,0x08); /* [rax] op ecx */
+                } else {
+                    byte(&e,0x8b);byte(&e,0x08); /* read memory before changing its address register */
+                    load_eax(&e,operand.reg*4);
+                    byte(&e,op);byte(&e,0xc1);store_eax(&e,operand.reg*4);
+                }
+            }
             /* XOR's AF is undefined: retain guest AF deterministically. */
             save_arithmetic_flags(&e,logical?0x8c5:0x8d5);
         } else if (op==0xc7) {
