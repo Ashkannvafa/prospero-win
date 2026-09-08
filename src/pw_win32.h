@@ -11,10 +11,20 @@ typedef struct PwWin32Init {
     PwGuestCallback callback;
     uint32_t cursor,end;
 } PwWin32Init;
+typedef enum PwClockDomain { PW_CLOCK_UTC=1, PW_CLOCK_UPTIME=2, PW_CLOCK_COUNTER=3 } PwClockDomain;
+typedef struct PwWin32Services {
+    void *opaque;
+    /* UTC: nanoseconds since Unix epoch (nonnegative); uptime: ns since boot
+     * including suspend; counter: monotonic nanoseconds, frequency 1 GHz.
+     * Return PW_OK only when the selected domain was actually sampled. */
+    int (*clock_ns)(void *,PwClockDomain,uint64_t *);
+    uint32_t process_id,thread_id; /* guest registry IDs, not host handles */
+} PwWin32Services;
 typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
     PwGuestArgs args;
     uint32_t new_mode;
+    PwWin32Services services;
     const char *last_dll,*last_name;
     unsigned calls;
     unsigned callback_pending,init_depth;

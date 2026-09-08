@@ -94,6 +94,39 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
     if(offset%16 || index>=sizeof(pw_catalog)/sizeof(pw_catalog[0]) ||
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
+    unsigned kernel=!strcmp(r->last_dll,"kernel32.dll");
+    unsigned wall=kernel && !strcmp(r->last_name,"GetSystemTimeAsFileTime");
+    unsigned counter=kernel && !strcmp(r->last_name,"QueryPerformanceCounter");
+    unsigned tick=(kernel && !strcmp(r->last_name,"GetTickCount")) ||
+        (!strcmp(r->last_dll,"winmm.dll") && !strcmp(r->last_name,"timeGetTime"));
+    unsigned pid=kernel && !strcmp(r->last_name,"GetCurrentProcessId");
+    unsigned tid=kernel && !strcmp(r->last_name,"GetCurrentThreadId");
+    if(wall || counter || tick || pid || tid) {
+        PwGuestCall call={0};uint32_t address=0;uint64_t value=0;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,(wall || counter)?4:0,0);
+        if(status!=PW_OK)return status;
+        if(wall || counter) {
+            if((status=pw_guest_call_u32(&call,0,&address))!=PW_OK)return status;
+            if(address>UINT32_MAX-7)return PW_ERR_VM;
+            if((status=word_access(state,address,PW_X86_WRITE))!=PW_OK)return status;
+            if((status=word_access(state,address+4,PW_X86_WRITE))!=PW_OK)return status;
+        }
+        if(pid || tid) {
+            value=pid?r->services.process_id:r->services.thread_id;
+            if(!value)return PW_ERR_STATE;
+        } else {
+            if(!r->services.clock_ns)return PW_ERR_STATE;
+            status=r->services.clock_ns(r->services.opaque,wall?PW_CLOCK_UTC:counter?PW_CLOCK_COUNTER:PW_CLOCK_UPTIME,&value);
+            if(status!=PW_OK)return status;
+            if(wall)value=value/100+116444736000000000ull;
+            else if(tick)value=(uint32_t)(value/1000000);
+            else if(value>INT64_MAX)return PW_ERR_LIMIT;
+        }
+        status=pw_guest_call_finish(&call,wall?0:32,counter?1:value);
+        if(status!=PW_OK)return status;
+        if(wall || counter)memcpy((void *)(uintptr_t)address,&value,8);
+        r->calls++;return PW_OK;
+    }
     if(!strcmp(r->last_dll,"msvcrt.dll")) {
         if(!strcmp(r->last_name,"__getmainargs")) {
             PwGuestCall call={0};uint32_t a[5],mode=r->new_mode;

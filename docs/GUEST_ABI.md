@@ -81,6 +81,7 @@ guest FP-state services, not a claim of generic cdecl compatibility.
 imports. Unknown names/ordinals are refused. All 205 function imports bind
 to unique dispatcher tokens, not host addresses. Initial handlers cover
 `GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm` and `__getmainargs`.
+Six time/identity handlers are also available through explicit services below.
 Named-module arguments and other API calls stop explicitly without guest-state mutation or a false
 success. A bound function is not necessarily an implemented function.
 
@@ -105,7 +106,7 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and stops after 103 instructions at `GetSystemTimeAsFileTime` inside an original-game initializer callback.
+and `GetSystemTimeAsFileTime`, then stops after 104 instructions inside an original-game initializer callback.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
@@ -153,7 +154,7 @@ checks malformed tables, permissions/ranges, stale tokens and damaged
 callee-saved register returns. Pinball's first observed `_initterm` returns
 without scheduling callbacks, so actual-game callbacks are not yet proven.
 The subsequent original-game initializer now schedules a callback and executes
-its first instructions, stopping at a pending time API before return.
+its first instructions, stopping at an unsupported instruction after its UTC call, before return.
 This is not completed original-game callback evidence.
 Host telemetry labels scheduled work `host-callback-enter` separately from
 the API-return records. No PS5 callback execution is claimed.
@@ -179,3 +180,31 @@ requests and unsupported mode values stop explicitly. Allocator behavior
 for new_mode remains pending along with heap implementation.
 Tests cover quoting/escaping, empty input/arguments, explicit environments,
 pointer packing, storage/argument limits, and API failure atomicity.
+
+## Clock and identity services
+
+`PwWin32Services` injects three clock domains and two stable guest IDs. Missing
+services stop explicitly; shared runtime code never assumes host process IDs.
+The Linux tracer connects UTC to CLOCK_REALTIME, uptime to CLOCK_BOOTTIME
+(including suspend), and the counter to CLOCK_MONOTONIC, with guest IDs 1/2.
+PS5 clock bindings and a multi-process/thread ID registry remain pending.
+
+- `GetSystemTimeAsFileTime`: stdcall pointer output, void return; converts
+  nonnegative Unix nanoseconds to 100 ns ticks using the 1601 UTC epoch offset.
+  Layout follows [FILETIME](https://learn.microsoft.com/en-us/windows/win32/api/minwinbase/ns-minwinbase-filetime).
+- `GetTickCount` and `timeGetTime`: uptime milliseconds modulo 2^32, as specified
+  by [GetTickCount](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-gettickcount)
+  and [timeGetTime](https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timegettime).
+- `QueryPerformanceCounter`: signed-range 64-bit monotonic nanosecond count
+  in guest memory, BOOL true on success. This backend's counter frequency is
+  1 GHz (units, not measured clock resolution); a future QueryPerformanceFrequency
+  handler must return that same frequency. That export is not yet implemented.
+- `GetCurrentProcessId` and `GetCurrentThreadId`: explicitly configured nonzero
+  guest identifiers. These are not host handles or process enumeration support.
+
+The 8-byte output range is fully checked before sampling or mutation, using
+byte copies rather than alignment assumptions. Unavailable clocks, invalid
+destinations and counter overflow are classified runtime stops; Windows
+last-error/failure-return emulation remains future work. Tests use injected
+clock values to verify epochs, units, wraparound, ABI returns and failure
+atomicity. Only the UTC call has original-game host execution evidence so far.

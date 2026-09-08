@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+#define _GNU_SOURCE
 /* Host-only bounded instruction tracer. Private input is never staged.
  * This is not a complete application loader or Win32 implementation. */
 #include "../src/pe_image.h"
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(__clang__)
 __attribute__((no_sanitize("function")))
@@ -16,6 +18,20 @@ __attribute__((no_sanitize("function")))
 static int invoke(void *entry,PwX86State *state)
 { return ((int (*)(PwX86State *))entry)(state); }
 static PwImportBindWorkspace binding_work;
+static int host_clock(void *opaque,PwClockDomain domain,uint64_t *ns)
+{
+    (void)opaque;
+    clockid_t id;
+    if(domain==PW_CLOCK_UTC)id=CLOCK_REALTIME;
+    else if(domain==PW_CLOCK_COUNTER)id=CLOCK_MONOTONIC;
+    else if(domain==PW_CLOCK_UPTIME)id=CLOCK_BOOTTIME;
+    else return PW_ERR_UNSUPPORTED;
+    struct timespec value;
+    if(clock_gettime(id,&value) || value.tv_sec<0 || value.tv_nsec<0 || value.tv_nsec>=1000000000)
+        return PW_ERR_STATE;
+    if((uint64_t)value.tv_sec>(UINT64_MAX-(uint64_t)value.tv_nsec)/1000000000)return PW_ERR_LIMIT;
+    *ns=(uint64_t)value.tv_sec*1000000000+(uint64_t)value.tv_nsec;return PW_OK;
+}
 
 int main(int argc,char **argv)
 {
@@ -66,6 +82,7 @@ int main(int argc,char **argv)
     int command_bytes=snprintf(commandline,sizeof(commandline),"\"C:\\game\\%s\"",base);
     if(command_bytes<0 || (size_t)command_bytes>=sizeof(commandline))goto cleanup;
     if(pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline)!=PW_OK)goto cleanup;
+    runtime.services=(PwWin32Services){.clock_ns=host_clock,.process_id=1,.thread_id=2};
     PwImportBindReport binding;
     if(pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,&binding_work,&binding)!=PW_OK)goto cleanup;
     printf("kind=host-import-bind total=%u functions=%u data=%u\n",binding.total,binding.functions,binding.data);

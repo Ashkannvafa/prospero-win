@@ -102,7 +102,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-103 instructions and seven completed API calls after adding logical TEST, guest arguments,
+104 instructions and eight completed API calls after adding clock services, logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
 
@@ -116,11 +116,11 @@ kind=host-api dll=msvcrt.dll name=_controlfp result=0x0009001f
 kind=host-api dll=msvcrt.dll name=_initterm result=0x0009001f
 kind=host-api dll=msvcrt.dll name=__getmainargs result=0x00000000
 kind=host-callback-enter dll=msvcrt.dll name=_initterm target=0x0101cd2b depth=1
-kind=host-api-stop dll=kernel32.dll name=GetSystemTimeAsFileTime status=-5
-kind=host-entry-trace steps=103 stop=unimplemented-api eip=0xe00002c0 esp=0x030fff20 ebp=0x030fff3c fs0=0x030fffe8 flags=0x00000246
+kind=host-api dll=kernel32.dll name=GetSystemTimeAsFileTime result=0x030fff34
+kind=host-entry-trace steps=104 stop=unsupported eip=0x0101cd51 esp=0x030fff28 ebp=0x030fff3c fs0=0x030fffe8 flags=0x00000246
 ```
 
-The next stop is `GetSystemTimeAsFileTime` inside the second `_initterm`'s
+The next stop is an unsupported instruction after `GetSystemTimeAsFileTime` inside the second `_initterm`'s
 guest callback. The first initializer call needed no callbacks; the second
 has not completed. Synthetic tests separately exercise complete translated
 and nested callbacks. `_controlfp` now
@@ -133,18 +133,19 @@ the source before committing the destination or changing guest ESP.
 TEST regressions cover all five supported operand forms, sign/zero/parity
 flags, cleared carry/overflow, preserved operands, and memory-boundary faults.
 Undefined AF is retained deterministically, as with the other logical operations.
-The 103-instruction trace reproduces under ASan/UBSan and the translator
-compiles with the PS5 toolchain; neither establishes PS5 guest execution.
+The 104-instruction trace reproduces under ASan/UBSan. The shared Win32 adapter
+compiles for PS5, but the live clock provider is currently Linux-host-only.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses
 preserve memory and guest flags. ADC/SBB import only guest CF into the host
 arithmetic operation, never guest control flags.
 The tracer's `result` field reports EAX; `__set_app_type` returns void, so
-that field is not a CRT return value (the same applies to `_initterm`). Regression tests cover all 16
+that field is not a CRT return value (the same applies to `_initterm` and
+GetSystemTimeAsFileTime). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: seven narrow API cases have completed,
+This is host evidence only: eight narrow API cases have completed,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
