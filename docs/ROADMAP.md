@@ -30,8 +30,8 @@ structured ps5log/1 evidence and an independently checked result.
   XMM state, guest-to-host imports and host-to-guest callbacks. Use explicit
   Win64 ABI functions/thunks. Each case has expected outputs and canaries;
   repeat on hardware before claiming the bridge works there.
-  Host mapped-code integer/float/callback tests now pass; the six-integer
-  assembly call bridge also compiles for PS5. The target rejects ms_abi,
+  Host mapped-code integer/float/callback tests pass; the six-integer
+  assembly call bridge passed synthetic-code execution on PS5. The target rejects ms_abi,
   so native import/callback stubs must be explicit. See EXECUTION_MODEL.md.
 - [ ] **P1 x86 feasibility prototype.** Decode and translate bounded blocks;
   compare registers, flags, memory and exceptions with native 32-bit host

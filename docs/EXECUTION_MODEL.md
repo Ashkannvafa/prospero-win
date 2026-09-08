@@ -30,13 +30,34 @@ The pinned Prospero Clang 18 target rejects ms_abi as unsupported. Native
 code therefore uses the explicit SysV-to-Win64 assembly bridge
 src/pw_win64_call.S. Its six integer/pointer argument path matches the host
 compiler reference, including nested callbacks, and compiles for the PS5
-target. It is not yet linked into the title or hardware-tested. The full
-conformance test's ms_abi functions remain host-only reference code.
+target. Its integer call path is now linked and hardware-tested as recorded
+below. The full conformance test's ms_abi functions remain host-only reference code.
 
 Remaining 0.2b work: native host-import entry stubs, native callbacks,
 preserved GPR/XMM canaries, mixed arguments, aggregate returns, variadics
 where needed, hardware telemetry and an independent execution validator.
 PE32 cdecl/stdcall and x87 semantics remain separate required work.
+
+### PS5 integer call result (FW 12.02)
+
+Run `20260908T150617934Z_PPSA99995_prospero-win_0x102dcb26b5fc6`, source
+`6e661a9`, passed the independent mapping validator with --expect-call6,
+--root pinball.exe, --expect-modules 9, --expect-local 0, --expect-host 8,
+--allow-i386, --allow-wx and --expect-compat32 refused.
+
+- ELF SHA-256: `dc5415023418fc7e4bceaa64a787bbda4fed0f67c30a13a998bafb2930805ebf`.
+- fSELF SHA-256: `bd5bcd6ae13c17c710d20fa2202f3e36261f318eae9aaafaf26b7ba9b0823557`.
+- Transcript SHA-256: `ffe23998d460cca5a75701dcd01f6ac3a8662ce9ec4ca3dfd6dd83d611316f88`.
+- PW_CALL6: constant=42, alignment=8, weighted=278, high=4294967574,
+  sealed=1, released=1, status=ok, kind=synthetic-code.
+- The original PE32 mapping then passed again; clean BYE, 54 records,
+  no active BigApp after exit and all four services healthy.
+
+This executes project-authored Win64 instructions from anonymous RX memory,
+not instructions from the original Pinball. It establishes the six-integer
+assembly call path, including stack arguments and home slots. It does not
+close the full 0.2b ABI gate: preserved-register canaries, imports, callbacks
+and floating/aggregate conventions still need native coverage.
 
 Reference: [Microsoft x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention).
 
