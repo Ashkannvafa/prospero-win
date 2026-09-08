@@ -46,6 +46,43 @@ static void string_tests(PwWin32 *r,PwX86State *s)
     r->services.ansi_codepage=65001;
     assert(pw_win32_dispatch(r,s)==PW_ERR_UNSUPPORTED);
 }
+static void length_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"lstrlenA");
+    assert(pw_win32_resolve(r,"kernel32.dll",&symbol,&target)==PW_OK);
+    PwVmRegion text;
+    assert(vm->reserve_at(NULL,0x03400000,0x100000,4096,&text)==PW_OK);
+    assert(vm->commit(NULL,&text,0,0x100000,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+    s->memory_count=2;
+    s->memory[0]=(PwX86Memory){0x03400000,0x03400002,PW_X86_READ};
+    s->memory[1]=(PwX86Memory){0x03400002,0x03500000,PW_X86_READ};
+    uint8_t *p=text.write_base;
+    for(unsigned test=0;test<8;test++) {
+        memset(p,'A',0x100000);uint32_t address=0x03400000,expected=0;
+        int result=PW_OK;
+        switch(test) {
+        case 0:address=0;break;
+        case 1:p[0]=0;break;
+        case 2:p[0]=0xe9;p[1]=0x80;p[3]=0;expected=3;break;
+        case 3:p[0xfffff]=0;expected=0xfffff;break;
+        case 4:result=PW_ERR_LIMIT;break;
+        case 5:address=0x034fffff;result=PW_ERR_VM;break;
+        case 6:s->memory[0].permissions=PW_X86_WRITE;result=PW_ERR_VM;break;
+        default:address=0xffffffff;result=PW_ERR_VM;break;
+        }
+        s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-8;s->eflags=0xad7;
+        uint32_t frame[]={0x01001234,address};memcpy((void *)(uintptr_t)s->gpr[4],frame,8);
+        PwX86State before=*s;unsigned calls=r->calls;
+        assert(pw_win32_dispatch(r,s)==result);
+        if(result==PW_OK) {
+            assert(s->gpr[0]==expected && s->gpr[4]==s->stack_high && s->eip==frame[0]);
+            assert(s->eflags==before.eflags && r->calls==calls+1);
+            for(unsigned reg=1;reg<8;reg++)if(reg!=4)assert(s->gpr[reg]==before.gpr[reg]);
+        } else assert(!memcmp(s,&before,sizeof(before)) && r->calls==calls);
+        s->memory[0].permissions=PW_X86_READ;
+    }
+    assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
+}
 int main(void)
 {
     PwVmBackend vm;PwVmRegion data;
@@ -161,5 +198,6 @@ int main(void)
     symbol.by_ordinal=1;symbol.ordinal=42;
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
     string_tests(&runtime,&state);
+    length_tests(&runtime,&state,&vm);
     assert(vm.release(NULL,&data)==PW_OK);return 0;
 }

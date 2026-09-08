@@ -53,6 +53,17 @@ static int range_access(PwX86State *s,uint32_t address,size_t bytes,unsigned per
 }
 static int word_access(PwX86State *s,uint32_t address,unsigned permission)
 {return range_access(s,address,4,permission);}
+static int string_length(PwX86State *s,uint32_t address,uint32_t *length)
+{
+    /* Bounded guest reads only; never hand an unvalidated pointer to strlen. */
+    for(uint32_t n=0;n<0x100000;n++) {
+        if(address>UINT32_MAX-n)return PW_ERR_VM;
+        int status=range_access(s,address+n,1,PW_X86_READ);
+        if(status!=PW_OK)return status;
+        if(!*(const uint8_t *)(uintptr_t)(address+n)){*length=n;return PW_OK;}
+    }
+    return PW_ERR_LIMIT;
+}
 static int cp1252(uint32_t c,uint8_t *out)
 {
     static const uint16_t high[32]={0x20ac,0,0x201a,0x192,0x201e,0x2026,0x2020,0x2021,
@@ -134,6 +145,16 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         r->calls++;return PW_OK;
     }
     unsigned kernel=!strcmp(r->last_dll,"kernel32.dll");
+    if(kernel && !strcmp(r->last_name,"lstrlenA")) {
+        PwGuestCall call={0};uint32_t address,length=0;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&address))!=PW_OK)return status;
+        if(address && (status=string_length(state,address,&length))!=PW_OK)return status;
+        status=pw_guest_call_finish(&call,32,length);
+        if(status==PW_OK)r->calls++;
+        return status;
+    }
     if(kernel && !strcmp(r->last_name,"GetStartupInfoA")) {
         /* Serialize STARTUPINFOA32, never the host's pointer-sized structure.
          * GUI launch: show policy supplied, no inherited console handles,

@@ -107,13 +107,27 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and the time/identity calls plus GetStartupInfoA and LoadStringA, then stops at lstrlenA after 351 instructions
+and the time/identity calls plus GetStartupInfoA, LoadStringA and lstrlenA, then stops at malloc after 362 instructions
 (4096-event host limit), after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
 dispatch and return, plus a
 named stop for a pending API. No PS5 execution of this integration is claimed.
+
+## Guest string lengths
+
+`lstrlenA` uses stdcall with one 32-bit guest pointer. NULL returns zero;
+otherwise it checks read access for each byte before looking for NUL. Adjacent
+readable regions can form one string; a gap or missing read permission stops
+without changing the guest call state. The maximum scan is 1 MiB, including
+the terminator; exhaustion returns an explicit runtime limit, not a false
+length. No unchecked guest pointer reaches host strlen. Length counts bytes,
+not Unicode codepoints. A valid return preserves guest flags and callee state.
+Tests cover NULL/empty/extended bytes, region crossings, a last-byte terminator,
+scan-limit exhaustion and inaccessible/unterminated input. The original host
+trace returns 32 for the preceding resource string and next requests malloc.
+Reference: [lstrlenA](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lstrlena).
 
 ## Resource strings
 

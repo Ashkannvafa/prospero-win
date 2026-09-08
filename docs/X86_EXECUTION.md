@@ -106,7 +106,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-351 instructions and sixteen completed API calls (fourteen distinct APIs),
+362 instructions and seventeen completed API calls (fifteen distinct APIs),
 using the optional 4096-event limit (`trace_x86_entry private.exe 4096`), after
 adding memory arithmetic and initializer epilogue support, clock services, logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
@@ -125,17 +125,18 @@ kind=host-callback-enter dll=msvcrt.dll name=_initterm target=0x0101cd2b depth=1
 kind=host-api dll=kernel32.dll name=GetSystemTimeAsFileTime result=0x030fff34
 kind=host-api dll=kernel32.dll name=GetCurrentProcessId result=0x00000001
 kind=host-api dll=kernel32.dll name=GetCurrentThreadId result=0x00000002
-kind=host-api dll=kernel32.dll name=GetTickCount result=0x28b1fd71
+kind=host-api dll=kernel32.dll name=GetTickCount result=0x28b7fd9e
 kind=host-api dll=kernel32.dll name=QueryPerformanceCounter result=0x00000001
 kind=host-api dll=msvcrt.dll name=_initterm result=0x00000000
 kind=host-api dll=kernel32.dll name=GetStartupInfoA result=0x030fff78
 kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
 kind=host-api dll=user32.dll name=LoadStringA result=0x00000020
-kind=host-api-stop dll=kernel32.dll name=lstrlenA status=-5
-kind=host-entry-trace steps=351 stop=unimplemented-api eip=0xe00004d0 esp=0x030ffdf8 ebp=0x030ffe00 fs0=0x030fffe8 flags=0x00000293
+kind=host-api dll=kernel32.dll name=lstrlenA result=0x00000020
+kind=host-api-stop dll=msvcrt.dll name=malloc status=-5
+kind=host-entry-trace steps=362 stop=unimplemented-api eip=0xe00006f0 esp=0x030ffde8 ebp=0x030ffdf4 fs0=0x030fffe8 flags=0x00000207
 ```
 
-The next stop is the lstrlenA dispatcher token, after LoadStringA copies a real
+The next stop is the malloc dispatcher token, after lstrlenA measures and LoadStringA copies a real
 private PE string resource (32 characters) and the CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
@@ -174,7 +175,7 @@ Counts are masked to five bits; zero preserves every guest flag, AF is retained,
 and OF is updated only for count one. Tests cover ECX/CL aliasing, continuation
 and rejected crossing-boundary accesses, including a zero-count memory operand.
 Rotates and 8/16-bit shifts are not yet implemented.
-The 351-instruction trace with a 4096-event limit reproduces under ASan/UBSan;
+The 362-instruction trace with a 4096-event limit reproduces under ASan/UBSan;
 the translator compiles for PS5. Native guest execution is still not integrated.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
@@ -186,7 +187,7 @@ that field is not a CRT return value (the same applies to `_initterm` and
 GetSystemTimeAsFileTime and GetStartupInfoA). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: fourteen distinct API cases and one original callback have completed,
+This is host evidence only: fifteen distinct API cases and one original callback have completed,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
