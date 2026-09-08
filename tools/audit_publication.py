@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Fail-closed audit for the standalone public repository.
+
+prospero-win reads Windows executables, so the first thing this audit does
+is refuse to let one into the tree. Games, vendor DLLs and staged samples
+are private build inputs; the repository holds only its own source, its own
+synthetic generator and structural evidence.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import ipaddress
+import re
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ALLOWLIST = ROOT / "PUBLICATION_ALLOWLIST.txt"
+TEXT_SUFFIXES = {
+    "", ".c", ".example", ".h", ".json", ".md", ".py", ".sh", ".txt", ".yml",
+}
+# Files carried verbatim from another tree of the laboratory. They are
+# pinned by digest and exempt from the text scan, because editing them here
+# would silently fork the canonical `ps5log/1` client. The source of truth
+# is `projects/logging_server/client/` in the private laboratory repository.
+PINNED_SHA256 = {
+    "native/ps5log/ps5log.h":
+        "394af67d0f8b60b3335deb53396e52855ea2daa50ca914a456ea7663f48900c6",
+    "native/ps5log/ps5log.c":
+        "7e83ad95057279b60b36d59793baabf2eab5726d15f013f44920294d14d83f13",
+    "native/ps5log/ps5log_ps5_net.h":
+        "57b8889c8653af6f7bcb008db637713995f878bfc0848ee04087070868a3c9d9",
+    "native/ps5log/ps5log_ps5_net.c":
+        "9a1b8657add0f4d261c36a162145b220d71a9328d330dfcb49829e688e09fc59",
+}
+GENERATED_ROOTS = {".deps", "build", "dist", "release"}
+FORBIDDEN_PARTS = {"captures", "dumps", "ghidra", "sessions", "win"}
+
+# Private laboratory paths and the identities of other titles installed on
+# the console. A helper pinned to one of those would launch the wrong app.
+FORBIDDEN_TERMS = (
+    "/home/" + "manuel/",
+    "/data/homebrew/" + "PPSA99995",
+    "PPSA999" + "96",
+    "PPSA999" + "97",
+    "PPSA999" + "98",
+)
+
+# A tracked file that starts with a DOS header is a Windows binary.
+PE_MAGIC = b"MZ"
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"publication audit failed: {message}")
+
+
+def main() -> int:
+    for name in GENERATED_ROOTS:
+        if (ROOT / name).exists():
+            ignored = subprocess.run(
+                ["git", "check-ignore", "--quiet", "--", name],
+                cwd=ROOT, check=False,
+            )
+            if ignored.returncode != 0:
+                fail(f"generated directory is not ignored: {name}")
+
+    ignore = ROOT / ".gitignore"
+    ignore_text = ignore.read_text(encoding="utf-8")
+    for pattern in ("*.exe", "*.dll", "dev.conf"):
+        if pattern not in ignore_text:
+            fail(f".gitignore must exclude {pattern}")
+
+    allowed = {
+        line.strip() for line in ALLOWLIST.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    observed: set[str] = set()
+    for path in ROOT.rglob("*"):
+        relative = path.relative_to(ROOT)
+        if ".git" in relative.parts:
+            continue
+        if relative.parts and relative.parts[0] in GENERATED_ROOTS:
+            continue
+        if any(part in FORBIDDEN_PARTS or part == "__pycache__"
+               for part in relative.parts):
+            fail(f"forbidden path: {relative}")
+        if path.is_symlink():
+            fail(f"symlink is not publishable: {relative}")
+        if not path.is_file():
+            continue
+        name = relative.as_posix()
+        observed.add(name)
+        if name not in allowed:
+            fail(f"file is not allowlisted: {name}")
+
+        raw = path.read_bytes()
+        if raw[:2] == PE_MAGIC:
+            fail(f"Windows binary in the tree: {name}")
+        if name in PINNED_SHA256:
+            if hashlib.sha256(raw).hexdigest() != PINNED_SHA256[name]:
+                fail(f"vendored file was modified: {name}")
+            continue
+        if path.suffix.lower() not in TEXT_SUFFIXES:
+            fail(f"non-text file is not approved: {name}")
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            fail(f"non-UTF-8 content: {name}")
+        for term in FORBIDDEN_TERMS:
+            if term in text:
+                fail(f"private term in {name}: {term}")
+        for candidate in re.findall(
+                r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])", text):
+            try:
+                address = ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            if address.is_private and not address.is_loopback:
+                fail(f"private IP address in {name}")
+
+    missing = allowed - observed
+    if missing:
+        fail(f"allowlisted files missing: {', '.join(sorted(missing))}")
+    print(f"publication audit passed: {len(observed)} allowlisted files")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

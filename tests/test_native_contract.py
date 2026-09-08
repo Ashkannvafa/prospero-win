@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""Static contract for the loader core and the PS5 adapter.
+
+The adapter cannot be compiled by `make test`: it needs the pinned Prospero
+toolchain. These checks therefore hold the properties that a host compiler
+would not catch anyway, and that the porting playbook says decide whether a
+port survives its first boot.
+
+The central rule is principle 1: on this firmware a platform symbol that is
+merely exported is not a working one. The loader core is written to import
+almost nothing, and the calls the adapter does depend on are the ones the
+laboratory has already measured, each covered by a boot-time smoke test.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# Headers the portable core is allowed to include. Anything else is a new
+# dependency on the platform and must be argued for, not slipped in.
+CORE_HEADERS = {"<stddef.h>", "<stdint.h>", "<string.h>", "<limits.h>"}
+
+# Symbols the core must never reference.
+#   strcasestr: its FW 12.02 provider is unusable (playbook post-mortem).
+#   getcwd/chdir/access/opendir: measured EPERM or faulting from a title.
+#   malloc family: the libc heap is ~8 MiB and cannot be grown.
+#   snprintf/printf: formatting belongs to the gate's own bounded helpers.
+#   dlopen/execve: unavailable, and no part of this design needs them.
+FORBIDDEN_CORE = (
+    "strcasestr", "strcasecmp", "strncasecmp", "getcwd", "chdir", "access",
+    "opendir", "readdir", "getdents", "malloc", "calloc", "realloc", "free",
+    "snprintf", "sprintf", "printf", "fopen", "dlopen", "dlsym", "execve",
+    "setlocale", "tolower", "toupper",
+)
+
+CORE_SOURCES = sorted(
+    path.name for path in (ROOT / "src").glob("*.c")
+    if path.name != "pw_file_posix.c"
+)
+
+
+def read(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def includes(text: str) -> list[str]:
+    return re.findall(r'^\s*#include\s+(<[^>]+>)', text, re.M)
+
+
+def test_core_imports_nothing_surprising() -> None:
+    for name in CORE_SOURCES + [path.name for path in (ROOT / "src").glob("*.h")]:
+        relative = f"src/{name}"
+        text = read(relative)
+        if name in ("pw_vm_posix.c", "pw_vm_posix.h"):
+            continue                    # the one deliberate POSIX backend
+        for header in includes(text):
+            assert header in CORE_HEADERS, f"{relative} includes {header}"
+        for symbol in FORBIDDEN_CORE:
+            assert not re.search(rf"\b{symbol}\s*\(", text), \
+                f"{relative} calls {symbol}"
+
+
+def test_posix_backend_is_narrow() -> None:
+    text = read("src/pw_vm_posix.c")
+    assert set(includes(text)) <= {"<sys/mman.h>", "<unistd.h>"}, \
+        includes(text)
+    # It must never fall back to a file-backed mapping: PS5 mmap of a file
+    # returns ENOTSUP, so an accidental dependency would only fail on target.
+    assert "MAP_ANONYMOUS" in text
+    assert "MAP_SHARED" not in text
+    assert "open(" not in text
+
+
+def test_module_classification_is_explicit() -> None:
+    text = read("src/pw_module_name.c")
+    # The Win32 surface prospero-win implements itself, never loads.
+    for name in ("kernel32.dll", "user32.dll", "msvcrt.dll", "ntdll.dll"):
+        assert f'"{name}"' in text, name
+    # Third-party modules must stay absent so they are manually mapped.
+    for name in ("binkw32.dll", "mss32.dll", "smackw32.dll"):
+        assert f'"{name}"' not in text, name
+
+
+def test_adapter_uses_measured_platform_calls() -> None:
+    text = read("native/pw_file_ps5.c")
+    # sceKernelOpen/Close/Stat plus libc read/lseek on that descriptor is
+    # the combination already proven on FW 12.02 by the Xash3D port.
+    for symbol in ("sceKernelOpen", "sceKernelClose", "sceKernelStat"):
+        assert f"extern int {symbol}(" in text, symbol
+    assert re.search(r"\bread\(descriptor", text)
+    assert re.search(r"\blseek\(descriptor", text)
+    # The image cannot be listed from a title, so there is no scan here.
+    for symbol in ("opendir", "readdir", "sceKernelGetdents"):
+        assert symbol not in text, symbol
+    # File bytes never come from the libc heap.
+    assert "mmap(" in text
+    assert re.search(r"\bmalloc\(", text) is None
+
+
+def test_adapter_reports_before_it_parses() -> None:
+    text = read("native/main.c")
+    assert "PW_BEGIN" in text
+    # A platform pre-flight runs before the loader touches any bytes.
+    smoke = text.index("pw_file_ps5_smoke")
+    gate = text.index("pw_gate_run")
+    assert smoke < gate, "the filesystem smoke test must precede the loader"
+    assert "PW_FS_SMOKE" in text
+    # Every exit path closes the channel, so no run ends without a BYE.
+    assert text.count("ps5log_close(") == text.count("_exit(0);")
+    assert text.count("_exit(0);") >= 5
+    # The registry is far too large for the libc heap.
+    assert "reserve_scratch(sizeof(*loader))" in text
+    assert re.search(r"\bmalloc\(", text) is None
+
+
+def test_builder_compiles_every_core_source() -> None:
+    builder = read("tools/build_native.sh")
+    sources = builder[builder.index("sources=("):]
+    sources = sources[:sources.index(")")]
+    for name in CORE_SOURCES:
+        assert f"src/{name}" in sources, \
+            f"tools/build_native.sh does not compile src/{name}"
+    # The host-only provider depends on dirent and stdio, both unusable on
+    # the console image; linking it in would only fail on target.
+    assert "pw_file_posix.c" not in sources
+    assert "native/main.c" in sources
+    assert "native/pw_file_ps5.c" in sources
+    # The banned import is rejected by the build, not merely documented.
+    assert "strcasestr" in builder
+
+
+def test_gate_records_stay_within_the_transport_budget() -> None:
+    text = read("src/pw_gate.h")
+    line_max = int(re.search(r"PW_GATE_LINE_MAX = (\d+)", text).group(1))
+    protocol = read("native/ps5log/ps5log.h")
+    record_max = int(re.search(r"define PS5LOG_MAX_LINE (\d+)",
+                               protocol).group(1))
+    # An oversized record would be truncated by the transport and the
+    # manifest would report it, failing the run for a formatting reason.
+    assert line_max < record_max, (line_max, record_max)
+
+
+def main() -> int:
+    tests = [value for name, value in sorted(globals().items())
+             if name.startswith("test_") and callable(value)]
+    for test in tests:
+        test()
+    print(f"native contract passed: {len(tests)} checks, "
+          f"{len(CORE_SOURCES)} core sources")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
