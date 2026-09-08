@@ -15,6 +15,10 @@
 #   PW_COMPAT32_TRANSFER   1 attempts the gate 0.2a far transfer into 32-bit
 #                          compatibility mode (default 0: install and report
 #                          the descriptors only, which cannot fault)
+#   PW_FOUNDATION_READY    1 trusts an already prepared foundation checkout
+#                          and verifies its artifacts instead of rebuilding
+#                          its dependencies, which would mutate a tree the
+#                          laboratory's other projects share (default 0)
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -52,11 +56,26 @@ fi
 [[ $(git -C "$foundation" rev-parse HEAD) == "$pin" ]] || {
     echo "native foundation pin verification failed" >&2; exit 2; }
 
-make -C "$foundation" deps libc >/dev/null
-
 sdk="$foundation/.deps/native/ps5-payload-sdk"
 native="$foundation/tooling/native"
 tool="$foundation/build/host/ps5-native-tool"
+
+# The pinned foundation is often a checkout shared with the laboratory's
+# other projects. Rebuilding its dependencies mutates that tree and reaches
+# the network, so when it is already complete, verify it instead.
+if [[ ${PW_FOUNDATION_READY:-0} == 1 ]]; then
+    for artifact in "$sdk/bin/prospero-lld" "$sdk/target/lib/libkernel.so" \
+                    "$foundation/runtime/libc.prx" \
+                    "$native/ps5-pie.ld" "$native/app_crt.cpp"; do
+        [[ -e $artifact ]] || {
+            echo "PW_FOUNDATION_READY=1 but $artifact is missing" >&2
+            exit 2
+        }
+    done
+    echo "using the prepared foundation at $foundation (deps not rebuilt)"
+else
+    make -C "$foundation" deps libc >/dev/null
+fi
 if [[ ! -x $tool ]]; then
     zlib_root="$foundation/.deps/native/zlib/root"
     zlib_archive=$(find "$zlib_root" -type f -name libz.a -print -quit)
