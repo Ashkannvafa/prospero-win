@@ -41,6 +41,7 @@ TESTS := test_pe_image test_pe_layout test_pe_reloc test_pe_import \
 test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe
 	@set -e; for test in $(addprefix $(BUILD)/,$(TESTS)); do $$test; done
 	python3 tests/test_title_identity.py
+	python3 tests/test_icon.py
 	python3 tests/test_native_contract.py
 	python3 tests/test_make_test_pe.py
 	python3 tests/test_validate_pe_map_evidence.py

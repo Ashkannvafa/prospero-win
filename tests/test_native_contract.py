@@ -140,9 +140,17 @@ def test_adapter_reports_before_it_parses() -> None:
     gate = text.index("pw_gate_run")
     assert smoke < gate, "the filesystem smoke test must precede the loader"
     assert "PW_FS_SMOKE" in text
-    # Every exit path closes the channel, so no run ends without a BYE.
-    assert text.count("ps5log_close(") == text.count("_exit(0);")
-    assert text.count("_exit(0);") >= 5
+    # Every exit path closes the channel, so no run ends without a BYE,
+    # including the fault path: a crash that says nothing costs a whole run.
+    assert "install_signal_reporter();" in text
+    assert "PW_SIGNAL" in text and "pc_minus_main" in text
+    assert "SA_SIGINFO" in text
+    # Count statements, not prose: the file also discusses _exit() in a
+    # comment explaining why main() must never return on this firmware.
+    exits = len(re.findall(r"^\s*_exit\(", text, re.M))
+    closes = len(re.findall(r"^\s*ps5log_close\(", text, re.M))
+    assert exits == closes, (exits, closes)
+    assert exits >= 6
     # The registry is far too large for the libc heap.
     assert "reserve_scratch(sizeof(*loader))" in text
     assert re.search(r"\bmalloc\(", text) is None

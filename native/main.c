@@ -20,9 +20,11 @@
 #include "pw_file_ps5.h"
 #include "ps5log/ps5log.h"
 
+#include <signal.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
@@ -52,6 +54,52 @@ static PwFileProvider provider;
 static PwVmBackend backend;
 static PwCompat32Ps5 compat32_state;
 static PwCompat32Platform compat32_platform;
+
+/* Declared so the fault reporter can express the program counter as an
+ * offset from a known symbol. */
+int main(int argc, char **argv);
+
+/*
+ * Without this, a fault truncates the transcript and says nothing: the
+ * first run of this title stopped after four records with no indication of
+ * where or why. The porting playbook's fault table reads `pc` outside the
+ * image with `rax == pc` and a null address as a call through a broken
+ * imported symbol, so the program counter, the fault address and rax are
+ * all reported, with pc given relative to main() so it can be symbolised
+ * offline against build/native/eboot.elf.
+ */
+static void fatal_signal(int number, siginfo_t *info, void *context)
+{
+    const ucontext_t *uc = context;
+    const uintptr_t base = (uintptr_t)&main;
+    const uintptr_t pc = uc ? (uintptr_t)uc->uc_mcontext.mc_rip : 0u;
+
+    PS5LOG_LOG("PW_SIGNAL sig=%d code=%d addr=%p pc=%p main=%p "
+               "pc_minus_main=%ld rax=%p rsp=%p rdi=%p",
+               number, info ? info->si_code : 0,
+               info ? info->si_addr : NULL, (void *)pc, (void *)base,
+               (long)(pc - base),
+               uc ? (void *)uc->uc_mcontext.mc_rax : NULL,
+               uc ? (void *)uc->uc_mcontext.mc_rsp : NULL,
+               uc ? (void *)uc->uc_mcontext.mc_rdi : NULL);
+    ps5log_close("pe-map-crashed");
+    _exit(1);
+}
+
+static void install_signal_reporter(void)
+{
+    static const int signals[] = {
+        SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP, SIGSYS,
+    };
+    struct sigaction act;
+
+    memset(&act, 0, sizeof(act));
+    act.sa_sigaction = fatal_signal;
+    act.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    for (size_t index = 0; index < sizeof(signals) / sizeof(signals[0]);
+         ++index)
+        (void)sigaction(signals[index], &act, NULL);
+}
 
 static uint64_t now_ns(void)
 {
@@ -101,6 +149,8 @@ int main(int argc, char **argv)
     log_result = config_result == 0
         ? ps5log_init(&log_config, PW_TITLE_ID, PW_APP_NAME, boot_token)
         : config_result;
+
+    install_signal_reporter();
 
     loader = reserve_scratch(sizeof(*loader));
     report = reserve_scratch(sizeof(*report));
@@ -171,6 +221,14 @@ int main(int argc, char **argv)
     }
 
     (void)pw_file_ps5_provider(&files, &provider);
+    /*
+     * The first hardware run stopped between the probe above and the
+     * loader below, with nothing to say which call did it. These markers
+     * bound each remaining step; the backend one is emitted before
+     * pw_vm_posix_backend(), whose page_bytes() is the first sysconf() call
+     * in the program and an import this firmware has never exercised.
+     */
+    PS5LOG_LOG("PW_STEP name=backend");
     status = pw_vm_posix_backend(&backend);
     if (status != PW_OK) {
         PS5LOG_LOG("PW_ABORT stage=backend status=%s",
@@ -179,6 +237,10 @@ int main(int argc, char **argv)
         _exit(0);
     }
 
+    PS5LOG_LOG("PW_STEP name=backend-ready page_bytes=%llu capabilities=0x%x",
+               (unsigned long long)backend.page_bytes, backend.capabilities);
+
+    PS5LOG_LOG("PW_STEP name=root-open");
     status = provider.open(provider.context, root_name, &root);
     if (status != PW_OK) {
         PS5LOG_LOG("PW_ABORT stage=root status=%s name=%s",
@@ -193,6 +255,8 @@ int main(int argc, char **argv)
     request.root_name = root_name;
     request.provider_path = stage_dir;
 
+    PS5LOG_LOG("PW_STEP name=gate root_bytes=%llu",
+               (unsigned long long)root.size);
     status = pw_gate_run(report, loader, &provider, &backend, &request);
     for (uint32_t index = 0; index < report->line_count; ++index)
         PS5LOG_LOG("%s", report->lines[index]);

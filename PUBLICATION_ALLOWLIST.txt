@@ -24,6 +24,7 @@ native/pw_file_ps5.h
 NOTICE.md
 PUBLICATION_ALLOWLIST.txt
 README.md
+sce_sys/icon0.png
 sce_sys/param.json
 src/pe_image.c
 src/pe_image.h
@@ -52,6 +53,7 @@ src/pw_vm.c
 src/pw_vm_posix.c
 src/pw_vm_posix.h
 tests/pe_fixture.h
+tests/test_icon.py
 tests/test_make_test_pe.py
 tests/test_native_contract.py
 tests/test_pe_image.c
@@ -70,5 +72,6 @@ tests/test_validate_pe_map_evidence.py
 tools/audit_publication.py
 tools/build_native.sh
 tools/inspect_pe.c
+tools/make_icon.py
 tools/make_test_pe.py
 tools/validate_pe_map_evidence.py

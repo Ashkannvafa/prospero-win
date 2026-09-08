@@ -142,7 +142,10 @@ objects+=("$build/obj/ps5log.o" "$build/obj/ps5log_ps5_net.o")
     --companion-sdk 0x08050001 --file-name eboot.elf
 "$tool" self --sign --in "$build/eboot.elf" --out "$dist/eboot.bin" \
     --magic 0x1D3D154F
-cp "$root/sce_sys/param.json" "$dist/sce_sys/"
+# The console installer copies icon0.png into /user/app/<title> and aborts
+# the whole registration if it is absent, so it is not optional.
+[[ -f $root/sce_sys/icon0.png ]] || python3 "$root/tools/make_icon.py"
+cp "$root/sce_sys/param.json" "$root/sce_sys/icon0.png" "$dist/sce_sys/"
 cp "$foundation/runtime/libc.prx" "$dist/sce_module/libc.prx"
 if [[ -f $dev_conf ]]; then
     cp "$dev_conf" "$dist/dev.conf"
