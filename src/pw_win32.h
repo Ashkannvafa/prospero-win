@@ -31,6 +31,7 @@ typedef struct PwWin32 {
     uint32_t new_mode;
     PwGuestHeap *heap; /* owner-supplied arena, registered RW in guest memory */
     uint32_t crt_errno; /* logical per-guest-thread errno; pointer export pending */
+    uint32_t last_error; /* Win32 per-guest-thread error, distinct from CRT errno */
     uint16_t startup_show; /* explicit GUI launch profile: SW_SHOWNORMAL by default */
     PwWin32Services services;
     const char *last_dll,*last_name;

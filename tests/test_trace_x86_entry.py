@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
                                           capture_output=True, text=True, timeout=5)
                 assert rejected.returncode == 1 and not rejected.stdout
     # Full synthetic PE -> IAT binding -> translated call -> Win32 return.
-    for api, reason in [("GetModuleHandleA", "unsupported"), ("GetLastError", "unimplemented-api")]:
+    for api, reason in [("GetModuleHandleA", "unsupported"), ("SetThreadPriority", "unimplemented-api")]:
         code=bytearray.fromhex("6a00 ff1500000000 cc")
         spec=Spec(name="synthetic.exe",pe32plus=False,image_base=0x01000000,
                   relocate_data_pointer=False,

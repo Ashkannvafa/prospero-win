@@ -128,6 +128,77 @@ static void length_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
     }
     assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
 }
+static int copy_call(PwWin32 *r,PwX86State *s,const char *name,uint32_t dst,
+                     uint32_t src,uint32_t count,unsigned arguments)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,name);
+    assert(pw_win32_resolve(r,"kernel32.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-4-arguments*4;
+    s->gpr[0]=0xaabbccdd;s->gpr[3]=0x33333333;s->gpr[5]=0x55555555;
+    s->gpr[6]=0x66666666;s->gpr[7]=0x77777777;s->eflags=0xad7;
+    uint32_t frame[]={0x01001234,dst,src,count};
+    memcpy((void *)(uintptr_t)s->gpr[4],frame,4+arguments*4);
+    return pw_win32_dispatch(r,s);
+}
+static void copy_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
+{
+    PwVmRegion text;
+    assert(vm->reserve_at(NULL,0x03400000,8192,4096,&text)==PW_OK);
+    assert(vm->commit(NULL,&text,0,8192,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+    s->memory_count=1;
+    s->memory[0]=(PwX86Memory){0x03400000,0x03402000,PW_X86_READ|PW_X86_WRITE};
+    uint8_t *p=text.write_base;uint32_t src=0x03400100,dst=0x03400300;
+    unsigned calls=r->calls;r->last_error=51;r->crt_errno=77;
+    memcpy(p+0x100,"abc",4);memset(p+0x300,0xcc,16);
+    assert(copy_call(r,s,"lstrcpyA",dst,src,0,2)==PW_OK);
+    assert(s->gpr[0]==dst && s->gpr[4]==s->stack_high && s->eip==0x01001234);
+    assert(s->eflags==0xad7 && s->gpr[3]==0x33333333 && s->gpr[5]==0x55555555 &&
+           s->gpr[6]==0x66666666 && s->gpr[7]==0x77777777);
+    assert(!memcmp(p+0x300,"abc",4) && p[0x304]==0xcc);
+    assert(r->last_error==51 && r->crt_errno==77 && r->calls==calls+1);
+
+    memcpy(p+0x100,"abcdef",7);
+    assert(copy_call(r,s,"lstrcpyA",src+2,src,0,2)==PW_OK);
+    assert(!memcmp(p+0x102,"abcdef",7));
+    memset(p+0x300,0xcc,8);calls=r->calls;
+    assert(copy_call(r,s,"lstrcpyA",dst,0xffffffffu,0,2)==PW_OK);
+    assert(s->gpr[0]==0 && r->last_error==87 && r->calls==calls+1);
+    for(unsigned i=0;i<8;i++)assert(p[0x300+i]==0xcc);
+
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"GetLastError");
+    assert(pw_win32_resolve(r,"kernel32.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-4;s->gpr[0]=0;
+    uint32_t return_pc=0x01001234;memcpy((void *)(uintptr_t)s->gpr[4],&return_pc,4);
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==87 &&
+           s->gpr[4]==s->stack_high && s->eip==return_pc);
+
+    memset(p+0x300,0xcc,16);
+    assert(copy_call(r,s,"lstrcpynA",0xffffffffu,0xffffffffu,0,3)==PW_OK);
+    assert(s->gpr[0]==0xffffffffu); /* count zero touches neither pointer */
+    assert(copy_call(r,s,"lstrcpynA",dst,0xffffffffu,1,3)==PW_OK);
+    assert(s->gpr[0]==dst && p[0x300]==0 && p[0x301]==0xcc);
+    memcpy(p+0x100,"abcdef",7);
+    assert(copy_call(r,s,"lstrcpynA",dst,src,4,3)==PW_OK);
+    assert(!memcmp(p+0x300,"abc",4) && p[0x304]==0xcc);
+    memcpy(p+0x100,"hi",3);memset(p+0x300,0xcc,8);
+    assert(copy_call(r,s,"lstrcpynA",dst,src,UINT32_MAX,3)==PW_OK);
+    assert(!memcmp(p+0x300,"hi",3) && p[0x303]==0xcc);
+    memcpy(p+0x100,"abcdef",7);
+    assert(copy_call(r,s,"lstrcpynA",src,src,4,3)==PW_OK);
+    assert(!memcmp(p+0x100,"abc",4));
+    calls=r->calls;
+    assert(copy_call(r,s,"lstrcpynA",src+1,src,4,3)==PW_ERR_UNSUPPORTED);
+    assert(r->calls==calls && !memcmp(p+0x100,"abc",4));
+
+    memcpy(p+0x100,"cd",3);memcpy(p+0x300,"ab",3);p[0x303]=0xcc;
+    assert(copy_call(r,s,"lstrcatA",dst,src,0,2)==PW_OK);
+    assert(s->gpr[0]==dst && !memcmp(p+0x300,"abcd",5) && p[0x305]==0xcc);
+    memcpy(p+0x100,"same",5);calls=r->calls;
+    assert(copy_call(r,s,"lstrcatA",src,src,0,2)==PW_ERR_UNSUPPORTED);
+    assert(r->calls==calls && !memcmp(p+0x100,"same",5));
+    assert(r->crt_errno==77);
+    assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
+}
 int main(void)
 {
     PwVmBackend vm;PwVmRegion data;
@@ -158,9 +229,10 @@ int main(void)
     assert(memcmp(&state,&before,sizeof(state))==0 && runtime.calls==1);
     strcpy(symbol.name,"GetLastError");
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_OK);
-    state.eip=(uint32_t)target.address;before=state;
-    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_UNSUPPORTED);
-    assert(!strcmp(runtime.last_name,"GetLastError") && memcmp(&state,&before,sizeof(state))==0);
+    state.gpr[4]=state.stack_high-4;state.eip=(uint32_t)target.address;
+    memcpy((void *)(uintptr_t)state.gpr[4],words,4);
+    assert(pw_win32_dispatch(&runtime,&state)==PW_OK && state.gpr[0]==0 &&
+           state.gpr[4]==state.stack_high && state.eip==words[0]);
     const char *crt_names[]={"__set_app_type","__p__fmode","__p__commode"};
     for(unsigned i=0;i<3;i++) {
         strcpy(symbol.name,crt_names[i]);
@@ -244,6 +316,7 @@ int main(void)
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
     string_tests(&runtime,&state);
     length_tests(&runtime,&state,&vm);
+    copy_tests(&runtime,&state,&vm);
     heap_tests(&runtime,&state,&vm);
     assert(vm.release(NULL,&data)==PW_OK);return 0;
 }

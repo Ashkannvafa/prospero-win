@@ -31,6 +31,53 @@ The server's inline-script endpoint was disabled. It was not enabled or
 bypassed; ordinary read-only program, memory, graph, disassembly and decompiler
 endpoints were sufficient for this pass.
 
+## Static instruction coverage baseline
+
+On 2026-09-08, `tools/survey_x86_coverage.py` walked the union of Ghidra's
+recorded direct graph from entry, application startup and the registered main
+window procedure. It passed every exact instruction byte sequence to
+`pw_x86_translate`; the result therefore measures accepted encodings and
+operand forms, rather than assuming that every instruction sharing a mnemonic
+is supported.
+
+| Root | Reachable functions | Unique static instructions | Accepted forms |
+| --- | ---: | ---: | ---: |
+| Entry | 151 | 8,082 | 7,547 (93.38%) |
+| Application startup | 145 | 7,905 | 7,371 (93.24%) |
+| Main window procedure | 350 | 23,338 | 20,641 (88.44%) |
+| Union of all three | 393 | 25,538 | 22,816 (89.34%) |
+
+All 393 function bodies were read successfully. Of 2,722 rejected static
+instructions, 2,300 are x87 encodings (84.50%); none of those x87 forms is
+implemented yet. The remaining 422 include unsupported MOV forms, string
+operations shown by Ghidra as MOVSD, IMUL, CDQ and less frequent integer forms.
+The largest x87 groups are FSTP (781), FLD (583), FLDZ (279), FNSTSW (129) and
+FMUL (125). If every observed x87 form alone were implemented, the arithmetic
+upper bound would become 98.35%; that is prioritisation guidance, not a forecast
+that an x87 implementation automatically makes the program run.
+
+The surveyed instructions include 926 indirect-call encodings and 10
+indirect-jump encodings. Those are occurrences, not unique unresolved targets;
+many are import-table calls that static analysis can identify. Conversely,
+computed targets and callbacks absent from recorded edges remain outside the
+reachable union. This baseline is static and unweighted: it neither says which
+paths execute nor replaces dynamic coverage, API contracts, exception behavior
+or PS5 execution evidence.
+
+Reproduce while the private program is open in the local Ghidra server:
+
+```sh
+make build/host/classify_x86
+python3 tools/survey_x86_coverage.py --program Pinball.exe \
+  --root 01020f95=entry --root 0100833a=startup \
+  --root 01007a3e=wndproc --classifier build/host/classify_x86 --json
+```
+
+The survey never writes raw instructions or assembly. Its output contains only
+aggregate counts, and the classifier calls the production translator so future
+instruction support changes are reflected without maintaining a duplicate
+opcode allowlist.
+
 ## Startup structure
 
 The entry graph calls 0x0100833a, whose decompilation contains resource and
@@ -117,6 +164,7 @@ Do not infer function-level execution order from unordered graph edges.
 Next: turn the six packages into an executable coverage checklist, continue
 with the CRT/string group after the default-handler heap integration; extend the
 callback-inclusive instruction survey and verify key structures against
-assembly. Host evidence now reaches 385 instructions, 18 API calls and
-a classified stop at lstrcpyA after a real guest allocation. No window, gameplay or translated PS5 execution
+assembly. Host evidence now reaches 495 instructions, 24 completed API calls
+and a classified stop at RegCreateKeyExA after two real guest allocations and
+the initial string construction. No window, gameplay or translated PS5 execution
 is established by this static analysis.

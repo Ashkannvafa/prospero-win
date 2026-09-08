@@ -40,6 +40,7 @@ $(eval $(call test_rule,test_pw_time,tests/test_pw_time.c src/pw_win32.c src/pw_
 $(eval $(call test_rule,test_pw_guest_fp,tests/test_pw_guest_fp.c src/pw_guest_fp.c,))
 $(eval $(call test_rule,test_pw_initterm,tests/test_pw_initterm.c src/pw_win32.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x86_block.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,trace_x86_entry,tools/trace_x86_entry.c src/pe_resource.c src/pw_x86_block.c src/pw_win32.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_import_bind.c $(CORE),))
+$(eval $(call test_rule,classify_x86,tools/classify_x86.c src/pw_x86_block.c,))
 $(eval $(call test_rule,test_pw_win64,tests/test_pw_win64.c src/pw_exec_probe.c src/pw_win64_call.S $(CORE),))
 $(eval $(call test_rule,inspect_pe,tools/inspect_pe.c $(CORE) src/pw_file_posix.c,))
 
@@ -50,7 +51,7 @@ TESTS := test_pw_guest_heap test_pe_resource test_pw_time test_pw_guest_args tes
 # The Python suites drive the built binaries: the evidence validator is
 # tested against a transcript the real gate produced, and the Python PE
 # encoder is cross-checked against the C parser.
-test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_entry
+test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_entry $(BUILD)/classify_x86
 	@set -e; for test in $(addprefix $(BUILD)/,$(TESTS)); do $$test; done
 	python3 tests/test_title_identity.py
 	python3 tests/test_icon.py
@@ -62,6 +63,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_inventory_imports.py
 	python3 tests/test_audit_wine_imports.py
 	python3 tests/test_win32_catalog.py
+	python3 tests/test_classify_x86.py
 	rm -rf build tools/__pycache__ tests/__pycache__
 
 audit:

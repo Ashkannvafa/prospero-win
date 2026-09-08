@@ -107,7 +107,8 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA and malloc, then stops at lstrcpyA after 385 instructions
+and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA, malloc,
+lstrcpyA and lstrcatA, then stops at RegCreateKeyExA after 495 instructions
 (4096-event host limit), after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
@@ -175,6 +176,27 @@ Tests cover NULL/empty/extended bytes, region crossings, a last-byte terminator,
 scan-limit exhaustion and inaccessible/unterminated input. The original host
 trace returns 32 for the preceding resource string and next requests malloc.
 Reference: [lstrlenA](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lstrlena).
+
+## Guest string copies and last-error state
+
+`lstrcpyA`, `lstrcpynA` and `lstrcatA` use stdcall guest frames and preflight
+all source and destination spans before writing. `lstrcpyA` preserves Wine's
+overlap-safe memmove behavior. `lstrcpynA` implements the count-zero and
+count-one cases without dereferencing an unused pointer, always terminates when
+count is nonzero, and treats the signed count as the unsigned loop bound used by
+the reviewed Wine implementation. Overlap other than an exact bounded self-copy
+is deliberately rejected for the two APIs whose forward-copy behavior differs;
+it is not silently promoted to memmove semantics.
+
+Inaccessible pointers return NULL and set logical per-guest-thread last error
+to `ERROR_INVALID_PARAMETER` (87), matching Wine's protected bad-pointer path.
+Successful calls do not clear a previous error. `GetLastError` returns this
+state independently from CRT errno. Tests cover truncation, zero/one counts,
+large counts with an early terminator, high bytes, strcpy overlap, bounded
+self-copy, rejected ambiguous overlap, invalid pointers, output canaries,
+callee preservation and stack cleanup. The original host trace executes two
+lstrcpyA and two lstrcatA calls; lstrcpynA and GetLastError currently have
+synthetic evidence only.
 
 ## Resource strings
 

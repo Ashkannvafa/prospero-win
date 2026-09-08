@@ -73,6 +73,31 @@ static int cp1252(uint32_t c,uint8_t *out)
     for(unsigned i=0;i<32;i++)if(c==high[i]){*out=(uint8_t)(0x80+i);return PW_OK;}
     return PW_ERR_UNSUPPORTED; /* best-fit/default-character policy not implemented */
 }
+static int copy_string(PwX86State *s,uint32_t dst,uint32_t src,uint32_t count,
+                       unsigned bounded,unsigned append,uint32_t *write_at,uint32_t *length)
+{
+    uint32_t n=0,prefix=0;int status;
+    if(bounded) {
+        uint32_t limit=count-1;
+        while(n<limit && n<0x100000) {
+            if(src>UINT32_MAX-n)return PW_ERR_VM;
+            if((status=range_access(s,src+n,1,PW_X86_READ))!=PW_OK)return status;
+            if(!*(const uint8_t *)(uintptr_t)(src+n))break;
+            n++;
+        }
+        if(n==0x100000 && n<limit)return PW_ERR_LIMIT;
+    } else if((status=string_length(s,src,&n))!=PW_OK)return status;
+    if(append && (status=string_length(s,dst,&prefix))!=PW_OK)return status;
+    if(dst>UINT32_MAX-prefix)return PW_ERR_VM;
+    uint32_t at=dst+prefix;
+    if((status=range_access(s,at,(size_t)n+1,PW_X86_WRITE))!=PW_OK)return status;
+    /* strcpy follows Wine's memmove behavior. The other two routines have
+     * different forward-copy overlap semantics: reject overlapping spans
+     * instead of silently implementing memmove for them. */
+    uint64_t src_end=(uint64_t)src+n+(bounded?0:1),dst_end=(uint64_t)at+n+1;
+    if((bounded || append) && n && src<dst_end && src_end>dst && !(bounded && src==dst))return PW_ERR_UNSUPPORTED;
+    *write_at=at;*length=n;return PW_OK;
+}
 static int table_read(PwX86State *s,uint32_t address,uint32_t *value)
 {
     int status=word_access(s,address,PW_X86_READ);
@@ -145,6 +170,33 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         r->calls++;return PW_OK;
     }
     unsigned kernel=!strcmp(r->last_dll,"kernel32.dll");
+    if(kernel && !strcmp(r->last_name,"GetLastError")) {
+        PwGuestCall call={0};int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,0,0);
+        if(status==PW_OK)status=pw_guest_call_finish(&call,32,r->last_error);
+        if(status==PW_OK)r->calls++;
+        return status;
+    }
+    unsigned bounded=kernel && !strcmp(r->last_name,"lstrcpynA");
+    unsigned append=kernel && !strcmp(r->last_name,"lstrcatA");
+    if(bounded || append || (kernel && !strcmp(r->last_name,"lstrcpyA"))) {
+        PwGuestCall call={0};uint32_t dst,src,count=0,at=0,n=0;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,bounded?12:8,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&dst))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&src))!=PW_OK)return status;
+        if(bounded && (status=pw_guest_call_u32(&call,8,&count))!=PW_OK)return status;
+        if(!bounded || count)status=copy_string(state,dst,src,count,bounded,append,&at,&n);
+        unsigned invalid=status==PW_ERR_VM;
+        if(status!=PW_OK && !invalid)return status;
+        status=pw_guest_call_finish(&call,32,invalid?0:dst);
+        if(status!=PW_OK)return status;
+        if(invalid)r->last_error=87; /* ERROR_INVALID_PARAMETER, as Wine's bad-pointer path */
+        else if(!bounded || count) {
+            if(n)memmove((void *)(uintptr_t)at,(const void *)(uintptr_t)src,n);
+            *(uint8_t *)(uintptr_t)(at+n)=0;
+        }
+        r->calls++;return PW_OK;
+    }
     if(kernel && !strcmp(r->last_name,"lstrlenA")) {
         PwGuestCall call={0};uint32_t address,length=0;
         int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,4,0);

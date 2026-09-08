@@ -106,7 +106,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-385 instructions and eighteen completed API calls (sixteen distinct APIs),
+495 instructions and 24 completed API calls (eighteen distinct APIs),
 using the optional 4096-event limit (`trace_x86_entry private.exe 4096`), after
 adding memory arithmetic and initializer epilogue support, clock services, logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
@@ -133,14 +133,20 @@ kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
 kind=host-api dll=user32.dll name=LoadStringA result=0x00000020
 kind=host-api dll=kernel32.dll name=lstrlenA result=0x00000020
 kind=host-api dll=msvcrt.dll name=malloc result=0x03400000
-kind=host-api-stop dll=kernel32.dll name=lstrcpyA status=-5
-kind=host-entry-trace steps=385 stop=unimplemented-api eip=0xe00004b0 esp=0x030ffdf4 ebp=0x030ffe00 fs0=0x030fffe8 flags=0x00000202
-kind=host-heap-summary blocks=2 live=1 requested=37 arena=8388608 valid=1
+kind=host-api dll=kernel32.dll name=lstrcpyA result=0x03400004
+kind=host-api dll=user32.dll name=LoadStringA result=0x0000000a
+kind=host-api dll=msvcrt.dll name=malloc result=0x03400030
+kind=host-api dll=kernel32.dll name=lstrcpyA result=0x03400034
+kind=host-api dll=kernel32.dll name=lstrcatA result=0x03400034
+kind=host-api dll=kernel32.dll name=lstrcatA result=0x03400034
+kind=host-api-stop dll=advapi32.dll name=RegCreateKeyExA status=-5
+kind=host-entry-trace steps=495 stop=unimplemented-api eip=0xe0000010 esp=0x030ffdc4 ebp=0x030ffdf8 fs0=0x030fffe8 flags=0x00000202
+kind=host-heap-summary blocks=3 live=2 requested=2041 arena=8388608 valid=1
 ```
 
-The next stop is the lstrcpyA dispatcher token, after malloc allocates guest memory,
-lstrlenA measures and LoadStringA copies a real
-private PE string resource (32 characters) and the CRT reads
+The next stop is the RegCreateKeyExA dispatcher token. Before it, two malloc
+calls allocate guest memory, two lstrcpyA and two lstrcatA calls construct
+startup strings, and LoadStringA copies two private PE string resources. The CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
 guest ABI bridge. Clock values (and derived flags) vary across live runs;
@@ -178,7 +184,7 @@ Counts are masked to five bits; zero preserves every guest flag, AF is retained,
 and OF is updated only for count one. Tests cover ECX/CL aliasing, continuation
 and rejected crossing-boundary accesses, including a zero-count memory operand.
 Rotates and 8/16-bit shifts are not yet implemented.
-The 385-instruction trace with a 4096-event limit reproduces under ASan/UBSan;
+The 495-instruction trace with a 4096-event limit reproduces under ASan/UBSan;
 the translator compiles for PS5. Native guest execution is still not integrated.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
