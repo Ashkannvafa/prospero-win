@@ -68,7 +68,24 @@ structured ps5log/1 evidence and an independently checked result.
 - [ ] **0.4 Initialisation.** Dependency ordering, TLS, CRT entry, DllMain
   and teardown required by the target. Track unsupported features.
 - [ ] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
-  until the executable reaches application entry. Keep guest pointers and
+  until the executable reaches application entry.
+  Immediate approach: use Ghidra on the hash-identified private Pinball PE to
+  map startup through window creation and message-loop entry before expanding
+  handlers further. Inventory direct calls, unresolved indirect edges, callback
+  registrations, structures and instruction families; distinguish decompiler
+  inference from assembly-confirmed contracts and runtime observations.
+  Package work by subsystem: allocator family (malloc/calloc/realloc/free),
+  CRT/string services, window/messages/GDI, then audio/input/persistence.
+  Review the pinned Wine implementations and relevant tests for each package,
+  with Microsoft documentation as the API contract reference. Do not claim a
+  complete call graph when indirect calls remain unresolved. Keep decompiled
+  code and original resources private; publish only original contracts/tests.
+  Runtime classified stops validate integration, not the primary discovery plan.
+  After startup coverage, move from the diagnostic single-instruction runner
+  to cached blocks and measured dispatch optimization. No fast-JIT performance
+  claim is currently validated. The full completion target remains playable
+  original Pinball on PS5 with graphics, input, audio, persistence and cleanup.
+  Keep guest pointers and
   handles 32-bit; exercise callbacks in both directions.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
