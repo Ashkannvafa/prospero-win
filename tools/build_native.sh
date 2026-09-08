@@ -117,7 +117,7 @@ sources=(
     src/pe_image.c src/pe_import.c src/pe_layout.c src/pe_reloc.c
     src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
     src/pw_module_name.c src/pw_result.c src/pw_segment.c src/pw_vm.c
-    src/pw_vm_posix.c src/pw_exec_probe.c src/pw_x86_block.c
+    src/pw_vm_posix.c src/pw_exec_probe.c src/pw_x86_block.c src/pw_guest_call.c
 )
 objects=()
 for source in "${sources[@]}"; do

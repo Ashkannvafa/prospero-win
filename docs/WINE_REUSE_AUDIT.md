@@ -44,6 +44,10 @@ classified as missing functionality just because lexical lookup is empty.
 
 ## Extraction decisions
 
+The shared integer call/callback foundation is now implemented and host-
+tested; see GUEST_ABI.md for its exact scope. This is not Wine extraction
+or completed API coverage.
+
 1. Implement the common guest ABI services first: pointer validation,
    code/data import distinction, calling conventions, guest callbacks,
    module/TEB state and FP-state access. Do this from the whole inventory,

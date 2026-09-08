@@ -4,6 +4,7 @@ docs/COMPAT32_PHASE0A.md
 docs/DEVELOPMENT.md
 docs/EXECUTION_MODEL.md
 docs/IMPORT_PLAN.md
+docs/GUEST_ABI.md
 docs/WINE_REUSE_AUDIT.md
 docs/X86_EXECUTION.md
 docs/PE_MAPPING_PHASE0.md
@@ -65,6 +66,9 @@ src/pw_exec_probe.h
 src/pw_exec_probe.c
 src/pw_x86_block.c
 src/pw_x86_block.h
+src/pw_guest_call.c
+src/pw_guest_call.h
+tests/test_pw_guest_call.c
 tests/test_pw_x86_block.c
 tests/test_pw_x86_reference.S
 tests/test_x86_differential.py

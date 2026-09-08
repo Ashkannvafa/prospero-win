@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "../src/pw_x86_block.h"
+#include "../src/pw_guest_call.h"
 #include "../src/pw_vm_posix.h"
 #include <assert.h>
 #include <stdio.h>
@@ -225,6 +226,15 @@ int main(int argc, char **argv)
     assert(backend.release(NULL,&thread)==PW_OK);
     addressing_tests();
     arithmetic_tests();
+    /* Enter an actual translated guest callback, then restore its caller. */
+    state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
+    PwX86State caller=state;PwGuestCallback callback={0};
+    assert(pw_guest_callback_enter(&callback,&state,0x1000,0xf1000010,NULL,0,PW_GUEST_CDECL)==PW_OK);
+    const uint8_t callback_code[]={0xb8,42,0,0,0,0xc3};
+    assert(run(callback_code,sizeof(callback_code),0x1000)==0);
+    uint64_t callback_result=0;
+    assert(pw_guest_callback_leave(&callback,32,&callback_result)==PW_OK);
+    assert(callback_result==42 && memcmp(&caller,&state,sizeof(state))==0);
     uint8_t scratch[4096]; PwX86Block block;
     const uint8_t fs[]={0x64,0x90};
     assert(pw_x86_translate(fs,sizeof(fs),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);

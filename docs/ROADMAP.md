@@ -66,6 +66,9 @@ structured ps5log/1 evidence and an independently checked result.
 - [ ] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
   until the executable reaches application entry. Keep guest pointers and
   handles 32-bit; exercise callbacks in both directions.
+  Shared integer call frames and callback state services pass host tests;
+  an actual translated synthetic cdecl callback returns through the adapter.
+  See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
   Bounded host tracing of the original executable executes 25 instructions
   through the startup helper and an IAT load, then stops at an indirect call.
   Imports remain unbound. This is not
