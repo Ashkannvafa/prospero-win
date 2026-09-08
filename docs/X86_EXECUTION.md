@@ -14,7 +14,7 @@ byte TEST (84, F6 /0, A8), register/memory INC/DEC (40-4F, FF /0,/1),
 Immediate ADD/OR/ADC/SBB/AND/SUB/XOR/CMP 16/32-bit (81/83 and accumulator
 forms, optional 66 prefix), CMP r32/memory
 (39/3B), TEST 32-bit register/memory or immediate (85, A9, F7 /0),
-MOVZX word (0F B7), all short/near Jcc and register-byte SETcc,
+MOVZX/MOVSX byte/word to 32-bit (0F B6/B7/BE/BF), all short/near Jcc and register-byte SETcc,
 Absolute and FS-prefixed A1/A3 moffs32 loads/stores
 through EAX, nop, direct call rel32, indirect near call/jump (FF /2,/4),
 jmp rel8/rel32 and ret/ret imm16 (C3/C2). Calls push a 32-bit guest return PC and yield the
@@ -105,7 +105,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-325 instructions and fifteen completed API calls (thirteen distinct APIs),
+329 instructions and fifteen completed API calls (thirteen distinct APIs),
 using the optional 4096-event limit (`trace_x86_entry private.exe 4096`), after
 adding memory arithmetic and initializer epilogue support, clock services, logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
@@ -124,15 +124,15 @@ kind=host-callback-enter dll=msvcrt.dll name=_initterm target=0x0101cd2b depth=1
 kind=host-api dll=kernel32.dll name=GetSystemTimeAsFileTime result=0x030fff34
 kind=host-api dll=kernel32.dll name=GetCurrentProcessId result=0x00000001
 kind=host-api dll=kernel32.dll name=GetCurrentThreadId result=0x00000002
-kind=host-api dll=kernel32.dll name=GetTickCount result=0x2891c09b
+kind=host-api dll=kernel32.dll name=GetTickCount result=0x28a717d2
 kind=host-api dll=kernel32.dll name=QueryPerformanceCounter result=0x00000001
 kind=host-api dll=msvcrt.dll name=_initterm result=0x00000000
 kind=host-api dll=kernel32.dll name=GetStartupInfoA result=0x030fff78
 kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
-kind=host-entry-trace steps=325 stop=unsupported eip=0x01003757 esp=0x030ffdfc ebp=0x030ffdfc fs0=0x030fffe8 flags=0x00000202
+kind=host-entry-trace steps=329 stop=unsupported eip=0x01003767 esp=0x030ffdf4 ebp=0x030ffdfc fs0=0x030fffe8 flags=0x00000202
 ```
 
-The next stop is MOVSX r32,r/m16 at 0x01003757, after the CRT reads
+The next stop is SHL r32,imm8 at 0x01003767, after the CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
 guest ABI bridge. Clock values (and derived flags) vary across live runs;
@@ -160,7 +160,11 @@ rejection, unchanged flags, and an actual translated stdcall callback with
 two arguments. Return-PC reads and final ESP validation precede state publication.
 FF /0,/1 tests verify register/memory INC/DEC, carry preservation, overflow
 and continuation into the next instruction.
-The 325-instruction trace with a 4096-event limit reproduces under ASan/UBSan;
+MOVZX/MOVSX tests cover every source/destination register combination, including
+high bytes, aliasing and negative byte/word values, with unchanged guest flags.
+Memory forms check the exact source width and reject crossing-boundary reads
+without publishing a destination register value.
+The 329-instruction trace with a 4096-event limit reproduces under ASan/UBSan;
 the translator compiles for PS5. Native guest execution is still not integrated.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.

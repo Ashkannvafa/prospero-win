@@ -196,7 +196,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         const uint8_t op = source[cursor];
         size_t length;
         Operand operand;
-        unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,movzx=0,setcc=0;
+        unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,extend=0,setcc=0;
         int terminal = 0;
         if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
@@ -231,10 +231,10 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         else if(op==0x0f) {
             if(bytes-cursor<2)return PW_ERR_TRUNCATED;
             if(source[cursor+1]>=0x80 && source[cursor+1]<=0x8f){conditional=1;length=6;}
-            else if(source[cursor+1]==0xb7 || (source[cursor+1]>=0x90 && source[cursor+1]<=0x9f)) {
+            else if(source[cursor+1]==0xb6 || source[cursor+1]==0xb7 || source[cursor+1]==0xbe || source[cursor+1]==0xbf || (source[cursor+1]>=0x90 && source[cursor+1]<=0x9f)) {
                 int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
                 if(result!=PW_OK)return result;
-                movzx=source[cursor+1]==0xb7;setcc=!movzx;
+                extend=source[cursor+1]>=0xb6;setcc=!extend;
                 if(setcc && operand.mod!=3)return PW_ERR_UNSUPPORTED;
                 length=2+operand.bytes;
             } else return PW_ERR_UNSUPPORTED;
@@ -333,15 +333,18 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                 byte(&e,0x39);byte(&e,0xc8);
             }
             save_arithmetic_flags(&e,0x8d5);
-        } else if(compare || movzx) {
+        } else if(extend) {
+            unsigned opcode=source[cursor+1],width=(opcode&1)?2:1;
+            if(operand.mod!=3){effective_address(&e,&operand);memory_address_width(&e,0,width);}
+            byte(&e,0x0f);byte(&e,opcode);byte(&e,operand.mod==3?0x47:0x00);
+            if(operand.mod==3)byte(&e,width==1?(operand.rm&3)*4+(operand.rm>>2):operand.rm*4);
+            store_eax(&e,operand.reg*4);
+        } else if(compare) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {
-                effective_address(&e,&operand);memory_address_width(&e,compare && alu!=7?2:0,(word_operand || movzx)?2:4);
-                if(movzx){byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x00);}
+                effective_address(&e,&operand);memory_address_width(&e,alu!=7?2:0,word_operand?2:4);
             }
-            if(movzx) {
-                byte(&e,0x25);word(&e,0xffff);store_eax(&e,operand.reg*4);
-            } else {
+            {
                 const uint8_t *imm=source+cursor+length-(short_imm?1:word_operand?2:4);
                 uint32_t value=short_imm?(uint32_t)(int32_t)(int8_t)*imm:
                     word_operand?(uint32_t)imm[0]|(uint32_t)imm[1]<<8:read32(imm);

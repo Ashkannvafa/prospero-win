@@ -105,6 +105,29 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void extension_tests(void)
+{
+    const uint32_t values[]={0,1,0x7f,0x80,0xff,0x7fff,0x8000,0xffff};
+    for(unsigned word=0;word<2;word++)for(unsigned sign=0;sign<2;sign++)
+    for(unsigned src=0;src<8;src++)for(unsigned dst=0;dst<8;dst++)for(unsigned v=0;v<8;v++) {
+        for(unsigned i=0;i<8;i++)state.gpr[i]=0xaabbccdd;
+        unsigned reg=word?src:src&3,shift=word?0:(src>>2)*8,mask=word?0xffff:0xff;
+        state.gpr[reg]=(state.gpr[reg]&~(mask<<shift))|((values[v]&mask)<<shift);
+        uint32_t before[8];memcpy(before,state.gpr,sizeof(before));state.eflags=0xad7;
+        uint32_t expected=values[v]&mask;if(sign && (expected&(word?0x8000:0x80)))expected|=~mask;
+        const uint8_t extend[]={0x0f,(uint8_t)(0xb6+word+sign*8),(uint8_t)(0xc0|(dst<<3)|src)};
+        assert(run(extend,3,0xd000)==0 && state.eflags==0xad7);
+        before[dst]=expected;assert(!memcmp(before,state.gpr,sizeof(before)));
+    }
+    for(unsigned word=0;word<2;word++)for(unsigned sign=0;sign<2;sign++) {
+        state.gpr[1]=state.stack_high-(word?2:1);state.eflags=0xad7;
+        uint16_t value=word?0x8000:0x80;memcpy((void *)(uintptr_t)state.gpr[1],&value,word?2:1);
+        const uint8_t op[]={0x0f,(uint8_t)(0xb6+word+sign*8),0x01};
+        assert(run(op,3,0xd010)==0 && state.gpr[0]==(sign?(word?0xffff8000:0xffffff80):value) && state.eflags==0xad7);
+        state.gpr[1]++;uint32_t before=state.gpr[0];
+        assert(run(op,3,0xd020)==-1 && state.gpr[0]==before && state.eflags==0xad7);
+    }
+}
 static void ret_cleanup_tests(void)
 {
     for(unsigned dec=0;dec<2;dec++)for(unsigned memory=0;memory<2;memory++)for(unsigned carry=0;carry<2;carry++) {
@@ -524,6 +547,7 @@ int main(int argc, char **argv)
     unary_leave_tests();
     byte_tests();
     ret_cleanup_tests();
+    extension_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};
