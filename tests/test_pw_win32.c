@@ -74,6 +74,24 @@ int main(void)
     assert((state.fp.x87_control&0xc00)==0x800 && (state.fp.mxcsr&0x6000)==0x4000);
     state.gpr[4]=state.stack_high-8;state.eip=(uint32_t)target.address;before=state;
     assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_VM && !memcmp(&state,&before,sizeof(state)));
+    strcpy(symbol.name,"__getmainargs");
+    assert(pw_win32_resolve(&runtime,"msvcrt.dll",&symbol,&target)==PW_OK);
+    state.gpr[4]=state.stack_high-64;state.eip=(uint32_t)target.address;
+    uint32_t main_args[]={0x01001234,state.stack_high-16,state.stack_high-12,state.stack_high-8,0,0};
+    memcpy((void *)(uintptr_t)state.gpr[4],main_args,sizeof(main_args));
+    assert(pw_win32_dispatch(&runtime,&state)==PW_OK && state.gpr[0]==0 && state.gpr[4]==state.stack_high-60);
+    uint32_t outputs[3];memcpy(outputs,(void *)(uintptr_t)(state.stack_high-16),12);
+    assert(outputs[0]==1 && outputs[1]==runtime.args.argv && outputs[2]==runtime.args.envp);
+    uint32_t arg0;memcpy(&arg0,(void *)(uintptr_t)outputs[1],4);
+    assert(!strcmp((char *)(uintptr_t)arg0,"C:\\game\\sample.exe"));
+    for(unsigned failure=0;failure<2;failure++) {
+        state.gpr[4]=state.stack_high-64;state.eip=(uint32_t)target.address;
+        main_args[3]=failure?state.stack_high:state.stack_high-8;main_args[4]=failure?0:1;
+        memcpy((void *)(uintptr_t)state.gpr[4],main_args,sizeof(main_args));before=state;
+        assert(pw_win32_dispatch(&runtime,&state)==(failure?PW_ERR_VM:PW_ERR_UNSUPPORTED));
+        uint32_t after[3];memcpy(after,(void *)(uintptr_t)(state.stack_high-16),12);
+        assert(!memcmp(&state,&before,sizeof(state)) && !memcmp(after,outputs,sizeof(after)));
+    }
     strcpy(symbol.name,"NotInCatalog");
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_NOT_FOUND);
     symbol.by_ordinal=1;symbol.ordinal=42;

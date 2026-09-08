@@ -9,13 +9,16 @@ int pw_win32_init(PwWin32 *runtime,uint32_t main,uint32_t data,const char *line)
         return PW_ERR_PRECONDITION;
     size_t length=strlen(line);
     if(length>4096-17)return PW_ERR_LIMIT;
-    uint32_t pointer=data+16,zero=0,text_mode=0x4000;
-    memcpy((void *)(uintptr_t)data,&pointer,4);
-    memcpy((void *)(uintptr_t)(data+4),&zero,4);
-    memcpy((void *)(uintptr_t)(data+8),&text_mode,4);
-    memcpy((void *)(uintptr_t)(data+12),&zero,4);
-    memcpy((void *)(uintptr_t)(data+16),line,length+1);
-    *runtime=(PwWin32){.main_base=main,.crt_data=data};return PW_OK;
+    uint8_t buffer[4096]={0};PwGuestArgs args;
+    size_t offset=(16+length+1+3)&~(size_t)3;
+    if(offset>=sizeof(buffer))return PW_ERR_LIMIT;
+    int status=pw_guest_args_build(line,NULL,0,data+(uint32_t)offset,buffer+offset,sizeof(buffer)-offset,&args);
+    if(status!=PW_OK)return status;
+    uint32_t pointer=data+16,text_mode=0x4000;
+    memcpy(buffer,&pointer,4);memcpy(buffer+8,&text_mode,4);
+    memcpy(buffer+16,line,length+1);
+    memcpy((void *)(uintptr_t)data,buffer,sizeof(buffer));
+    *runtime=(PwWin32){.main_base=main,.crt_data=data,.args=args};return PW_OK;
 }
 int pw_win32_resolve(void *opaque,const char *dll,const PeImportSymbol *symbol,PwImportTarget *target)
 {
@@ -35,17 +38,23 @@ int pw_win32_resolve(void *opaque,const char *dll,const PeImportSymbol *symbol,P
     }
     return PW_ERR_NOT_FOUND;
 }
-static int table_read(PwX86State *s,uint32_t address,uint32_t *value)
+static int word_access(PwX86State *s,uint32_t address,unsigned permission)
 {
     uint64_t end=(uint64_t)address+4;
     if(!address || end>0x100000000ull || s->memory_count>PW_X86_MEMORY_REGIONS)return PW_ERR_VM;
     unsigned readable=address>=s->stack_low && end<=s->stack_high;
     for(unsigned i=0;i<s->memory_count;i++) {
         PwX86Memory *m=&s->memory[i];
-        if(m->high<=0x100000000ull && address>=m->low && end<=m->high && (m->permissions&PW_X86_READ))readable=1;
+        if(m->high<=0x100000000ull && address>=m->low && end<=m->high && (m->permissions&permission)==permission)readable=1;
     }
     if(!readable)return PW_ERR_VM;
-    memcpy(value,(void *)(uintptr_t)address,4);return PW_OK;
+    return PW_OK;
+}
+static int table_read(PwX86State *s,uint32_t address,uint32_t *value)
+{
+    int status=word_access(s,address,PW_X86_READ);
+    if(status==PW_OK)memcpy(value,(void *)(uintptr_t)address,4);
+    return status;
 }
 static int init_next(PwWin32 *r,PwX86State *s)
 {
@@ -86,6 +95,22 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
     if(!strcmp(r->last_dll,"msvcrt.dll")) {
+        if(!strcmp(r->last_name,"__getmainargs")) {
+            PwGuestCall call={0};uint32_t a[5],mode=r->new_mode;
+            int status=pw_guest_call_begin(&call,state,PW_GUEST_CDECL,20,0);
+            if(status!=PW_OK)return status;
+            for(unsigned i=0;i<5;i++)if((status=pw_guest_call_u32(&call,i*4,&a[i]))!=PW_OK)return status;
+            if(a[3])return PW_ERR_UNSUPPORTED;
+            for(unsigned i=0;i<3;i++)if((status=word_access(state,a[i],PW_X86_WRITE))!=PW_OK)return status;
+            if(a[4] && (status=table_read(state,a[4],&mode))!=PW_OK)return status;
+            if(mode>1)return PW_ERR_UNSUPPORTED;
+            status=pw_guest_call_finish(&call,32,0);
+            if(status!=PW_OK)return status;
+            memcpy((void *)(uintptr_t)a[0],&r->args.argc,4);
+            memcpy((void *)(uintptr_t)a[1],&r->args.argv,4);
+            memcpy((void *)(uintptr_t)a[2],&r->args.envp,4);
+            r->new_mode=mode;r->calls++;return PW_OK;
+        }
         if(!strcmp(r->last_name,"_initterm")) {
             if(r->init_depth==PW_WIN32_INIT_DEPTH)return PW_ERR_LIMIT;
             PwWin32Init next={0};

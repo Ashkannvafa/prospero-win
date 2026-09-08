@@ -80,7 +80,7 @@ guest FP-state services, not a claim of generic cdecl compatibility.
 `pw_win32.c` uses the generated factual code/data catalog for Pinball's 207
 imports. Unknown names/ordinals are refused. All 205 function imports bind
 to unique dispatcher tokens, not host addresses. Initial handlers cover
-`GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp` and `_initterm`.
+`GetModuleHandleA(NULL)`, `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm` and `__getmainargs`.
 Named-module arguments and other API calls stop explicitly without guest-state mutation or a false
 success. A bound function is not necessarily an implemented function.
 
@@ -104,8 +104,9 @@ failure atomicity when the argument is outside the guest stack.
 Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
-`__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm` and stops after 85 instructions
-at the pending `__getmainargs` API. The pointer getters now have original-game
+`__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
+and stops after 95 instructions inside an original-game initializer callback.
+The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
 dispatch and return, plus a
@@ -151,5 +152,30 @@ memory effects, null entries, nested empty and nonempty initializers, and
 checks malformed tables, permissions/ranges, stale tokens and damaged
 callee-saved register returns. Pinball's first observed `_initterm` returns
 without scheduling callbacks, so actual-game callbacks are not yet proven.
+The subsequent original-game initializer now schedules a callback and executes
+its first instructions, stopping at an unsupported instruction before return.
+This is not completed original-game callback evidence.
 Host telemetry labels scheduled work `host-callback-enter` separately from
 the API-return records. No PS5 callback execution is claimed.
+
+## Arguments and environment
+
+`pw_guest_args_build` packs narrow strings and NULL-terminated 32-bit argv/env
+tables using an explicit guest base, with no host pointers or inherited host
+environment. It supports 128 arguments/environment entries and 4,096 string
+bytes; runtime initialization must fit both the original command line and
+packed data in its 4 KiB CRT region. Failures leave output unchanged.
+Parsing follows the [Microsoft CRT command-line rules](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments):
+pathname quoting for argv[0], space/tab separators, embedded quotes and
+backslash/quote handling for later arguments. It does not perform Unicode
+code-page conversion, shell interpretation or filesystem wildcard expansion.
+
+The initial runtime deliberately provides an empty environment; the reusable
+packer accepts explicit environment strings for future configuration.
+`__getmainargs` validates all three output words and the optional new_mode
+word before modifying guest state. It returns cdecl integer zero, stable
+guest argc/argv/env pointers, and records new_mode 0/1. Nonzero wildcard
+requests and unsupported mode values stop explicitly. Allocator behavior
+for new_mode remains pending along with heap implementation.
+Tests cover quoting/escaping, empty input/arguments, explicit environments,
+pointer packing, storage/argument limits, and API failure atomicity.
