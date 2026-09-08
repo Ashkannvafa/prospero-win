@@ -13,6 +13,15 @@ MMIO and MCI. No static DirectDraw/Direct3D imports were found. LoadLibraryA
 and GetProcAddress require further dynamic dependency analysis. Exact
 version metadata and runtime working set remain unverified.
 
+An independent host objdump inspection confirms stripped relocations,
+no TLS directory and no delay-import directory. It does contain a bound
+import directory and preserves the original name lookup tables. Rebind all
+IAT entries from those tables; existing bound Windows addresses cannot be
+called on PS5. The IAT is at RVA 0x1000 in .text, so binding must precede
+final RX protection. Load-configuration and x86 exception/CRT semantics
+still require inspection. Header stack reserve/commit: 256/64 KiB; heap
+reserve/commit: 1 MiB/4 KiB. These are header requests, not measured usage.
+
 ## Host mapping result (2026-09-08)
 
 The original binary above now maps through the loader at 0x01000000 without
@@ -21,8 +30,8 @@ relocations. The host run reported 307200 reserved bytes, nine graph nodes
 pages, four protection calls and balanced file ownership (one open/close).
 Mapped checksum: 0x1bd76edecdb503e8 (the loader's existing checksum format).
 This is host mapping evidence only: no guest instruction was executed and
-no import address was bound. PS5 mapping remains to be tested, especially
-its 16 KiB protection granularity versus the host's 4 KiB pages.
+no import address was bound. The subsequent PS5 result below covers the
+16 KiB protection granularity versus the host's 4 KiB pages.
 
 The VM backend now advertises optional exact-address reservation. It uses
 an mmap hint, checks the returned address and releases an alternative
@@ -31,6 +40,38 @@ mapping. Synthetic tests hold a live sentinel-filled reservation while
 attempting collision, then verify its bytes and test reuse after release.
 Nonrelocatable images request their required base; relocatable fixtures
 retain the existing arbitrary-placement path to keep rebase tests meaningful.
+
+## PS5 mapping result (FW 12.02, 2026-09-08)
+
+Run: `20260908T145242477Z_PPSA99995_prospero-win_0x1021ed623a4eb`.
+Source commit: `013f328`. Native foundation: `37dd53602bdead63936f718004555ba10154be48`.
+
+- Linked ELF SHA-256: `e2f50373caa17180a2df3b62ce191b1073105b73a2ff8e9ab35a219b5d5d836a`.
+- fSELF SHA-256: `a42636fe23e3f56236f54ce1ca6426d298ea56212f3624850f7de0b1a90d05b4`.
+- Transcript SHA-256: `c05b8973e6ba718a6022c67fd0ac8a5b5fe9524d715360cb40508a467cc36799`.
+- Original file SHA-256 is pinned above; FTP verified all staged bytes.
+- Actual/preferred base both 0x01000000; no relocations; 207 static imports.
+- Image 307200 bytes; reservation 311296 bytes; 19 pages of 16384 bytes.
+- Three verified sections; 279612 compared bytes; zero byte/zero-tail/alias
+  mismatches; checksum 0x1bd76edecdb503e8 matches the host result.
+- Three pages merge section/header contributors; one page is WX; four
+  protection calls. WX remains a measured limitation, not a solved one.
+- Nine graph nodes, eight host bindings, one mapped and released image;
+  opens=closes=1, failures=0; clean BYE with reason pe-map-complete.
+- Post-run supervisor status: no active BigApp; all four services healthy.
+
+The independent validator accepted the manifest with:
+
+```sh
+python3 tools/validate_pe_map_evidence.py /private/path/run.json \
+  --root pinball.exe --expect-modules 9 --expect-local 0 --expect-host 8 \
+  --allow-i386 --allow-wx --expect-compat32 refused
+```
+
+This proves mapping the original PE32 file in the native title. It does not
+prove guest execution, bound imports, rendering or playability. The gate
+intentionally exits after the measurement; the eventual game runs until
+operator closure.
 
 ## Inventory
 
