@@ -238,7 +238,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
         } else if (op == 0x6a || op == 0xeb) length = 2;
-        else if (op == 0x68 || op == 0xe8 || op == 0xe9 ||
+        else if (op == 0x68 || op == 0xe8 || op == 0xe9 || op==0xa1 || op==0xa3 ||
                  (op >= 0xb8 && op <= 0xbf)) length = 5;
         else if (op == 0xc3 || op == 0x90 || (op >= 0x50 && op <= 0x5f)) length = 1;
         else return PW_ERR_UNSUPPORTED;
@@ -321,9 +321,11 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                 effective_address(&e,&operand);memory_address(&e,1);
                 byte(&e,0xc7);byte(&e,0x00);word(&e,value);
             }
-        } else if (op == 0x64) {
-            fs_address(&e,read32(source+cursor+2));
-            if (source[cursor+1]==0xa1) {
+        } else if (op == 0x64 || op==0xa1 || op==0xa3) {
+            unsigned load=op==0xa1 || (op==0x64 && source[cursor+1]==0xa1);
+            if(op==0x64)fs_address(&e,read32(source+cursor+2));
+            else {byte(&e,0xb8);word(&e,read32(source+cursor+1));memory_address(&e,!load);}
+            if (load) {
                 byte(&e,0x8b); byte(&e,0x00);
                 store_eax(&e,offsetof(PwX86State,gpr[0]));
             } else {

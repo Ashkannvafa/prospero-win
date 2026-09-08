@@ -32,7 +32,7 @@ typedef struct PwX86Block {
  * immediate ALU 16/32-bit (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP),
  * CMP register/memory 32-bit, MOVZX word,
  * short/near Jcc and register-byte SETcc using guest arithmetic flags,
- * LEA, FS moffs32/EAX, nop,
+ * LEA, absolute and FS moffs32/EAX loads/stores, nop,
  * direct/indirect near call/jump and ret. No copied 32-bit stack instructions. A successful
  * block is a SysV int(PwX86State*) function returning 0, or -1 on memory bounds.
  * Direct transfers update guest EIP and return to the dispatcher.

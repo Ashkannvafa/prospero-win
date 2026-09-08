@@ -11,7 +11,7 @@ MOV immediate/r32 or memory (C7 /0), register ADD (01/03), SUB (29/2B), XOR (31/
 Immediate ADD/OR/ADC/SBB/AND/SUB/XOR/CMP 16/32-bit (81/83 and accumulator
 forms, optional 66 prefix), CMP r32/memory
 (39/3B), MOVZX word (0F B7), all short/near Jcc and register-byte SETcc,
-FS-prefixed A1/A3 moffs32 loads/stores
+Absolute and FS-prefixed A1/A3 moffs32 loads/stores
 through EAX, nop, direct call rel32, indirect near call/jump (FF /2,/4),
 jmp rel8/rel32 and ret. Calls push a 32-bit guest return PC and yield the
 target EIP to the caller. Ret reads that PC and yields again. Guest ESP
@@ -101,7 +101,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-53 instructions and four implemented API calls after adding immediate ALU
+66 instructions and four implemented API calls after adding absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
 
 ```
@@ -110,12 +110,16 @@ kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
 kind=host-api dll=msvcrt.dll name=__set_app_type result=0x00000000
 kind=host-api dll=msvcrt.dll name=__p__fmode result=0x03300008
 kind=host-api dll=msvcrt.dll name=__p__commode result=0x0330000c
-kind=host-entry-trace steps=53 stop=unsupported eip=0x01021034 esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000286
+kind=host-api-stop dll=msvcrt.dll name=_controlfp status=-5
+kind=host-entry-trace steps=66 stop=unimplemented-api eip=0xe00005b0 esp=0x030fff5c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000202
 ```
 
-The next stop is an unsupported instruction after the CRT mode-pointer calls.
-The 53-instruction trace reproduces under ASan/UBSan; the translator also
-compiles with the PS5 target toolchain. Neither proves hardware execution.
+The next stop is the catalogued `_controlfp` API. It requires a guest FP-state
+contract, not an unconditional success or changes to the host thread's FP
+environment. Absolute MOV tests exercise independent read/write permissions,
+last-valid and crossing-boundary addresses, unchanged flags and fault atomicity.
+The 66-instruction trace reproduces under ASan/UBSan and the translator compiles
+with the PS5 target toolchain; neither is proof of PS5 guest execution.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses

@@ -105,6 +105,27 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void absolute_tests(void)
+{
+    uint32_t low=state.stack_low,high=state.stack_high;
+    state.stack_low=state.stack_high=0;state.memory_count=1;
+    for(unsigned write=0;write<2;write++)for(unsigned permission=0;permission<4;permission++)
+    for(unsigned edge=0;edge<3;edge++) {
+        uint32_t address=edge==0?low:edge==1?high-4:high-3;
+        state.memory[0]=(PwX86Memory){low,high,permission};
+        uint32_t original=0x11223344;memcpy(stack.write_base,&original,4);
+        memcpy((uint8_t *)stack.write_base+stack.bytes-4,&original,4);
+        state.gpr[0]=0xaabbccdd;state.eflags=0xad7;
+        uint8_t instruction[]={write?0xa3:0xa1,(uint8_t)address,(uint8_t)(address>>8),(uint8_t)(address>>16),(uint8_t)(address>>24)};
+        unsigned allowed=edge!=2 && (permission&(write?PW_X86_WRITE:PW_X86_READ));
+        assert(run(instruction,5,0x6000)==(allowed?0:-1));
+        assert(state.eflags==0xad7 && state.eip==(allowed?0x6005:0x6000));
+        assert(state.gpr[0]==(allowed && !write?original:0xaabbccdd));
+        uint32_t actual;memcpy(&actual,edge?(uint8_t *)stack.write_base+stack.bytes-4:stack.write_base,4);
+        assert(actual==(allowed && write?0xaabbccdd:original));
+    }
+    state.stack_low=low;state.stack_high=high;state.memory_count=0;
+}
 static void immediate_tests(void)
 {
     const uint32_t inputs[]={0,1,5,0x7fff,0x8000,0x7fffffff,0x80000000,0xffffffff};
@@ -325,6 +346,7 @@ int main(int argc, char **argv)
     arithmetic_tests();
     comparison_tests();
     immediate_tests();
+    absolute_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};

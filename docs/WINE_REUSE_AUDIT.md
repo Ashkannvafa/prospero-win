@@ -33,6 +33,7 @@ review. No result here authorizes automatic extraction of a source file.
 | _initterm | msvcrt/data.c | Walk guest 32-bit function-pointer tables and reenter the guest execution engine; never call guest addresses as host function pointers |
 | _except_handler3 | msvcrt/except_i386.c | Guest exception records, scope tables, frame registers and unwind callbacks; native host stack unwinding is not equivalent |
 | _CIacos | msvcrt/math.c, CREATE_FPU_FUNC1 | Argument/result in guest x87 state despite an empty .spec parameter list |
+| _controlfp | msvcrt/math.c, _control87 and __control87_2 | cdecl two unsigned arguments, unsigned return; filters _EM_DENORMAL out of the update mask. i386 path combines x87/SSE control state and reports _EM_AMBIGUOUS for differing exception/rounding modes. Requires guest-owned FP state shared with future x87 execution; pending, not a host _controlfp call |
 | _ftol | msvcrt/math.c, assembly implementation | Guest x87 conversion/control behavior and split 64-bit integer return in EDX:EAX; preserve the relevant FP environment |
 | SetSystemPaletteUse | gdi32 alias to win32u/palette.c | GDI palette/device state and a platform presentation boundary, not just a function rename |
 | MessageBeep | user32 alias to win32u/sysparams.c | User/audio service integration; do not assume the alias is implemented inside user32 |
