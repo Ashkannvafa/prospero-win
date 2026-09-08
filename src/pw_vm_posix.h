@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * POSIX memory backend: anonymous mappings, protection through mprotect and
  * a single alias for writes and execution.

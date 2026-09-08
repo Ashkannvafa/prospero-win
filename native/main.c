@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * prospero-win Phase 0 gate 1: make the console's Zen 2 cores read and
  * understand a raw Windows executable.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Keep the package, runtime telemetry, builder and validator identities in
 lockstep.
 

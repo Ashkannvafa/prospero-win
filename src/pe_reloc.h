@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * Base relocation: rebases an already mapped image when the preferred base
  * was unavailable.

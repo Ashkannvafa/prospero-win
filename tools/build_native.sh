@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Build the prospero-win PE mapping gate as a native PS5 title.
 #
 # Phase 0 gate 1 needs no shaders and no GPU: it maps Windows images and

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Generate the title icon deterministically.
 
 The console's installer copies `sce_sys/icon0.png` into `/user/app/<title>`

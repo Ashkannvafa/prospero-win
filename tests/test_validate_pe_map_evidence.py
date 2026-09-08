@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Contract tests for the PE mapping evidence validator.
 
 The accepted transcript is produced by the gate itself: `test_pw_gate

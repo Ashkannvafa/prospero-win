@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pw_lowmem_ps5.h"
 
 #include <errno.h>

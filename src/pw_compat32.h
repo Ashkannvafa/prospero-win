@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * Gate 0.2a: does this firmware let a title enter 32-bit compatibility
  * mode?

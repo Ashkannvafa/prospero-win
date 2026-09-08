@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * Host file provider: resolves a canonical module name inside one
  * directory, the application directory a Windows loader would search first.

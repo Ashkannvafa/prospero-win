@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Static contract for the loader core and the PS5 adapter.
 
 The adapter cannot be compiled by `make test`: it needs the pinned Prospero

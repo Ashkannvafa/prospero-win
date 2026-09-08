@@ -19,7 +19,8 @@ making the console read and understand a raw Windows executable.
 | 0.2b — Executable memory | Next | Read-execute publication through the console's double-mapping path, and the first call into mapped 64-bit code |
 | 1 — Win32 core | Later | `kernel32`/`msvcrt` process, memory, file, time and threading surface; import binding; TLS; `DllMain` ordering |
 | 2 — Presentation and input | Later | DirectDraw/GDI blitting to VideoOut, DirectInput/DirectSound onto ScePad and SceAudioOut |
-| 3 — First program end to end | Later | One classic title running from its own files, with a soak and a reproducible release |
+| 3 — First 64-bit program end to end | Later | One program running from its own files, with a soak and a reproducible release |
+| 4 — 32-bit execution engine | Later | Same-ISA block translator, block cache, and the 32-bit ABI boundary. 32-bit programs are in scope; compatibility mode is refused, so they are translated |
 
 Phase 0.1 is proven on one PS5 on firmware 12.02, against an accepted
 `ps5log/1` manifest; nothing beyond it is claimed. Gate 0.2a is answered in
@@ -76,14 +77,16 @@ make native-release PW_STAGE_INPUT=/private/path/game \
 
 ## Scope and honesty
 
-- **Zero emulation holds literally for 64-bit programs today.** For 32-bit
-  ones it is an open question with a known answer shape: Zen 2 executes
-  32-bit code natively in compatibility mode, so the target architecture is
-  WoW64-style ABI thunking — the game's own opcodes on the silicon, with
-  translation only at API boundaries and no interpretation anywhere.
-  That route is now measured and **closed on this firmware**: the syscall
-  that installs the required descriptor returns `EINVAL` to a title, though
-  the same probe round-trips on an ordinary x86-64 host. Until then an `i386` image parses,
+- **Both 32-bit and 64-bit programs are supported, by different means.**
+  64-bit code executes natively: no interpretation, no translation, no
+  thunking, so the zero-emulation premise holds literally there. 32-bit code
+  is translated, because the hardware route is closed on this firmware — the
+  syscall that installs the required segment descriptor returns `EINVAL`
+  even at elevated privilege, though the same probe round-trips on an
+  ordinary x86-64 host. Translation is a JIT that caches 64-bit blocks, not
+  an interpreter, and it is cheap by cross-architecture standards because
+  guest and host share the instruction set; the measured platform
+  prerequisites for it hold. Until then an `i386` image parses,
   maps and relocates here but is not executed, and the loader says exactly
   that rather than pretending either way.
   [`docs/EXECUTION_MODEL.md`](docs/EXECUTION_MODEL.md) has the mechanism,
@@ -106,8 +109,11 @@ make native-release PW_STAGE_INPUT=/private/path/game \
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — phase order and the gates that close each one
 - [`docs/TELEMETRY.md`](docs/TELEMETRY.md) — the `ps5log/1` record vocabulary and its validator
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — workflow, worktrees and required gates
-- [`LICENSING.md`](LICENSING.md) — the licence decision, deliberately still open
+- [`LICENSING.md`](LICENSING.md) — why LGPL-2.1-or-later, and what it means in practice
 
-Provenance and attribution are recorded in [`NOTICE.md`](NOTICE.md). The
-application identity `PPSA99995` is a local development identifier, not an
-official Sony assignment.
+Licensed **LGPL-2.1-or-later** — copyleft on the layer itself, while
+remaining linkable with the proprietary programs it exists to run. The
+reasoning is in [`LICENSING.md`](LICENSING.md). Provenance and attribution
+are recorded in [`NOTICE.md`](NOTICE.md). The application identity
+`PPSA99995` is a local development identifier, not an official Sony
+assignment.

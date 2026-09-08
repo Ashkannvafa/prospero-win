@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * Mapped layout: turns a parsed PeImage into the exact reservation,
  * per-section copy/zero spans and page protections a manual mapper needs.

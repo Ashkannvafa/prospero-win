@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Fail-closed audit for the standalone public repository.
 
 prospero-win reads Windows executables, so the first thing this audit does

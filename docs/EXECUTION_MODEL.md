@@ -141,18 +141,51 @@ self-modifying-code story, which is the main technical argument against it
 and against static recompilation. But it is engineering on measured
 foundations, not a research gamble.
 
+## Scope, decided
+
+**Both 32-bit and 64-bit programs are supported.** 64-bit ones execute
+natively, with no interpretation, no translation and no thunking — the
+premise holds literally. 32-bit ones go through the Phase 4 instruction
+translator, because compatibility mode is refused here.
+
+That is a decision about what the project builds, not a change to what any
+of the above measured. It is worth being precise about what it costs, since
+"we support 32-bit too" can be heard as cheaper than it is:
+
+- **Instruction translation is not emulation**, in the sense that matters:
+  the silicon executes 64-bit instructions a JIT produced and cached, with
+  no decode loop anywhere. But the instruction path *is* altered, so the
+  strict "zero emulation" claim applies to the 64-bit half only, and the
+  README says so rather than blurring it.
+- **A translator does not remove the thunking work.** It removes the
+  hardware mode switch. Translated code is 64-bit instructions, but the
+  guest ABI stays 32-bit: `cdecl`/`stdcall` arguments on a 4-byte stack,
+  32-bit pointers, 32-bit handles. Every Win32 entry point still needs
+  marshalling in both directions, callbacks included. That work was going
+  to be needed on the ABI-thunking route too; it survives the change of
+  route intact.
+- **The measured prerequisites hold**, which is why this is a defensible
+  choice rather than an aspiration: guest pointers below 4 GiB mean memory
+  operands need no rewriting, a code cache can be `rwx`, and 256 MiB
+  contiguous low is available in a title.
+
 ## The honest statement of scope, today
 
 - 64-bit (PE32+/AMD64) programs: the premise holds literally. No
   interpretation, no translation, no thunking. The bytes run on Zen 2.
 - 32-bit (PE32/i386) programs: parsed, laid out and relocated by the
-  current gate, and **not executable on this firmware**. Compatibility mode
-  is refused, so ABI thunking is off the table; reaching them requires JIT
-  recompilation, which is not emulation either but does alter the
-  instruction path. That is a scope decision for the owner, and it is now
-  informed by a measurement rather than an assumption. A further obstacle is
-  already recorded: anonymous reservations land near `0x200080000`, so a
-  PE32 image could not be rebased into the low 4 GiB even if it could run.
+  current gate, and **not yet executable** — in scope, but waiting on the
+  Phase 4 translator. Compatibility mode is refused, so there is no native
+  path. Note that the earlier concern about rebasing a PE32 image into the
+  low 4 GiB is resolved: the default anonymous placement is high, but a low
+  address is grantable on request, so a 32-bit image can be mapped where its
+  32-bit relocations can express it.
+
+The loader keeps refusing to overstate this. `pe_image_machine_is_native()`
+is true only for AMD64, and the validator still requires `--allow-i386`
+before accepting a run that mapped a 32-bit image — not because such images
+are unwelcome, but because until Phase 4 exists a mapped one cannot run, and
+a partial result should have to be acknowledged as one.
 
 The loader reflects exactly this and claims nothing more.
 `pe_image_machine_is_native()` is true only for AMD64;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "../include/prospero_win_vm.h"
 
 int pw_vm_backend_valid(const PwVmBackend *backend)

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * Host inspector: parse, plan, map, verify and walk the dependency graph of
  * a real Windows binary without committing it.

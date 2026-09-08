@@ -10,6 +10,7 @@ docs/TELEMETRY.md
 include/prospero_win_file.h
 include/prospero_win.h
 include/prospero_win_vm.h
+LICENSE
 LICENSING.md
 Makefile
 native/main.c

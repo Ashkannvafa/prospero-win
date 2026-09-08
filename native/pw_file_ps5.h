@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * PS5 file provider for the loader's dependency resolution.
  *

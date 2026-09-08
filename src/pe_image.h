@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * Minimal PE reader: DOS header, NT headers, data directories and the
  * section table, parsed out of a read-only byte span with every field

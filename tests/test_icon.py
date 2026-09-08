@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """The committed icon must be exactly what its generator produces.
 
 `sce_sys/icon0.png` is a functional requirement: the console installer

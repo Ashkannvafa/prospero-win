@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * prospero-win: a zero-emulation Win32 compatibility layer for the PS5.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pw_map.h"
 
 #include <string.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
  * Manual mapper: reserve, commit, copy, zero, relocate, protect.
  *

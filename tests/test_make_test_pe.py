@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Cross-check the Python PE encoder against the C parser and mapper.
 
 Two independent encoders exist on purpose: the C fixture header used by the

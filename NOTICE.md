@@ -1,5 +1,12 @@
 # Provenance and attribution
 
+## Licence
+
+prospero-win is LGPL-2.1-or-later; see `LICENSE` and `LICENSING.md`. Every
+source file carries an SPDX identifier. The vendored `ps5log` client below
+is the laboratory's own code, under the same terms as its origin, and is
+digest-pinned rather than modified here.
+
 ## Independently authored
 
 The PE reader, layout planner, relocation engine, import reader, manual

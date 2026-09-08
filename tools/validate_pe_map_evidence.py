@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """Fail-closed validation for the prospero-win PE mapping gate.
 
 Consumes a ps5logd manifest plus its transcript and accepts the run only
