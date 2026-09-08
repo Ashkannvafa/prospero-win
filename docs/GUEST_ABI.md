@@ -107,7 +107,7 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and the time/identity calls plus GetStartupInfoA, then stops after 329 instructions
+and the time/identity calls plus GetStartupInfoA, then stops at LoadStringA after 335 instructions
 (4096-event host limit), after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.

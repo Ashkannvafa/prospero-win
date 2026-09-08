@@ -105,6 +105,37 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void shift_tests(void)
+{
+    const uint32_t values[]={0,1,0x80000000,0x7fffffff,0xffffffff,0x89abcdef};
+    const unsigned kinds[]={4,5,7};
+    for(unsigned k=0;k<3;k++)for(unsigned form=0;form<3;form++)
+    for(unsigned memory=0;memory<2;memory++)for(unsigned count=0;count<256;count++)
+    for(unsigned v=0;v<6;v++) {
+        unsigned actual=form==1?1:count,masked=actual&31;
+        uint32_t expected=values[v];unsigned long flags;
+        if(k==0)__asm__ volatile("shll %%cl,%0; pushfq; popq %1":"+a"(expected),"=r"(flags):"c"(actual):"cc");
+        else if(k==1)__asm__ volatile("shrl %%cl,%0; pushfq; popq %1":"+a"(expected),"=r"(flags):"c"(actual):"cc");
+        else __asm__ volatile("sarl %%cl,%0; pushfq; popq %1":"+a"(expected),"=r"(flags):"c"(actual):"cc");
+        state.gpr[0]=values[v];state.gpr[1]=count;state.gpr[2]=state.stack_high-4;state.eflags=0xad7;
+        memcpy((void *)(uintptr_t)state.gpr[2],&values[v],4);
+        const uint8_t op[]={(uint8_t)(form==0?0xc1:form==1?0xd1:0xd3),(uint8_t)((memory?2:0xc0)|(kinds[k]<<3)),(uint8_t)count};
+        assert(run(op,form==0?3:2,0xd100)==0);
+        uint32_t result=state.gpr[0];if(memory)memcpy(&result,(void *)(uintptr_t)state.gpr[2],4);
+        unsigned mask=masked?(masked==1?0x8c5:0xc5):0;
+        assert(result==expected && state.eflags==((0xad7&~mask)|((unsigned)flags&mask)));
+        assert(state.gpr[1]==count && state.gpr[2]==state.stack_high-4);
+    }
+    /* Destination ECX must use its old CL. A following instruction must run. */
+    state.gpr[1]=0x80000021;state.eflags=0x202;
+    const uint8_t alias[]={0xd3,0xe9,0xb8,42,0,0,0};
+    assert(run(alias,sizeof(alias),0xd200)==0 && state.gpr[1]==0x40000010 && state.gpr[0]==42);
+    for(unsigned count=0;count<2;count++) {
+        state.gpr[2]=state.stack_high-3;state.eflags=0xad7;
+        const uint8_t bad[]={0xc1,0x22,(uint8_t)count};
+        assert(run(bad,3,0xd300)==-1 && state.eip==0xd300 && state.eflags==0xad7);
+    }
+}
 static void extension_tests(void)
 {
     const uint32_t values[]={0,1,0x7f,0x80,0xff,0x7fff,0x8000,0xffff};
@@ -548,6 +579,7 @@ int main(int argc, char **argv)
     byte_tests();
     ret_cleanup_tests();
     extension_tests();
+    shift_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};

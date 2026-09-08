@@ -73,10 +73,15 @@ structured ps5log/1 evidence and an independently checked result.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
   See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing now executes 329 instructions (4096-event limit), GetModuleHandleA(NULL),
+  Bounded host tracing now executes 335 instructions (4096-event limit), GetModuleHandleA(NULL),
   __set_app_type, both CRT mode-pointer getters, _controlfp, _initterm and __getmainargs after binding all 207 imports.
-  UTC/tick/counter/ID and GetStartupInfoA calls also complete; the next stop is a
-  SHL instruction after the CRT consumes the GUI startup profile.
+  UTC/tick/counter/ID and GetStartupInfoA calls also complete; the next stop is
+  LoadStringA, requiring PE resource lookup and ANSI string conversion.
+  Implement its [documented ANSI contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadstringa):
+  bounded, null-terminated output and a length excluding the terminator;
+  unlike LoadStringW, zero capacity is not a resource-pointer request.
+  Test resource lookup and conversion with synthetic fixtures before using
+  private game resources. No resource bytes belong in the public repository.
   RET imm16 also has an actual translated stdcall callback regression.
   Six time/counter and identity handlers have injected-service tests; PS5 clock backends remain pending.
   Initializer callbacks have complete translated synthetic tests and one complete

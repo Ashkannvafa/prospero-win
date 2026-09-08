@@ -198,7 +198,12 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         Operand operand;
         unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,extend=0,setcc=0;
         int terminal = 0;
-        if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
+        if(op==0xc1 || op==0xd1 || op==0xd3) {
+            int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
+            if(result!=PW_OK)return result;
+            if(operand.reg!=4 && operand.reg!=5 && operand.reg!=7)return PW_ERR_UNSUPPORTED;
+            length=1+operand.bytes+(op==0xc1);
+        } else if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if(result!=PW_OK)return result;
             if((op==0x80 && operand.reg!=7) || ((op==0xc6 || op==0xf6) && operand.reg!=0))return PW_ERR_UNSUPPORTED;
@@ -261,7 +266,30 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if(op>=0x40 && op<=0x4f) {
+        if(op==0xc1 || op==0xd1 || op==0xd3) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
+            if(op==0xd3){byte(&e,0x8b);byte(&e,0x4f);byte(&e,4);}
+            else {byte(&e,0xb9);word(&e,op==0xd1?1:source[cursor+length-1]);}
+            byte(&e,0x83);byte(&e,0xe1);byte(&e,31); /* masked count */
+            /* r8d selects only defined flags: none for zero, OF only for one.
+             * Preserve undefined AF and multi-bit OF deterministically. */
+            byte(&e,0x41);byte(&e,0xb8);word(&e,0xc5);
+            byte(&e,0xba);word(&e,0);
+            byte(&e,0x85);byte(&e,0xc9);
+            byte(&e,0x44);byte(&e,0x0f);byte(&e,0x44);byte(&e,0xc2);
+            byte(&e,0xba);word(&e,0x8c5);
+            byte(&e,0x83);byte(&e,0xf9);byte(&e,1);
+            byte(&e,0x44);byte(&e,0x0f);byte(&e,0x44);byte(&e,0xc2);
+            byte(&e,0xd3);byte(&e,(operand.mod==3?0xc0:0)|(operand.reg<<3));
+            if(operand.mod==3)store_eax(&e,operand.rm*4);
+            byte(&e,0x9c);byte(&e,0x5a); /* snapshot native flags */
+            byte(&e,0x44);byte(&e,0x21);byte(&e,0xc2);
+            byte(&e,0x41);byte(&e,0xf7);byte(&e,0xd0);
+            byte(&e,0x44);byte(&e,0x23);byte(&e,0x47);byte(&e,offsetof(PwX86State,eflags));
+            byte(&e,0x44);byte(&e,0x09);byte(&e,0xc2);
+            byte(&e,0x89);byte(&e,0x57);byte(&e,offsetof(PwX86State,eflags));
+        } else if(op>=0x40 && op<=0x4f) {
             unsigned reg=op&7;load_eax(&e,reg*4);
             byte(&e,0xff);byte(&e,op<0x48?0xc0:0xc8);store_eax(&e,reg*4);
             save_arithmetic_flags(&e,0x8d4); /* INC/DEC preserve guest CF. */
