@@ -362,5 +362,21 @@ class EvidenceTest(unittest.TestCase):
         self.assertIn("sequence gap", str(caught.exception))
 
 
+class Call6Test(unittest.TestCase):
+    record = ("PW_CALL6 kind=synthetic-code status=ok constant=42 alignment=8 "
+              "weighted=278 high=4294967574 sealed=1 released=1")
+
+    def test_execution_values_and_cleanup(self):
+        self.assertTrue(validator.check_call6([self.record], True))
+        self.assertFalse(validator.check_call6([]))
+        for old in ("constant=42", "alignment=8", "weighted=278",
+                    "high=4294967574", "sealed=1", "released=1"):
+            with self.subTest(old=old), self.assertRaises(validator.EvidenceError):
+                validator.check_call6([self.record.replace(old, old.split("=")[0] + "=0")])
+        for records in ([], [self.record, self.record]):
+            with self.assertRaises(validator.EvidenceError):
+                validator.check_call6(records, True)
+
+
 if __name__ == "__main__":
     unittest.main()

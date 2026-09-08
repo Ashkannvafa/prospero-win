@@ -326,10 +326,24 @@ def check_order(records: list[str], by_index: dict[int, dict[str, str]],
                  f"{declared[index]} edges")
 
 
+def check_call6(records: list[str], required: bool = False) -> bool:
+    if not many(records, "PW_CALL6") and not required:
+        return False
+    call = one(records, "PW_CALL6")
+    require(call, "kind", "synthetic-code")
+    require(call, "status", "ok")
+    for key, expected in {"constant": 42, "alignment": 8, "weighted": 278,
+                          "high": 4294967574, "sealed": 1,
+                          "released": 1}.items():
+        if as_int(call, key) != expected:
+            fail(f"PW_CALL6 {key} differs from expected {expected}")
+    return True
+
+
 def validate(manifest_path: Path, *, root: str | None, expect_modules: int | None,
              expect_local: int | None, expect_host: int | None,
              allow_i386: bool, allow_wx: bool,
-             expect_compat32: str = "any") -> dict[str, object]:
+             expect_compat32: str = "any", expect_call6: bool = False) -> dict[str, object]:
     manifest_path = manifest_path.resolve()
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -340,6 +354,7 @@ def validate(manifest_path: Path, *, root: str | None, expect_modules: int | Non
 
     lines = read_transcript(manifest_path, manifest)
     records = check_transport(manifest, lines)
+    call6 = check_call6(records, expect_call6)
 
     boot = one(records, "PW_BOOT")
     require(boot, "schema", SCHEMA)
@@ -397,6 +412,7 @@ def validate(manifest_path: Path, *, root: str | None, expect_modules: int | Non
         "sha256": manifest.get("sha256"),
     }
     summary.update(compat32)
+    summary["call6"] = "passed" if call6 else "not-tested"
     return summary
 
 
@@ -404,6 +420,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--root", help="expected root module name")
+    parser.add_argument("--expect-call6", action="store_true",
+                        help="require synthetic Win64 integer execution proof")
     parser.add_argument("--expect-modules", type=int)
     parser.add_argument("--expect-local", type=int)
     parser.add_argument("--expect-host", type=int)
@@ -424,7 +442,8 @@ def main() -> int:
                            expect_host=arguments.expect_host,
                            allow_i386=arguments.allow_i386,
                            allow_wx=arguments.allow_wx,
-                           expect_compat32=arguments.expect_compat32)
+                           expect_compat32=arguments.expect_compat32,
+                           expect_call6=arguments.expect_call6)
     except EvidenceError as error:
         print(f"pe-map evidence rejected: {error}")
         return 1

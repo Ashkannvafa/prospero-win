@@ -6,10 +6,9 @@
  * The title stages a PE image and its third-party dependencies under a
  * read-only directory, manually maps every one of them, verifies the
  * mapping byte by byte and reports the whole graph through ps5log/1.
- * Nothing is executed: this gate proves parsing, placement, zero fill,
- * relocation, page protection and recursive dependency resolution, and
- * nothing more. Whether the mapped code can run is a later, separate
- * question, answered in docs/EXECUTION_MODEL.md.
+ * The staged PE is never executed. A separate synthetic Win64 call probe
+ * checks the explicit integer ABI bridge before the mapping gate. Neither
+ * result establishes execution of the original Windows application.
  *
  * Teardown follows the laboratory's measured rule: after the report and the
  * BYE the runtime calls _exit(0) instead of returning from main(), because
@@ -17,6 +16,7 @@
  */
 #include "../src/pw_gate.h"
 #include "../src/pw_vm_posix.h"
+#include "../src/pw_exec_probe.h"
 #include "pw_compat32_ps5.h"
 #include "pw_lowmem_ps5.h"
 #include "pw_file_ps5.h"
@@ -298,6 +298,23 @@ int main(int argc, char **argv)
                (unsigned long long)backend.page_bytes, backend.capabilities);
 
     PS5LOG_LOG("PW_STEP name=root-open");
+    {
+        PwExecProbe execution;
+        PS5LOG_LOG("PW_STEP name=call6-begin kind=synthetic-code");
+        status = pw_exec_probe(&backend, &execution);
+        PS5LOG_LOG("PW_CALL6 kind=synthetic-code status=%s constant=%llu "
+                   "alignment=%llu weighted=%llu high=%llu sealed=%u released=%u",
+                   pw_result_name(status),
+                   (unsigned long long)execution.constant,
+                   (unsigned long long)execution.alignment,
+                   (unsigned long long)execution.weighted,
+                   (unsigned long long)execution.high,
+                   execution.sealed, execution.released);
+        if (status != PW_OK) {
+            ps5log_close("call6-failed");
+            _exit(1);
+        }
+    }
     status = provider.open(provider.context, root_name, &root);
     if (status != PW_OK) {
         PS5LOG_LOG("PW_ABORT stage=root status=%s name=%s",

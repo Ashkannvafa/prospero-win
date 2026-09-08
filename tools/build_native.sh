@@ -117,7 +117,7 @@ sources=(
     src/pe_image.c src/pe_import.c src/pe_layout.c src/pe_reloc.c
     src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
     src/pw_module_name.c src/pw_result.c src/pw_segment.c src/pw_vm.c
-    src/pw_vm_posix.c
+    src/pw_vm_posix.c src/pw_exec_probe.c
 )
 objects=()
 for source in "${sources[@]}"; do
@@ -125,6 +125,8 @@ for source in "${sources[@]}"; do
     "${cc[@]}" -std=c11 "${common[@]}" -c "$root/$source" -o "$object"
     objects+=("$object")
 done
+"${cc[@]}" -c "$root/src/pw_win64_call.S" -o "$build/obj/pw_win64_call.o"
+objects+=("$build/obj/pw_win64_call.o")
 "${cc[@]}" -std=c11 "${common[@]}" \
     -include "$root/native/ps5log/ps5log_ps5_net.h" \
     -c "$root/native/ps5log/ps5log.c" -o "$build/obj/ps5log.o"

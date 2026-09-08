@@ -1,5 +1,20 @@
 # Telemetry contract
 
+## Synthetic Win64 call probe
+
+Before loading the staged PE, the native adapter logs call6-begin and runs
+project-authored code through the assembly SysV-to-Win64 bridge. PW_CALL6
+records kind=synthetic-code, status, constant=42, alignment=8, weighted=278,
+high=4294967574, sealed=1 and released=1. The code is constructed RW and
+protected RX before calls; it is independent of Pinball's mapped image.
+
+The validator checks exact results and uniqueness whenever this record is
+present. --expect-call6 also rejects its absence, preserving validation of
+older mapping-only runs. A successful record proves only the tested integer
+call path, not PE32 execution, complete ABI preservation or Win32 imports.
+
+## Image mapping records
+
 One load produces one record set. The runtime does not format telemetry ad
 hoc: `src/pw_gate.c` fills a report and the adapter emits each line verbatim
 through `ps5log/1` over TCP. There are no log files on the console, no USB

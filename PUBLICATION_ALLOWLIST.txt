@@ -58,6 +58,8 @@ src/pw_vm.c
 src/pw_vm_posix.c
 src/pw_vm_posix.h
 src/pw_win64_call.h
+src/pw_exec_probe.h
+src/pw_exec_probe.c
 src/pw_win64_call.S
 tests/pe_fixture.h
 tests/test_icon.py

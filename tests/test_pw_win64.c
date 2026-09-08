@@ -4,6 +4,7 @@
 #include "../src/pw_map.h"
 #include "../src/pw_vm_posix.h"
 #include "../src/pw_win64_call.h"
+#include "../src/pw_exec_probe.h"
 
 #include <assert.h>
 #include <string.h>
@@ -77,6 +78,11 @@ static void release_code(void)
 int main(void)
 {
     assert(pw_vm_posix_backend(&backend) == PW_OK);
+    PwExecProbe probe;
+    assert(pw_exec_probe(&backend, &probe) == PW_OK);
+    assert(probe.constant == 42 && probe.alignment == 8);
+    assert(probe.weighted == 278 && probe.high == 0x100000116ull);
+    assert(probe.sealed == 1 && probe.released == 1);
     /* mov eax,42; ret */
     static const uint8_t constant[] = {0xb8,42,0,0,0,0xc3};
     assert(((GuestLeaf)map_code(constant, sizeof(constant)))() == 42);
