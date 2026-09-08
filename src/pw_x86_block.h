@@ -10,6 +10,7 @@ typedef struct PwX86State {
     uint32_t eip;
     uint32_t stack_low, stack_high; /* mapped RW range, high exclusive */
     uint32_t fs_base, fs_bytes; /* guest-owned RW thread region, not host FS */
+    uint32_t eflags; /* guest flags; never installed as host control flags */
 } PwX86State;
 
 typedef struct PwX86Block {
@@ -19,6 +20,7 @@ typedef struct PwX86Block {
 
 /* Initial bounded DBT subset: push immediate/register, pop register,
  * mov register/immediate, register/register or stack memory (ModRM/SIB),
+ * MOV immediate/register or stack-memory, register SUB with arithmetic flags,
  * LEA, FS moffs32/EAX, nop,
  * direct call/jump and ret. No copied 32-bit stack instructions. A successful
  * block is a SysV int(PwX86State*) function returning 0, or -1 on memory bounds.

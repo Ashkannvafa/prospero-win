@@ -62,6 +62,9 @@ structured ps5log/1 evidence and an independently checked result.
 - [ ] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
   until the executable reaches application entry. Keep guest pointers and
   handles 32-bit; exercise callbacks in both directions.
+  Bounded host tracing of the original executable executes 22 instructions
+  through the startup helper and stops at unsupported XOR. This is not
+  application entry, import execution, or PS5 execution evidence.
 - [ ] Implement the observed Win32 surface: process/error state, heap,
   virtual memory, files/resources, registry subset if needed, clocks and
   synchronisation. Unsupported calls identify themselves and stop with a

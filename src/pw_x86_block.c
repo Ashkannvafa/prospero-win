@@ -4,7 +4,7 @@
 
 /* Context accesses below use signed disp8 encodings. Fail at build time if
  * future state-layout changes would silently address the wrong field. */
-_Static_assert(offsetof(PwX86State,fs_bytes)<=127,"context exceeds disp8 layout");
+_Static_assert(offsetof(PwX86State,eflags)<=127,"context exceeds disp8 layout");
 
 typedef struct Emitter { uint8_t *p; size_t n, cap; int failed; } Emitter;
 static void byte(Emitter *e, uint8_t value)
@@ -105,6 +105,17 @@ static void success(Emitter *e)
 {
     byte(e,0x31); byte(e,0xc0); byte(e,0xc3);
 }
+static void save_arithmetic_flags(Emitter *e)
+{
+    /* Snapshot before any emitter bookkeeping changes flags. Native RSP is
+     * balanced; guest control flags (DF/IF/etc.) are never loaded into RFLAGS. */
+    byte(e,0x9c); byte(e,0x59); /* pushfq; pop rcx */
+    byte(e,0x81); byte(e,0xe1); word(e,0x8d5); /* OF SF ZF AF PF CF */
+    byte(e,0x8b); byte(e,0x57); byte(e,offsetof(PwX86State,eflags));
+    byte(e,0x81); byte(e,0xe2); word(e,~0x8d5u);
+    byte(e,0x09); byte(e,0xca);
+    byte(e,0x89); byte(e,0x57); byte(e,offsetof(PwX86State,eflags));
+}
 static void fs_address(Emitter *e, uint32_t offset)
 {
     /* Check offset <= size-4 without wraparound. */
@@ -137,11 +148,14 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if (source[cursor+1]!=0xa1 && source[cursor+1]!=0xa3)
                 return PW_ERR_UNSUPPORTED;
             length=6;
-        } else if (op == 0x89 || op == 0x8b || op == 0x8d) {
+        } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 || op==0x29 || op==0x2b) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if (result!=PW_OK) return result;
             if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
+            if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
+            if ((op==0x29 || op==0x2b) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes;
+            if (op==0xc7) length+=4;
         } else if (op == 0x6a || op == 0xeb) length = 2;
         else if (op == 0x68 || op == 0xe8 || op == 0xe9 ||
                  (op >= 0xb8 && op <= 0xbf)) length = 5;
@@ -151,7 +165,21 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if (op == 0x64) {
+        if (op==0x29 || op==0x2b) {
+            unsigned dest=op==0x29?operand.rm:operand.reg;
+            unsigned src=op==0x29?operand.reg:operand.rm;
+            load_eax(&e,dest*4);
+            byte(&e,0x2b); byte(&e,0x47); byte(&e,src*4);
+            store_eax(&e,dest*4);
+            save_arithmetic_flags(&e);
+        } else if (op==0xc7) {
+            uint32_t value=read32(source+cursor+length-4);
+            if (operand.mod==3) store(&e,operand.rm*4,value);
+            else {
+                effective_address(&e,&operand);stack_bounds(&e);
+                byte(&e,0xc7);byte(&e,0x00);word(&e,value);
+            }
+        } else if (op == 0x64) {
             fs_address(&e,read32(source+cursor+2));
             if (source[cursor+1]==0xa1) {
                 byte(&e,0x8b); byte(&e,0x00);

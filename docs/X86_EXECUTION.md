@@ -7,6 +7,7 @@ by Pinball's entry. It is not a complete decoder or CPU implementation.
 
 Supported encodings: push imm8/imm32/r32, pop r32, mov r32/imm32,
 mov r32/r32 and r32/stack-memory (89/8B ModRM/SIB), LEA,
+MOV immediate/r32 or stack-memory (C7 /0), register SUB (29/2B),
 FS-prefixed A1/A3 moffs32 loads/stores
 through EAX, nop, direct call rel32,
 jmp rel8/rel32 and ret. Calls push a 32-bit guest return PC and yield the
@@ -34,6 +35,12 @@ range; PE data, heap and other regions still require a general memory map.
 All three memory ModRM modes and every SIB byte are covered by host LEA
 tests, including truncated encodings. These tests are not a full decoder
 conformance suite; operand/address-size overrides are not supported.
+
+SUB snapshots the six arithmetic flags (OF/SF/ZF/AF/PF/CF) after the native
+32-bit subtraction, retaining all other guest EFLAGS bits in the state.
+Guest control flags are never installed in native RFLAGS. Tests cover edge
+values for borrow, signed overflow, auxiliary carry, parity, sign and zero;
+MOV and failed memory accesses preserve the recorded guest flags.
 
 ## Host evidence
 
@@ -66,11 +73,28 @@ The private executable's entry begins with two immediate pushes and a
 direct call, which this subset represents. Its helper then accesses FS:0
 and constructs an x86 exception-registration frame. We must implement a
 guest TEB and exception chain; using the native thread's FS state is wrong.
-The original entry has been inspected, not yet executed through this engine.
-Reinspection of the private startup helper after adding ModRM/SIB identifies
-register SUB (with guest flag semantics) and immediate-to-memory MOV as
-the next missing instruction forms along that helper's straight-line path.
-The executable bytes remain private; no extracted routine is embedded here.
+The bounded host tracer now executes instructions directly from the private
+file through this engine. Build `make build/host/trace_x86_entry`, then run
+`build/host/trace_x86_entry /private/path/Pinball.exe`. Exit 2 is a classified
+stop, not successful application startup; exit 1 is setup/cleanup failure.
+The tracer owns a synthetic stack and FS region and initializes only the
+exception-chain sentinel, not a complete Windows TEB. It fetches from
+executable PE sections but does not map or expose PE data to guest loads.
+It stops at 256 instructions, unsupported decoding or memory-bound failure.
+
+On 2026-09-08, input SHA-256
+`2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
+completed 22 translated instructions, including the startup helper's return:
+
+```
+kind=host-entry-trace steps=22 stop=unsupported eip=0x01020fa1 esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000206
+```
+
+The next unsupported instruction is register XOR. This is host evidence
+only: no Win32 imports have run, no gameplay has begun, and this tracer has
+not been exercised on PS5. Synthetic PE tests independently cover normal
+instruction progress, unsupported stops, memory faults and a looping budget
+stop. Executable bytes remain private; no extracted routine is embedded here.
 
 Next coverage: general guest memory regions, arithmetic and
 guest EFLAGS, TEB initialization and broader FS encodings, indirect calls into import adapters,

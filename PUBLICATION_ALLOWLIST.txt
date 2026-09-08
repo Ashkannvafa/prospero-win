@@ -88,6 +88,8 @@ tests/test_validate_pe_map_evidence.py
 tools/audit_publication.py
 tools/build_native.sh
 tools/inspect_pe.c
+tools/trace_x86_entry.c
+tests/test_trace_x86_entry.py
 tools/make_icon.py
 tools/make_test_pe.py
 tools/validate_pe_map_evidence.py

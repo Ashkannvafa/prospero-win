@@ -68,6 +68,34 @@ static void addressing_tests(void)
     state.gpr[5]=0xabcddcba;
     assert(run(load,sizeof(load),0x730)==-1 && state.gpr[5]==0xabcddcba);
 }
+static void arithmetic_tests(void)
+{
+    const uint32_t values[]={0,1,15,16,0x7fffffffu,0x80000000u,0xffffffffu};
+    for(unsigned a=0;a<7;a++)for(unsigned b=0;b<7;b++)
+        for(unsigned direction=0;direction<2;direction++) {
+            uint32_t x=values[a],y=values[b],z=x-y;
+            state.gpr[0]=x;state.gpr[1]=y;state.eflags=0x602;
+            uint8_t sub[]={direction?0x2b:0x29,direction?0xc1:0xc8};
+            assert(run(sub,2,0x900)==0 && state.gpr[0]==z && state.gpr[1]==y);
+            uint32_t f=(x<y?1:0) | (z==0?0x40:0) | ((z>>31)?0x80:0);
+            f|=((x^y^z)&16);
+            f|=(((x^y)&(x^z))>>31)?0x800:0;
+            unsigned parity=0;for(unsigned bit=0;bit<8;bit++)parity^=(z>>bit)&1;
+            if(!parity)f|=4;
+            assert(state.eflags==(0x602|f));
+            const uint8_t mov[]={0xc7,0xc2,0x12,0x34,0x56,0x78};
+            assert(run(mov,sizeof(mov),0x902)==0 && state.gpr[2]==0x78563412);
+            assert(state.eflags==(0x602|f));
+        }
+    state.gpr[4]=state.stack_high-32;
+    const uint8_t write[]={0xc7,0x44,0x24,4,0xff,0xff,0xff,0xff};
+    assert(run(write,sizeof(write),0xa00)==0);
+    assert(*(uint32_t *)(uintptr_t)(state.gpr[4]+4)==0xffffffffu);
+    state.gpr[4]=state.stack_high-4;
+    uint32_t flags=state.eflags;
+    assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
+    assert(state.eflags==flags);
+}
 int main(int argc, char **argv)
 {
     assert(pw_vm_posix_backend(&backend)==PW_OK);
@@ -166,6 +194,7 @@ int main(int argc, char **argv)
     assert(run(overflow,sizeof(overflow),0x560)==-1);
     assert(backend.release(NULL,&thread)==PW_OK);
     addressing_tests();
+    arithmetic_tests();
     uint8_t scratch[4096]; PwX86Block block;
     const uint8_t fs[]={0x64,0x90};
     assert(pw_x86_translate(fs,sizeof(fs),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
