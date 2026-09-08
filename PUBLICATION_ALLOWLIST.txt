@@ -3,6 +3,7 @@ docs/ARCHITECTURE.md
 docs/COMPAT32_PHASE0A.md
 docs/DEVELOPMENT.md
 docs/EXECUTION_MODEL.md
+docs/X86_EXECUTION.md
 docs/PE_MAPPING_PHASE0.md
 docs/PINBALL_TARGET.md
 docs/ROADMAP.md
@@ -60,6 +61,11 @@ src/pw_vm_posix.h
 src/pw_win64_call.h
 src/pw_exec_probe.h
 src/pw_exec_probe.c
+src/pw_x86_block.c
+src/pw_x86_block.h
+tests/test_pw_x86_block.c
+tests/test_pw_x86_reference.S
+tests/test_x86_differential.py
 src/pw_win64_call.S
 tests/pe_fixture.h
 tests/test_icon.py

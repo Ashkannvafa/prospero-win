@@ -39,6 +39,8 @@ structured ps5log/1 evidence and an independently checked result.
   addressing, stack width, indirect branches, segment/TLS references and
   floating-point instructions the target uses. Choose decoder and execution
   approach from measured coverage and performance.
+  The initial push/direct-call/return translator and a native-i386 host
+  differential sequence pass; see X86_EXECUTION.md for its limited coverage.
 - [ ] **Memory feasibility.** Test scattered low allocations, reserve versus
   commit/decommit and realistic working sets. A 256 MiB low mapping does not
   prove a 2 GiB guest address space or sufficient resident memory.
