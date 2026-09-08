@@ -123,3 +123,4 @@ tests/test_pw_time.c
 src/pe_resource.c
 src/pe_resource.h
 tests/test_pe_resource.c
+docs/STARTUP_ANALYSIS.md

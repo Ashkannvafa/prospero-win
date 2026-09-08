@@ -69,6 +69,7 @@ structured ps5log/1 evidence and an independently checked result.
   and teardown required by the target. Track unsupported features.
 - [ ] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
   until the executable reaches application entry.
+  Initial Ghidra findings and subsystem packages: [STARTUP_ANALYSIS.md](STARTUP_ANALYSIS.md).
   Immediate approach: use Ghidra on the hash-identified private Pinball PE to
   map startup through window creation and message-loop entry before expanding
   handlers further. Inventory direct calls, unresolved indirect edges, callback
