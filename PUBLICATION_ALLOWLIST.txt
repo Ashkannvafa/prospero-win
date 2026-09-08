@@ -11,6 +11,7 @@ docs/TELEMETRY.md
 include/prospero_win_file.h
 include/prospero_win.h
 include/prospero_win_vm.h
+include/prospero_win_abi.h
 LICENSE
 LICENSING.md
 Makefile
@@ -56,6 +57,8 @@ src/pw_segment.h
 src/pw_vm.c
 src/pw_vm_posix.c
 src/pw_vm_posix.h
+src/pw_win64_call.h
+src/pw_win64_call.S
 tests/pe_fixture.h
 tests/test_icon.py
 tests/test_make_test_pe.py
@@ -71,6 +74,7 @@ tests/test_pw_map.c
 tests/test_pw_module_name.c
 tests/test_pw_segment.c
 tests/test_pw_vm.c
+tests/test_pw_win64.c
 tests/test_title_identity.py
 tests/test_validate_pe_map_evidence.py
 tools/audit_publication.py

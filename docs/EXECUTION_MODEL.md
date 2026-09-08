@@ -17,6 +17,27 @@ these crossings using explicit ms_abi functions or equivalent thunks.
 Compiler acceptance is not hardware proof. No-argument leaf execution alone
 does not establish a working Win32 import boundary.
 
+### Host execution tests and PS5 compiler result (2026-09-08)
+
+tests/test_pw_win64.c maps synthetic PE64 code, verifies its bytes, protects
+it RX and executes constant-return, entry stack alignment, six weighted
+integer arguments (including high 32 bits and all four writable home slots),
+four double arguments, guest-to-host and guest-to-host-to-guest callbacks.
+The host reference uses ms_abi; bridge functions are noinline so their ABI
+crossings cannot disappear through inlining.
+
+The pinned Prospero Clang 18 target rejects ms_abi as unsupported. Native
+code therefore uses the explicit SysV-to-Win64 assembly bridge
+src/pw_win64_call.S. Its six integer/pointer argument path matches the host
+compiler reference, including nested callbacks, and compiles for the PS5
+target. It is not yet linked into the title or hardware-tested. The full
+conformance test's ms_abi functions remain host-only reference code.
+
+Remaining 0.2b work: native host-import entry stubs, native callbacks,
+preserved GPR/XMM canaries, mixed arguments, aggregate returns, variadics
+where needed, hardware telemetry and an independent execution validator.
+PE32 cdecl/stdcall and x87 semantics remain separate required work.
+
 Reference: [Microsoft x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention).
 
 ## PE32 execution

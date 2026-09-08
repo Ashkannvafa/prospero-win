@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST = ROOT / "PUBLICATION_ALLOWLIST.txt"
 TEXT_SUFFIXES = {
-    "", ".c", ".example", ".h", ".json", ".md", ".py", ".sh", ".txt", ".yml",
+    "", ".c", ".s", ".example", ".h", ".json", ".md", ".py", ".sh", ".txt", ".yml",
 }
 # Files carried verbatim from another tree of the laboratory. They are
 # pinned by digest and exempt from the text scan, because editing them here

@@ -29,11 +29,12 @@ $(eval $(call test_rule,test_pw_loader,tests/test_pw_loader.c $(CORE),))
 $(eval $(call test_rule,test_pw_segment,tests/test_pw_segment.c src/pw_segment.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_compat32,tests/test_pw_compat32.c src/pw_compat32.c src/pw_segment.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_gate,tests/test_pw_gate.c $(CORE) src/pw_gate.c,))
+$(eval $(call test_rule,test_pw_win64,tests/test_pw_win64.c src/pw_win64_call.S $(CORE),))
 $(eval $(call test_rule,inspect_pe,tools/inspect_pe.c $(CORE) src/pw_file_posix.c,))
 
 TESTS := test_pe_image test_pe_layout test_pe_reloc test_pe_import \
 	test_pw_module_name test_pw_vm test_pw_map test_pw_loader \
-	test_pw_segment test_pw_compat32 test_pw_gate
+	test_pw_segment test_pw_compat32 test_pw_gate test_pw_win64
 
 # The Python suites drive the built binaries: the evidence validator is
 # tested against a transcript the real gate produced, and the Python PE
