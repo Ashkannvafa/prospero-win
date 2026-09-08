@@ -105,7 +105,7 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and stops after 95 instructions inside an original-game initializer callback.
+and stops after 103 instructions at `GetSystemTimeAsFileTime` inside an original-game initializer callback.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
@@ -153,7 +153,7 @@ checks malformed tables, permissions/ranges, stale tokens and damaged
 callee-saved register returns. Pinball's first observed `_initterm` returns
 without scheduling callbacks, so actual-game callbacks are not yet proven.
 The subsequent original-game initializer now schedules a callback and executes
-its first instructions, stopping at an unsupported instruction before return.
+its first instructions, stopping at a pending time API before return.
 This is not completed original-game callback evidence.
 Host telemetry labels scheduled work `host-callback-enter` separately from
 the API-return records. No PS5 callback execution is claimed.

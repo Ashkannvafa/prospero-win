@@ -10,7 +10,8 @@ mov r32/r32 and r32/memory (89/8B ModRM/SIB), LEA,
 MOV immediate/r32 or memory (C7 /0), register ADD (01/03), SUB (29/2B), XOR (31/33),
 Immediate ADD/OR/ADC/SBB/AND/SUB/XOR/CMP 16/32-bit (81/83 and accumulator
 forms, optional 66 prefix), CMP r32/memory
-(39/3B), MOVZX word (0F B7), all short/near Jcc and register-byte SETcc,
+(39/3B), TEST 32-bit register/memory or immediate (85, A9, F7 /0),
+MOVZX word (0F B7), all short/near Jcc and register-byte SETcc,
 Absolute and FS-prefixed A1/A3 moffs32 loads/stores
 through EAX, nop, direct call rel32, indirect near call/jump (FF /2,/4),
 jmp rel8/rel32 and ret. Calls push a 32-bit guest return PC and yield the
@@ -101,7 +102,7 @@ On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
-95 instructions and seven completed API calls after adding guest arguments,
+103 instructions and seven completed API calls after adding logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
 
@@ -115,10 +116,11 @@ kind=host-api dll=msvcrt.dll name=_controlfp result=0x0009001f
 kind=host-api dll=msvcrt.dll name=_initterm result=0x0009001f
 kind=host-api dll=msvcrt.dll name=__getmainargs result=0x00000000
 kind=host-callback-enter dll=msvcrt.dll name=_initterm target=0x0101cd2b depth=1
-kind=host-entry-trace steps=95 stop=unsupported eip=0x0101cd38 esp=0x030fff2c ebp=0x030fff3c fs0=0x030fffe8 flags=0x00000202
+kind=host-api-stop dll=kernel32.dll name=GetSystemTimeAsFileTime status=-5
+kind=host-entry-trace steps=103 stop=unimplemented-api eip=0xe00002c0 esp=0x030fff20 ebp=0x030fff3c fs0=0x030fffe8 flags=0x00000246
 ```
 
-The next stop is an unsupported instruction inside the second `_initterm`'s
+The next stop is `GetSystemTimeAsFileTime` inside the second `_initterm`'s
 guest callback. The first initializer call needed no callbacks; the second
 has not completed. Synthetic tests separately exercise complete translated
 and nested callbacks. `_controlfp` now
@@ -128,8 +130,11 @@ last-valid and crossing-boundary addresses, unchanged flags and fault atomicity.
 Operand PUSH tests cover old-ESP addressing, source and destination faults,
 flag preservation and continuation into the next instruction. PUSH checks
 the source before committing the destination or changing guest ESP.
-The 95-instruction trace reproduces under ASan/UBSan. The argument packer and
-Win32 adapter compile with the PS5 toolchain; this is not PS5 guest execution.
+TEST regressions cover all five supported operand forms, sign/zero/parity
+flags, cleared carry/overflow, preserved operands, and memory-boundary faults.
+Undefined AF is retained deterministically, as with the other logical operations.
+The 103-instruction trace reproduces under ASan/UBSan and the translator
+compiles with the PS5 toolchain; neither establishes PS5 guest execution.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses

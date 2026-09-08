@@ -198,7 +198,15 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         Operand operand;
         unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,movzx=0,setcc=0;
         int terminal = 0;
-        if(op==0x66 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
+        if(op==0x85 || op==0xf7 || op==0xa9) {
+            if(op==0xa9){memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;length=5;}
+            else {
+                int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
+                if(result!=PW_OK)return result;
+                if(op==0xf7 && operand.reg!=0)return PW_ERR_UNSUPPORTED;
+                length=1+operand.bytes+(op==0xf7?4:0);
+            }
+        } else if(op==0x66 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=op==0x66?1:0;
             if(bytes-cursor<=prefix)return PW_ERR_TRUNCATED;
             unsigned cmpop=source[cursor+prefix];
@@ -246,7 +254,13 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if(setcc) {
+        if(op==0x85 || op==0xf7 || op==0xa9) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {effective_address(&e,&operand);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
+            if(op==0x85){byte(&e,0x85);byte(&e,0x47);byte(&e,operand.reg*4);}
+            else {byte(&e,0xa9);word(&e,read32(source+cursor+length-4));}
+            save_arithmetic_flags(&e,0x8c5); /* TEST leaves AF undefined; retain it. */
+        } else if(setcc) {
             condition_value(&e,source[cursor+1]&15);
             unsigned reg=operand.rm&3,high=operand.rm>=4;
             if(high){byte(&e,0xc1);byte(&e,0xe0);byte(&e,8);}

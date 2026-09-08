@@ -105,6 +105,33 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void logical_test_tests(void)
+{
+    const uint32_t values[]={0,1,0x80000000,0x7fffffff,0xffffffff,0xaabbccdd};
+    for(unsigned a=0;a<6;a++)for(unsigned b=0;b<6;b++)for(unsigned form=0;form<5;form++) {
+        uint32_t left=values[a],right=values[b],result=left&right;
+        state.gpr[0]=left;state.gpr[1]=right;state.gpr[2]=state.stack_low;
+        memcpy(stack.write_base,&left,4);state.eflags=0xad7;
+        unsigned flags=0x212;
+        if(!result)flags|=0x40;
+        if(result&0x80000000)flags|=0x80;
+        unsigned parity=0;for(unsigned i=0;i<8;i++)parity^=(result>>i)&1;
+        if(!parity)flags|=4;
+        uint8_t bytes[8];size_t n=0;
+        if(form<2){bytes[n++]=0x85;bytes[n++]=form?0x0a:0xc8;}
+        else {
+            bytes[n++]=form==2?0xa9:0xf7;
+            if(form!=2)bytes[n++]=form==3?0xc0:0x02;
+            for(unsigned i=0;i<4;i++)bytes[n++]=(uint8_t)(right>>(i*8));
+        }
+        assert(run(bytes,n,0x8000)==0 && state.eflags==flags);
+        uint32_t after;memcpy(&after,stack.write_base,4);
+        assert(state.gpr[0]==left && state.gpr[1]==right && after==left);
+    }
+    state.gpr[2]=state.stack_high-3;state.eflags=0xad7;
+    const uint8_t bad[]={0x85,0x0a};
+    assert(run(bad,2,0x8010)==-1 && state.eflags==0xad7 && state.eip==0x8010);
+}
 static void push_operand_tests(void)
 {
     uint32_t slot=state.stack_high-8,value=0xaabbccdd;
@@ -370,6 +397,7 @@ int main(int argc, char **argv)
     immediate_tests();
     absolute_tests();
     push_operand_tests();
+    logical_test_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};
