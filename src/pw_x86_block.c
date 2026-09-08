@@ -60,6 +60,18 @@ static void success(Emitter *e)
 {
     byte(e,0x31); byte(e,0xc0); byte(e,0xc3);
 }
+static void fs_address(Emitter *e, uint32_t offset)
+{
+    /* Check offset <= size-4 without wraparound. */
+    load_eax(e,offsetof(PwX86State,fs_bytes));
+    byte(e,0x83); byte(e,0xf8); byte(e,4); require_condition(e,0x73);
+    byte(e,0x83); byte(e,0xe8); byte(e,4);
+    byte(e,0x3d); word(e,offset); require_condition(e,0x73);
+    load_eax(e,offsetof(PwX86State,fs_base));
+    byte(e,0x05); word(e,offset); require_condition(e,0x73); /* no carry */
+    /* The last byte of the dword must remain in the 32-bit address space. */
+    byte(e,0x3d); word(e,0xfffffffcu); require_condition(e,0x76);
+}
 
 int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                      uint8_t *output, size_t capacity, PwX86Block *block)
@@ -74,7 +86,16 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         const uint8_t op = source[cursor];
         size_t length;
         int terminal = 0;
-        if (op == 0x6a || op == 0xeb) length = 2;
+        if (op == 0x64) {
+            if (bytes-cursor < 2) return PW_ERR_TRUNCATED;
+            if (source[cursor+1]!=0xa1 && source[cursor+1]!=0xa3)
+                return PW_ERR_UNSUPPORTED;
+            length=6;
+        } else if (op == 0x89 || op == 0x8b) {
+            if (bytes-cursor < 2) return PW_ERR_TRUNCATED;
+            if ((source[cursor+1]&0xc0)!=0xc0) return PW_ERR_UNSUPPORTED;
+            length=2;
+        } else if (op == 0x6a || op == 0xeb) length = 2;
         else if (op == 0x68 || op == 0xe8 || op == 0xe9 ||
                  (op >= 0xb8 && op <= 0xbf)) length = 5;
         else if (op == 0xc3 || op == 0x90 || (op >= 0x50 && op <= 0x5f)) length = 1;
@@ -83,7 +104,20 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if (op == 0x6a) push_imm(&e,(uint32_t)(int32_t)(int8_t)source[cursor+1]);
+        if (op == 0x64) {
+            fs_address(&e,read32(source+cursor+2));
+            if (source[cursor+1]==0xa1) {
+                byte(&e,0x8b); byte(&e,0x00);
+                store_eax(&e,offsetof(PwX86State,gpr[0]));
+            } else {
+                byte(&e,0x8b); byte(&e,0x4f); byte(&e,0);
+                byte(&e,0x89); byte(&e,0x08);
+            }
+        } else if (op == 0x89 || op == 0x8b) {
+            unsigned reg=(source[cursor+1]>>3)&7, rm=source[cursor+1]&7;
+            load_eax(&e,(op==0x89 ? reg:rm)*4);
+            store_eax(&e,(op==0x89 ? rm:reg)*4);
+        } else if (op == 0x6a) push_imm(&e,(uint32_t)(int32_t)(int8_t)source[cursor+1]);
         else if (op == 0x68) push_imm(&e,read32(source+cursor+1));
         else if (op >= 0x50 && op <= 0x57) {
             stack_address(&e,1);

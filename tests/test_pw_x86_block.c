@@ -77,10 +77,49 @@ int main(int argc, char **argv)
     assert(run(twice,2,0x300)==-1);
     assert(state.gpr[4]==state.stack_low && state.eip==0x301);
     assert(*(uint32_t *)stack.write_base==state.gpr[0]);
+    /* All register/register MOV combinations, including ESP. */
+    for (unsigned direction=0;direction<2;direction++)
+        for(unsigned src=0;src<8;src++)for(unsigned dst=0;dst<8;dst++) {
+            for(unsigned i=0;i<8;i++)state.gpr[i]=0x12340000+i;
+            uint32_t expected[8];memcpy(expected,state.gpr,sizeof(expected));
+            expected[dst]=expected[src];
+            uint8_t mov[]={direction?0x8b:0x89,
+                (uint8_t)(0xc0 | ((direction?dst:src)<<3) | (direction?src:dst))};
+            assert(run(mov,2,0x400)==0);
+            assert(memcmp(expected,state.gpr,sizeof(expected))==0);
+        }
+    PwVmRegion thread;
+    assert(backend.reserve_at(NULL,0x03002000,4096,4096,&thread)==PW_OK);
+    assert(backend.commit(NULL,&thread,0,thread.bytes,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+    state.fs_base=0x03002000;state.fs_bytes=4096;
+    const uint8_t fsread[]={0x64,0xa1,0,0,0,0};
+    const uint8_t fswrite[]={0x64,0xa3,0,0,0,0};
+    *(uint32_t *)thread.write_base=0xffffffffu;
+    assert(run(fsread,sizeof(fsread),0x500)==0);
+    assert(state.gpr[0]==0xffffffffu && state.eip==0x506);
+    state.gpr[0]=0x03000100;
+    assert(run(fswrite,sizeof(fswrite),0x510)==0);
+    assert(*(uint32_t *)thread.write_base==0x03000100);
+    uint8_t last[]={0x64,0xa3,0xfc,0x0f,0,0};
+    assert(run(last,sizeof(last),0x520)==0);
+    assert(*(uint32_t *)((uint8_t *)thread.write_base+4092)==state.gpr[0]);
+    last[2]=0xfd;
+    assert(run(last,sizeof(last),0x530)==-1 && state.eip==0x530);
+    assert(state.gpr[0]==0x03000100);
+    state.fs_bytes=3;
+    assert(run(fsread,sizeof(fsread),0x540)==-1);
+    assert(state.gpr[0]==0x03000100);
+    state.fs_base=0xfffffffdu;state.fs_bytes=4096;
+    assert(run(fsread,sizeof(fsread),0x550)==-1);
+    /* Base+offset overflow fails before dereferencing address zero. */
+    const uint8_t overflow[]={0x64,0xa1,4,0,0,0};
+    assert(run(overflow,sizeof(overflow),0x560)==-1);
+    assert(backend.release(NULL,&thread)==PW_OK);
     uint8_t scratch[4096]; PwX86Block block;
-    const uint8_t fs[]={0x64,0xa1,0,0,0,0};
+    const uint8_t fs[]={0x64,0x90};
     assert(pw_x86_translate(fs,sizeof(fs),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(block.code_bytes==0);
+    assert(pw_x86_translate(fsread,5,0,scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
     assert(pw_x86_translate(input,1,0,scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
     assert(pw_x86_translate(input,sizeof(input),0,scratch,1,&block)==PW_ERR_LIMIT);
     assert(backend.release(NULL,&code)==PW_OK);
