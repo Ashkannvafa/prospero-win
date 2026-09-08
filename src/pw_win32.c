@@ -38,9 +38,10 @@ int pw_win32_resolve(void *opaque,const char *dll,const PeImportSymbol *symbol,P
     }
     return PW_ERR_NOT_FOUND;
 }
-static int word_access(PwX86State *s,uint32_t address,unsigned permission)
+static int range_access(PwX86State *s,uint32_t address,size_t bytes,unsigned permission)
 {
-    uint64_t end=(uint64_t)address+4;
+    if(bytes>UINT32_MAX)return PW_ERR_VM;
+    uint64_t end=(uint64_t)address+bytes;
     if(!address || end>0x100000000ull || s->memory_count>PW_X86_MEMORY_REGIONS)return PW_ERR_VM;
     unsigned readable=address>=s->stack_low && end<=s->stack_high;
     for(unsigned i=0;i<s->memory_count;i++) {
@@ -49,6 +50,17 @@ static int word_access(PwX86State *s,uint32_t address,unsigned permission)
     }
     if(!readable)return PW_ERR_VM;
     return PW_OK;
+}
+static int word_access(PwX86State *s,uint32_t address,unsigned permission)
+{return range_access(s,address,4,permission);}
+static int cp1252(uint32_t c,uint8_t *out)
+{
+    static const uint16_t high[32]={0x20ac,0,0x201a,0x192,0x201e,0x2026,0x2020,0x2021,
+        0x2c6,0x2030,0x160,0x2039,0x152,0,0x17d,0,0,0x2018,0x2019,0x201c,
+        0x201d,0x2022,0x2013,0x2014,0x2dc,0x2122,0x161,0x203a,0x153,0,0x17e,0x178};
+    if(c<0x80 || (c>=0xa0 && c<=0xff)){*out=(uint8_t)c;return PW_OK;}
+    for(unsigned i=0;i<32;i++)if(c==high[i]){*out=(uint8_t)(0x80+i);return PW_OK;}
+    return PW_ERR_UNSUPPORTED; /* best-fit/default-character policy not implemented */
 }
 static int table_read(PwX86State *s,uint32_t address,uint32_t *value)
 {
@@ -94,6 +106,33 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
     if(offset%16 || index>=sizeof(pw_catalog)/sizeof(pw_catalog[0]) ||
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"LoadStringA")) {
+        if(!r->services.string_resource || r->services.ansi_codepage!=1252)return PW_ERR_UNSUPPORTED;
+        PwGuestCall call={0};uint32_t arg[4];
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,16,0);
+        if(status!=PW_OK)return status;
+        for(unsigned i=0;i<4;i++)if((status=pw_guest_call_u32(&call,i*4,&arg[i]))!=PW_OK)return status;
+        if(!arg[3] || arg[3]>4096)return PW_ERR_UNSUPPORTED;
+        const uint8_t *text=NULL;size_t units=0;
+        status=r->services.string_resource(r->services.opaque,arg[0],arg[1],&text,&units);
+        if(status!=PW_OK && status!=PW_ERR_NOT_FOUND)return status;
+        unsigned missing=status==PW_ERR_NOT_FOUND;
+        if(!missing && ((!text && units) || units>65535))return PW_ERR_STATE;
+        uint8_t output[4096];size_t n=0;
+        if(!missing) {
+            while(n<units && n<arg[3]-1) {
+                uint32_t c=(uint32_t)text[n*2]|(uint32_t)text[n*2+1]<<8;
+                if((status=cp1252(c,output+n))!=PW_OK)return status;
+                n++;
+            }
+            output[n]=0;
+            if((status=range_access(state,arg[2],n+1,PW_X86_WRITE))!=PW_OK)return status;
+        }
+        status=pw_guest_call_finish(&call,32,n);
+        if(status!=PW_OK)return status;
+        if(!missing)memcpy((void *)(uintptr_t)arg[2],output,n+1);
+        r->calls++;return PW_OK;
+    }
     unsigned kernel=!strcmp(r->last_dll,"kernel32.dll");
     if(kernel && !strcmp(r->last_name,"GetStartupInfoA")) {
         /* Serialize STARTUPINFOA32, never the host's pointer-sized structure.

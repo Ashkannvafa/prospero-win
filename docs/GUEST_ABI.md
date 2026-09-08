@@ -107,13 +107,44 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and the time/identity calls plus GetStartupInfoA, then stops at LoadStringA after 335 instructions
+and the time/identity calls plus GetStartupInfoA and LoadStringA, then stops at lstrlenA after 351 instructions
 (4096-event host limit), after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
 dispatch and return, plus a
 named stop for a pending API. No PS5 execution of this integration is claimed.
+
+## Resource strings
+
+`pe_resource_find` reads numeric type/name/language entries from the original
+immutable PE file. It bounds metadata by the resource directory and payloads by
+file-backed RVA spans; tree cycles, wrong depths, unsorted/duplicate IDs,
+oversized tables and truncated data are rejected. Language selection is an
+explicit profile: requested language, neutral, then lowest numeric language.
+This is not full Windows locale/MUI fallback. Named-key lookup is pending.
+`pe_resource_string` validates all 16 counted UTF-16LE strings in an RT_STRING
+block and returns a borrowed span, never a copied proprietary artifact.
+
+The host tracer supplies the main module (or NULL), language 0x0409 and ANSI
+codepage 1252 through `PwWin32Services`. LoadStringA uses stdcall with four
+32-bit arguments and returns the number of bytes excluding the NUL. It supports
+capacity 1..4096, truncation, empty/missing resources and exact CP1252 mappings.
+Missing resources return zero without writing the destination; malformed
+resources stop rather than masquerading as missing. Invalid output spans,
+unsupported codepages/characters and invalid frames do not publish output.
+Best-fit/default-character conversion, additional modules, larger capacities,
+LastError reporting and PS5 resource-provider wiring remain pending.
+The provider's UTF-16 span must remain live through dispatch; raw source bytes
+remain live for the host trace. No Windows DLL is used for this service.
+
+Synthetic regressions cover resource boundaries/cycles/language selection,
+CP1252 accents/euro/dash, output truncation, NUL/sentinels, empty/missing strings,
+unsupported input and failure atomicity. The original host run completes one
+LoadStringA call returning 32 bytes; it does not prove window creation.
+References: [PE resource layout](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#the-rsrc-section),
+[LoadStringA](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadstringa),
+[CP1252 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP1252.TXT).
 
 ## Guest floating-point control
 

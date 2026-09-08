@@ -3,6 +3,7 @@
 /* Host-only bounded instruction tracer. Private input is never staged.
  * This is not a complete application loader or Win32 implementation. */
 #include "../src/pe_image.h"
+#include "../src/pe_resource.h"
 #include "../src/pw_map.h"
 #include "../src/pw_x86_block.h"
 #include "../src/pw_vm_posix.h"
@@ -18,6 +19,12 @@ __attribute__((no_sanitize("function")))
 static int invoke(void *entry,PwX86State *state)
 { return ((int (*)(PwX86State *))entry)(state); }
 static PwImportBindWorkspace binding_work;
+static int host_string(void *opaque,uint32_t module,uint32_t id,const uint8_t **text,size_t *units)
+{
+    const PeImage *im=opaque;
+    if(module && module!=im->image_base)return PW_ERR_UNSUPPORTED;
+    return pe_resource_string(im,id,0x409,text,units);
+}
 static int host_clock(void *opaque,PwClockDomain domain,uint64_t *ns)
 {
     (void)opaque;
@@ -88,7 +95,8 @@ int main(int argc,char **argv)
     int command_bytes=snprintf(commandline,sizeof(commandline),"\"C:\\game\\%s\"",base);
     if(command_bytes<0 || (size_t)command_bytes>=sizeof(commandline))goto cleanup;
     if(pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline)!=PW_OK)goto cleanup;
-    runtime.services=(PwWin32Services){.clock_ns=host_clock,.process_id=1,.thread_id=2};
+    runtime.services=(PwWin32Services){.opaque=&image,.clock_ns=host_clock,.process_id=1,.thread_id=2,
+        .string_resource=host_string,.ansi_codepage=1252};
     PwImportBindReport binding;
     if(pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,&binding_work,&binding)!=PW_OK)goto cleanup;
     printf("kind=host-import-bind total=%u functions=%u data=%u\n",binding.total,binding.functions,binding.data);

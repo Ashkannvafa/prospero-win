@@ -3,6 +3,49 @@
 #include "../src/pw_vm_posix.h"
 #include <assert.h>
 #include <string.h>
+static int string_fixture(void *opaque,uint32_t module,uint32_t id,const uint8_t **text,size_t *units)
+{
+    (void)opaque;
+    static const uint8_t sample[]={'A',0,0xe9,0,0xac,0x20,0x14,0x20};
+    static const uint8_t unmapped[]={0,0x4e};
+    if(module!=0x01000000)return PW_ERR_UNSUPPORTED;
+    if(id==3)return PW_ERR_NOT_FOUND;
+    if(id==4)return PW_ERR_TRUNCATED;
+    *text=id==2?unmapped:sample;*units=id==1?0:id==2?1:4;return PW_OK;
+}
+static void string_tests(PwWin32 *r,PwX86State *s)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"LoadStringA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    r->services.string_resource=string_fixture;r->services.ansi_codepage=1252;
+    uint32_t output=s->stack_low+1;
+    const uint8_t converted[]={'A',0xe9,0x80,0x97};
+    for(unsigned id=0;id<5;id++)for(unsigned cap=0;cap<7;cap++) {
+        memset((void *)(uintptr_t)(output-1),0xcc,12);
+        s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-20;s->eflags=0xad7;
+        uint32_t frame[]={0x01001234,0x01000000,id,output,cap};
+        memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));PwX86State before=*s;
+        int status=pw_win32_dispatch(r,s);
+        if(!cap || id==4 || (id==2 && cap>1)) {
+            assert(status==(!cap || id==2?PW_ERR_UNSUPPORTED:PW_ERR_TRUNCATED));
+            assert(!memcmp(s,&before,sizeof(before)) && *(uint8_t *)(uintptr_t)output==0xcc);
+        } else {
+            unsigned n=id==0?(cap-1<4?cap-1:4):0;
+            assert(status==PW_OK && s->gpr[0]==n && s->eip==frame[0] && s->gpr[4]==s->stack_high && s->eflags==0xad7);
+            if(id==3)assert(*(uint8_t *)(uintptr_t)output==0xcc);
+            else assert(!memcmp((void *)(uintptr_t)output,converted,n) && *(uint8_t *)(uintptr_t)(output+n)==0);
+            assert(*(uint8_t *)(uintptr_t)(output-1)==0xcc && *(uint8_t *)(uintptr_t)(output+n+1)==0xcc);
+        }
+    }
+    s->gpr[4]=s->stack_high-64;s->eip=(uint32_t)target.address;
+    uint32_t bad[]={0x01001234,0x01000000,0,s->stack_high-4,5};
+    memcpy((void *)(uintptr_t)s->gpr[4],bad,sizeof(bad));PwX86State before=*s;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_VM && !memcmp(s,&before,sizeof(before)));
+    bad[3]=output;bad[4]=4097;memcpy((void *)(uintptr_t)s->gpr[4],bad,sizeof(bad));
+    assert(pw_win32_dispatch(r,s)==PW_ERR_UNSUPPORTED && !memcmp(s,&before,sizeof(before)));
+    r->services.ansi_codepage=65001;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_UNSUPPORTED);
+}
 int main(void)
 {
     PwVmBackend vm;PwVmRegion data;
@@ -117,5 +160,6 @@ int main(void)
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_NOT_FOUND);
     symbol.by_ordinal=1;symbol.ordinal=42;
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
+    string_tests(&runtime,&state);
     assert(vm.release(NULL,&data)==PW_OK);return 0;
 }

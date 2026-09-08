@@ -20,7 +20,7 @@ int main(void)
     assert(vm.reserve_at(NULL,0x03000000,8192,4096,&memory)==PW_OK);
     assert(vm.commit(NULL,&memory,0,8192,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
     PwWin32 r;assert(pw_win32_init(&r,0x1000000,0x03000000,"demo")==PW_OK);
-    Clock c={.ns=1234567890123};r.services=(PwWin32Services){&c,sample,17,29};
+    Clock c={.ns=1234567890123};r.services=(PwWin32Services){.opaque=&c,.clock_ns=sample,.process_id=17,.thread_id=29};
     PwX86State s={.stack_low=0x03001000,.stack_high=0x03002000};
     uint32_t out=s.stack_low;
     const char *names[]={"GetSystemTimeAsFileTime","QueryPerformanceCounter","GetTickCount","timeGetTime","GetCurrentProcessId","GetCurrentThreadId"};

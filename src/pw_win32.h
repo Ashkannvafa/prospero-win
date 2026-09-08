@@ -19,6 +19,10 @@ typedef struct PwWin32Services {
      * Return PW_OK only when the selected domain was actually sampled. */
     int (*clock_ns)(void *,PwClockDomain,uint64_t *);
     uint32_t process_id,thread_id; /* guest registry IDs, not host handles */
+    /* Borrowed UTF-16LE from a live module's resources. NOT_FOUND is absence,
+     * not malformed input. Provider owns module and language selection. */
+    int (*string_resource)(void *,uint32_t,uint32_t,const uint8_t **,size_t *);
+    unsigned ansi_codepage; /* currently exact CP1252 conversion only */
 } PwWin32Services;
 typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
