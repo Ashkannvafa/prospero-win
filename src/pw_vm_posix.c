@@ -87,6 +87,42 @@ static int posix_reserve(void *context, size_t bytes, size_t alignment,
     return PW_OK;
 }
 
+static int posix_reserve_at(void *context, uint64_t address, size_t bytes,
+                            size_t alignment, PwVmRegion *out)
+{
+    const size_t page = page_bytes();
+    const size_t effective = alignment < page ? page : alignment;
+    size_t reserved;
+    void *raw;
+
+    (void)context;
+    if (!out || !address || !bytes || !alignment ||
+        (alignment & (alignment - 1u)) != 0u ||
+        address > UINTPTR_MAX || (address & (effective - 1u)) != 0u)
+        return PW_ERR_PRECONDITION;
+    if (bytes > SIZE_MAX - (page - 1u))
+        return PW_ERR_OVERFLOW;
+    reserved = (bytes + page - 1u) & ~(page - 1u);
+    if (reserved > UINTPTR_MAX - (uintptr_t)address)
+        return PW_ERR_OVERFLOW;
+    /* A plain hint cannot displace live mappings. Accept only an exact
+     * result, and release an alternate placement before reporting failure. */
+    raw = mmap((void *)(uintptr_t)address, reserved, PROT_NONE,
+               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED)
+        return PW_ERR_VM;
+    if ((uintptr_t)raw != (uintptr_t)address) {
+        (void)munmap(raw, reserved);
+        return PW_ERR_VM;
+    }
+    out->write_base = raw;
+    out->exec_base = raw;
+    out->bytes = reserved;
+    out->alignment = effective;
+    out->handle = NULL;
+    return PW_OK;
+}
+
 static int posix_commit(void *context, const PwVmRegion *region, size_t offset,
                         size_t bytes, unsigned protection)
 {
@@ -130,11 +166,12 @@ int pw_vm_posix_backend(PwVmBackend *backend)
     if (!backend)
         return PW_ERR_PRECONDITION;
     backend->context = NULL;
-    backend->capabilities = PW_VM_CAP_PROTECT;
+    backend->capabilities = PW_VM_CAP_PROTECT | PW_VM_CAP_EXACT_ADDRESS;
     backend->page_bytes = page_bytes();
     backend->reserve = posix_reserve;
     backend->commit = posix_commit;
     backend->protect = posix_commit;
     backend->release = posix_release;
+    backend->reserve_at = posix_reserve_at;
     return PW_OK;
 }

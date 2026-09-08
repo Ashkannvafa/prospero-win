@@ -135,6 +135,37 @@ static void test_region_bounds(void)
     assert(!pw_vm_region_contains(&region, (size_t)-1, 2u));
 }
 
+static void test_exact_address_collision(void)
+{
+    PwVmBackend backend;
+    PwVmRegion occupied, attempt = {0}, saved;
+    assert(pw_vm_posix_backend(&backend) == PW_OK);
+    assert(backend.reserve(backend.context, 0x10000u, 0x10000u,
+                           &occupied) == PW_OK);
+    const uint64_t address = (uint64_t)(uintptr_t)occupied.exec_base;
+    assert(backend.commit(backend.context, &occupied, 0, occupied.bytes,
+                          PW_PROT_READ | PW_PROT_WRITE) == PW_OK);
+    memset(occupied.write_base, 0x5a, occupied.bytes);
+    saved = attempt;
+    assert(backend.reserve_at(backend.context, address, 0x10000u, 0x10000u,
+                              &attempt) == PW_ERR_VM);
+    assert(memcmp(&attempt, &saved, sizeof(attempt)) == 0);
+    for (size_t i = 0; i < occupied.bytes; ++i)
+        assert(((uint8_t *)occupied.write_base)[i] == 0x5a);
+    assert(backend.release(backend.context, &occupied) == PW_OK);
+    assert(backend.reserve_at(backend.context, address, 0x7001u, 0x10000u,
+                              &attempt) == PW_OK);
+    assert((uint64_t)(uintptr_t)attempt.exec_base == address);
+    assert(attempt.bytes >= 0x7001u && attempt.bytes % backend.page_bytes == 0);
+    assert(backend.release(backend.context, &attempt) == PW_OK);
+    assert(backend.reserve_at(backend.context, address + 1, 1, 4096,
+                              &attempt) == PW_ERR_PRECONDITION);
+    assert(backend.reserve_at(backend.context, address, SIZE_MAX, 4096,
+                              &attempt) == PW_ERR_OVERFLOW);
+    backend.reserve_at = NULL;
+    assert(!pw_vm_backend_valid(&backend));
+}
+
 int main(void)
 {
     test_backend_validation();
@@ -142,5 +173,6 @@ int main(void)
     test_commit_and_protect();
     test_reserve_rounds_to_whole_pages();
     test_region_bounds();
+    test_exact_address_collision();
     return 0;
 }

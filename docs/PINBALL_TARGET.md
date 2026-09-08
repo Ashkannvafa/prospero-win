@@ -13,6 +13,25 @@ MMIO and MCI. No static DirectDraw/Direct3D imports were found. LoadLibraryA
 and GetProcAddress require further dynamic dependency analysis. Exact
 version metadata and runtime working set remain unverified.
 
+## Host mapping result (2026-09-08)
+
+The original binary above now maps through the loader at 0x01000000 without
+relocations. The host run reported 307200 reserved bytes, nine graph nodes
+(one image plus eight unimplemented host bindings), 75 host pages, zero WX
+pages, four protection calls and balanced file ownership (one open/close).
+Mapped checksum: 0x1bd76edecdb503e8 (the loader's existing checksum format).
+This is host mapping evidence only: no guest instruction was executed and
+no import address was bound. PS5 mapping remains to be tested, especially
+its 16 KiB protection granularity versus the host's 4 KiB pages.
+
+The VM backend now advertises optional exact-address reservation. It uses
+an mmap hint, checks the returned address and releases an alternative
+placement. A collision returns failure without replacing the existing
+mapping. Synthetic tests hold a live sentinel-filled reservation while
+attempting collision, then verify its bytes and test reuse after release.
+Nonrelocatable images request their required base; relocatable fixtures
+retain the existing arbitrary-placement path to keep rebase tests meaningful.
+
 ## Inventory
 
 Keep executable and resources outside this public project:

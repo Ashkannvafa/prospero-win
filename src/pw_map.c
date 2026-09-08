@@ -39,14 +39,30 @@ int pw_map_image(PwMappedImage *mapped, const PeImage *image,
         return PW_ERR_PRECONDITION;
     memset(mapped, 0, sizeof(*mapped));
 
-    status = backend->reserve(backend->context, layout->image_bytes,
-                              layout->section_alignment, &mapped->region);
+    if (!layout->relocatable &&
+        (backend->capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
+        status = backend->reserve_at(backend->context, layout->preferred_base,
+                                     layout->image_bytes,
+                                     layout->section_alignment, &mapped->region);
+    else
+        status = backend->reserve(backend->context, layout->image_bytes,
+                                  layout->section_alignment, &mapped->region);
     if (status != PW_OK)
         return status;
     if (!mapped->region.write_base || !mapped->region.exec_base ||
         mapped->region.bytes < layout->image_bytes) {
         (void)backend->release(backend->context, &mapped->region);
         return PW_ERR_VM;
+    }
+
+    /* Refuse an unsuitable reservation before writing guest bytes. */
+    const uint64_t actual = (uint64_t)(uintptr_t)mapped->region.exec_base;
+    if ((!layout->relocatable && actual != layout->preferred_base) ||
+        (image->optional_magic == PE_OPT_MAGIC_PE32 &&
+         (actual >= 0x100000000ull ||
+          layout->image_bytes > 0x100000000ull - actual))) {
+        (void)backend->release(backend->context, &mapped->region);
+        return PW_ERR_UNSUPPORTED;
     }
 
     mapped->image_bytes = layout->image_bytes;
@@ -88,18 +104,6 @@ int pw_map_image(PwMappedImage *mapped, const PeImage *image,
         }
         memcpy(write + section->rva, image->bytes + section->raw_offset,
                section->raw_bytes);
-    }
-
-    /*
-     * A PE32 image expresses relocations as 32-bit HIGHLOW addends, so a
-     * rebase is only representable while the whole image lives below 4 GiB.
-     * Refuse loudly instead of writing truncated pointers.
-     */
-    if (mapped->address_bits == 32u &&
-        mapped->actual_base != mapped->preferred_base &&
-        mapped->actual_base + layout->image_bytes > 0x100000000ull) {
-        (void)backend->release(backend->context, &mapped->region);
-        return PW_ERR_UNSUPPORTED;
     }
 
     status = pe_reloc_apply(write, layout->image_bytes,

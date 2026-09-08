@@ -8,6 +8,9 @@ int pw_vm_backend_valid(const PwVmBackend *backend)
         return 0;
     if ((backend->capabilities & PW_VM_CAP_PROTECT) != 0u && !backend->protect)
         return 0;
+    if ((backend->capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u &&
+        !backend->reserve_at)
+        return 0;
     if (backend->page_bytes == 0u ||
         (backend->page_bytes & (backend->page_bytes - 1u)) != 0u)
         return 0;

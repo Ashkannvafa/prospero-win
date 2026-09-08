@@ -268,6 +268,8 @@ static void test_refuses_rebase_without_relocations(void)
     assert(pe_layout_plan(&layout, &image) == PW_OK);
     assert(layout.relocatable == 0u);
     assert(pw_vm_posix_backend(&backend) == PW_OK);
+    /* Exercise a backend without exact placement: arbitrary rebase is refused. */
+    backend.capabilities &= ~PW_VM_CAP_EXACT_ADDRESS;
     assert(pw_map_image(&mapped, &image, &layout, &backend) ==
            PW_ERR_UNSUPPORTED);
 }
@@ -308,6 +310,7 @@ static void test_short_data_directory_is_refused_cleanly(void)
     assert(layout.relocatable == 0u);
 
     assert(pw_vm_posix_backend(&backend) == PW_OK);
+    backend.capabilities &= ~PW_VM_CAP_EXACT_ADDRESS;
     assert(pw_map_image(&mapped, &image, &layout, &backend) ==
            PW_ERR_UNSUPPORTED);
 }
@@ -433,9 +436,35 @@ static void test_preconditions(void)
     assert(pw_map_release(&mapped, &backend) == PW_OK);
 }
 
+static void test_pe32_without_relocations_at_required_base(void)
+{
+    PwVmBackend backend;
+    PeImage image;
+    PeLayout layout;
+    PwMappedImage mapped;
+    PwMapVerify verify;
+    const size_t size = build(0x01000000u, 0, 0, 0x4000u);
+    assert(pw_vm_posix_backend(&backend) == PW_OK);
+    assert(pe_image_parse(&image, file_bytes, size) == PW_OK);
+    assert(pe_layout_plan(&layout, &image) == PW_OK);
+    assert(!layout.relocatable);
+    assert(pw_map_image(&mapped, &image, &layout, &backend) == PW_OK);
+    assert(mapped.actual_base == 0x01000000u);
+    assert(mapped.relocs.applied == 0);
+    assert(pw_map_verify(&mapped, &image, &layout, &verify) == PW_OK);
+    assert(verify.raw_mismatches == 0 && verify.zero_tail_violations == 0);
+    PwMappedImage collision;
+    assert(pw_map_image(&collision, &image, &layout, &backend) == PW_ERR_VM);
+    assert(pw_map_verify(&mapped, &image, &layout, &verify) == PW_OK);
+    assert(verify.raw_mismatches == 0);
+    assert(pw_map_finalize_protections(&mapped, &layout, &backend) == PW_OK);
+    assert(pw_map_release(&mapped, &backend) == PW_OK);
+}
+
 int main(void)
 {
     test_maps_at_preferred_base();
+    test_pe32_without_relocations_at_required_base();
     test_relocates_when_rebased();
     test_refuses_pe32_above_four_gib();
     test_refuses_rebase_without_relocations();

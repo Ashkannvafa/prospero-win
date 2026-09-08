@@ -24,6 +24,8 @@ enum {
     PW_VM_CAP_ALIASED_EXEC = 1u << 0,
     /* protect() can change a committed range in place. */
     PW_VM_CAP_PROTECT = 1u << 1,
+    /* reserve_at succeeds only at the requested exec address, without replacement. */
+    PW_VM_CAP_EXACT_ADDRESS = 1u << 2,
 };
 
 typedef struct PwVmRegion {
@@ -53,6 +55,11 @@ typedef struct PwVmBackend {
     int (*protect)(void *context, const PwVmRegion *region, size_t offset,
                    size_t bytes, unsigned protection);
     int (*release)(void *context, PwVmRegion *region);
+    /* Optional, read only when PW_VM_CAP_EXACT_ADDRESS is set. On failure
+     * no mapping is retained and out is unchanged. Never replace an existing
+     * reservation. bytes may be rounded up to the backend page size. */
+    int (*reserve_at)(void *context, uint64_t address, size_t bytes,
+                      size_t alignment, PwVmRegion *out);
 } PwVmBackend;
 
 /* True when every required entry point is present. */
