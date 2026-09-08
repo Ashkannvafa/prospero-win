@@ -30,6 +30,7 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
                                 capture_output=True, text=True, timeout=5)
         assert result.returncode == 2, result.stderr
         assert f"steps={steps} stop={reason} " in result.stdout, result.stdout
+        assert "kind=host-heap-summary blocks=1 live=0 requested=0 arena=8388608 valid=1" in result.stdout
         if reason == "budget":
             limited = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), "8"],
                                      capture_output=True, text=True, timeout=5)

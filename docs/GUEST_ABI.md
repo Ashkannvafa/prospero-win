@@ -107,7 +107,7 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and the time/identity calls plus GetStartupInfoA, LoadStringA and lstrlenA, then stops at malloc after 362 instructions
+and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA and malloc, then stops at lstrcpyA after 385 instructions
 (4096-event host limit), after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
@@ -146,9 +146,21 @@ call tokens; regression cases ensure documented function names do not fail the
 gate while actual forbidden calls still do. This remains a lexical check,
 not a full preprocessor or link-symbol audit.
 
-Pending: CRT cdecl dispatch, guest errno/new_mode/new-handler behavior, arena
-registration in the tracer and PS5 runtime, and original-executable integration.
-The existing trace still stops at malloc; no new original API call is claimed.
+The four CRT adapters now use cdecl guest frames and preflight the return on
+a state copy before heap mutations. The arena must be registered RW and disjoint
+from the guest stack. Exhaustion/size overflow returns NULL with logical guest
+crt_errno=12 (ENOMEM); success retains errno. Free returns void, preserving EAX.
+Invalid frees and invalid arena/frame state stop without reporting CRT success.
+Tests cover all four adapters, cdecl stack cleanup, original header preservation,
+zero/NULL behavior, overflow/exhaustion, guest flags and read-only arena rejection.
+
+The default new-handler is absent; new_mode 0/1 therefore shares the allocation
+failure result. Handler registration/invocation and an addressable _errno export
+remain pending. The host tracer reserves an 8 MiB RW arena at 0x03400000 with
+4096 metadata slots, registers it, and releases it even after a classified stop.
+It reports live blocks/requested bytes before release; that is not evidence
+that guest code freed every allocation or completed normal application teardown.
+One original malloc now returns 0x03400000. PS5 runtime integration is pending.
 
 ## Guest string lengths
 
@@ -260,7 +272,7 @@ packer accepts explicit environment strings for future configuration.
 word before modifying guest state. It returns cdecl integer zero, stable
 guest argc/argv/env pointers, and records new_mode 0/1. Nonzero wildcard
 requests and unsupported mode values stop explicitly. Allocator behavior
-for new_mode remains pending along with heap implementation.
+for a registered new-handler remains pending; the current default has no handler.
 Tests cover quoting/escaping, empty input/arguments, explicit environments,
 pointer packing, storage/argument limits, and API failure atomicity.
 

@@ -101,8 +101,8 @@ Reviewed pinned Wine `490f6d5dcbb2a5047345b8af88d114bbcaad69a8`,
 the new handler according to new_mode; failed allocation sets errno.
 realloc(NULL,n) delegates to malloc; realloc(p,0) frees and returns NULL.
 The allocator must preserve the old allocation on failed nonzero resize.
-The existing guest __getmainargs records new_mode but does not implement its
-allocation behavior yet. Do not copy the Wine wrapper without its heap,
+The guest allocator family and cdecl adapters now support the default absent
+new-handler with logical errno. Registered handlers remain pending. Do not copy the Wine wrapper without its heap,
 errno and callback dependencies. Relevant Wine tests and the underlying heap
 implementation still require a fuller review before claiming compatibility.
 
@@ -114,9 +114,9 @@ format=json_edges and limit=0, get_function_call_graph, disassemble_function
 and decompile_function. Raw responses containing proprietary code stay private.
 Do not infer function-level execution order from unordered graph edges.
 
-Next: turn the six packages into an executable coverage checklist, audit the
-allocator family against Wine tests and implement the guest heap; extend the
+Next: turn the six packages into an executable coverage checklist, continue
+with the CRT/string group after the default-handler heap integration; extend the
 callback-inclusive instruction survey and verify key structures against
-assembly. Existing host evidence remains 362 instructions, 17 API calls and
-a classified stop at malloc. No window, gameplay or translated PS5 execution
+assembly. Host evidence now reaches 385 instructions, 18 API calls and
+a classified stop at lstrcpyA after a real guest allocation. No window, gameplay or translated PS5 execution
 is established by this static analysis.

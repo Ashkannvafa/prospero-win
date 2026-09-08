@@ -19,6 +19,7 @@ __attribute__((no_sanitize("function")))
 static int invoke(void *entry,PwX86State *state)
 { return ((int (*)(PwX86State *))entry)(state); }
 static PwImportBindWorkspace binding_work;
+static PwHeapBlock heap_blocks[4096];
 static int host_string(void *opaque,uint32_t module,uint32_t id,const uint8_t **text,size_t *units)
 {
     const PeImage *im=opaque;
@@ -63,9 +64,10 @@ int main(int argc,char **argv)
        image.machine!=PE_MACHINE_I386 || image.image_base>UINT32_MAX ||
        image.image_base+image.size_of_image>UINT32_MAX)goto done;
     PwVmBackend vm;
-    PwVmRegion code={0},stack={0},thread={0},crt={0};
+    PwVmRegion code={0},stack={0},thread={0},crt={0},heap_region={0};
+    PwGuestHeap heap;
     PwMappedImage mapped={0};PeLayout layout;
-    int have_code=0,have_stack=0,have_thread=0,have_image=0,have_crt=0;
+    int have_code=0,have_stack=0,have_thread=0,have_image=0,have_crt=0,have_heap=0;
     if(pw_vm_posix_backend(&vm)!=PW_OK)goto done;
     if(vm.reserve(NULL,8192,4096,&code)!=PW_OK)goto done;
     have_code=1;
@@ -75,13 +77,17 @@ int main(int argc,char **argv)
     have_thread=1;
     if(vm.reserve_at(NULL,0x03300000,4096,4096,&crt)!=PW_OK)goto cleanup;
     have_crt=1;
+    if(vm.reserve_at(NULL,0x03400000,0x800000,4096,&heap_region)!=PW_OK)goto cleanup;
+    have_heap=1;
+    if(vm.commit(NULL,&heap_region,0,heap_region.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK ||
+       pw_guest_heap_init(&heap,0x03400000,0x800000,heap_blocks,4096)!=PW_OK)goto cleanup;
     if(vm.commit(NULL,&crt,0,4096,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
     if(vm.commit(NULL,&stack,0,stack.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK ||
        vm.commit(NULL,&thread,0,thread.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
     PwX86State state={0};
     pw_guest_fp_init(&state.fp);
     if(pe_layout_plan(&layout,&image)!=PW_OK ||
-       layout.section_count+2>PW_X86_MEMORY_REGIONS ||
+       layout.section_count+3>PW_X86_MEMORY_REGIONS ||
        image.image_base+image.size_of_image>PW_WIN32_TOKEN_BASE)goto cleanup;
     if(pw_map_image(&mapped,&image,&layout,&vm)!=PW_OK)goto cleanup;
     have_image=1;
@@ -95,6 +101,7 @@ int main(int argc,char **argv)
     int command_bytes=snprintf(commandline,sizeof(commandline),"\"C:\\game\\%s\"",base);
     if(command_bytes<0 || (size_t)command_bytes>=sizeof(commandline))goto cleanup;
     if(pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline)!=PW_OK)goto cleanup;
+    runtime.heap=&heap;
     runtime.services=(PwWin32Services){.opaque=&image,.clock_ns=host_clock,.process_id=1,.thread_id=2,
         .string_resource=host_string,.ansi_codepage=1252};
     PwImportBindReport binding;
@@ -111,6 +118,7 @@ int main(int argc,char **argv)
             ((s->protection&PW_PROT_WRITE)?PW_X86_WRITE:0)};
     }
     state.memory[state.memory_count++]=(PwX86Memory){0x03300000,0x03301000,PW_X86_READ|PW_X86_WRITE};
+    state.memory[state.memory_count++]=(PwX86Memory){0x03400000,0x03c00000,PW_X86_READ|PW_X86_WRITE};
     state.stack_low=0x03000000;state.stack_high=0x03100000;
     state.gpr[4]=state.stack_high-4;state.fs_base=0x03200000;state.fs_bytes=4096;
     state.eflags=0x202;state.eip=(uint32_t)image.image_base+image.entry_point;
@@ -154,9 +162,14 @@ int main(int argc,char **argv)
     printf("kind=host-entry-trace steps=%u stop=%s eip=0x%08x esp=0x%08x "
            "ebp=0x%08x fs0=0x%08x flags=0x%08x\n",steps,stop,state.eip,
            state.gpr[4],state.gpr[5],*(uint32_t *)thread.write_base,state.eflags);
+    unsigned live=0;uint64_t requested=0;
+    for(uint32_t i=0;i<heap.count;i++)if(heap.blocks[i].used){live++;requested+=heap.blocks[i].requested;}
+    printf("kind=host-heap-summary blocks=%u live=%u requested=%llu arena=%u valid=%d\n",
+           heap.count,live,(unsigned long long)requested,heap.bytes,pw_guest_heap_validate(&heap)==PW_OK);
     /* A classified stop is evidence, never a successful game startup. */
     result=2;
 cleanup:
+    if(have_heap && vm.release(NULL,&heap_region)!=PW_OK)result=1;
     if(have_crt && vm.release(NULL,&crt)!=PW_OK)result=1;
     if(have_image && pw_map_release(&mapped,&vm)!=PW_OK)result=1;
     if(have_thread && vm.release(NULL,&thread)!=PW_OK)result=1;

@@ -4,6 +4,7 @@
 #include "pw_import_bind.h"
 #include "pw_guest_call.h"
 #include "pw_guest_args.h"
+#include "pw_guest_heap.h"
 enum { PW_WIN32_TOKEN_BASE=0xe0000000u, PW_WIN32_CALLBACK_BASE=0xe1000000u,
        PW_WIN32_INIT_DEPTH=8, PW_WIN32_INIT_ENTRIES=1024 };
 typedef struct PwWin32Init {
@@ -28,6 +29,8 @@ typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
     PwGuestArgs args;
     uint32_t new_mode;
+    PwGuestHeap *heap; /* owner-supplied arena, registered RW in guest memory */
+    uint32_t crt_errno; /* logical per-guest-thread errno; pointer export pending */
     uint16_t startup_show; /* explicit GUI launch profile: SW_SHOWNORMAL by default */
     PwWin32Services services;
     const char *last_dll,*last_name;

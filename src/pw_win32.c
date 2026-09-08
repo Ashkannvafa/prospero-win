@@ -206,6 +206,35 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         r->calls++;return PW_OK;
     }
     if(!strcmp(r->last_dll,"msvcrt.dll")) {
+        unsigned alloc=!strcmp(r->last_name,"malloc"),zero=!strcmp(r->last_name,"calloc");
+        unsigned resize=!strcmp(r->last_name,"realloc"),release=!strcmp(r->last_name,"free");
+        if(alloc || zero || resize || release) {
+            int status=pw_guest_heap_validate(r->heap);
+            if(status!=PW_OK)return status;
+            uint64_t end=(uint64_t)r->heap->base+r->heap->bytes;
+            if(r->heap->base<state->stack_high && end>state->stack_low)return PW_ERR_STATE;
+            if((status=range_access(state,r->heap->base,r->heap->bytes,PW_X86_READ|PW_X86_WRITE))!=PW_OK)return status;
+            PwGuestCall call={0};uint32_t first,second=0,address=0;
+            status=pw_guest_call_begin(&call,state,PW_GUEST_CDECL,(zero || resize)?8:4,0);
+            if(status!=PW_OK)return status;
+            if((status=pw_guest_call_u32(&call,0,&first))!=PW_OK)return status;
+            if((zero || resize) && (status=pw_guest_call_u32(&call,4,&second))!=PW_OK)return status;
+            /* Preflight return before allocator side effects. The synchronous
+             * heap core never mutates guest registers or calls guest code. */
+            PwX86State after=*state;call.state=&after;
+            if((status=pw_guest_call_finish(&call,release?0:32,0))!=PW_OK)return status;
+            if(alloc)status=pw_guest_heap_alloc(r->heap,first,&address);
+            else if(zero)status=pw_guest_heap_calloc(r->heap,first,second,&address);
+            else if(resize)status=pw_guest_heap_realloc(r->heap,first,second,&address);
+            else status=pw_guest_heap_free(r->heap,first);
+            if(status==PW_ERR_LIMIT && !release) {
+                /* Default CRT new-handler is absent. No setter is currently
+                 * implemented; new_mode alone cannot create a handler. */
+                r->crt_errno=12;address=0; /* guest ENOMEM, not host errno */
+            } else if(status!=PW_OK)return status;
+            if(!release)after.gpr[0]=address;
+            *state=after;r->calls++;return PW_OK;
+        }
         if(!strcmp(r->last_name,"__getmainargs")) {
             PwGuestCall call={0};uint32_t a[5],mode=r->new_mode;
             int status=pw_guest_call_begin(&call,state,PW_GUEST_CDECL,20,0);

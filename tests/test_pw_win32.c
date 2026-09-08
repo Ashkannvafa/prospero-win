@@ -46,6 +46,51 @@ static void string_tests(PwWin32 *r,PwX86State *s)
     r->services.ansi_codepage=65001;
     assert(pw_win32_dispatch(r,s)==PW_ERR_UNSUPPORTED);
 }
+static uint32_t heap_call(PwWin32 *r,PwX86State *s,const char *name,uint32_t a,uint32_t b,int expected)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,name);
+    assert(pw_win32_resolve(r,"msvcrt.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-12;s->gpr[0]=0xaabbccdd;s->eflags=0xad7;
+    uint32_t frame[]={0x01001234,a,b};memcpy((void *)(uintptr_t)s->gpr[4],frame,12);
+    PwX86State before=*s;unsigned calls=r->calls;
+    assert(pw_win32_dispatch(r,s)==expected);
+    if(expected==PW_OK) {
+        assert(s->gpr[4]==before.gpr[4]+4 && s->eip==frame[0] && s->eflags==0xad7 && r->calls==calls+1);
+        for(unsigned i=1;i<8;i++)if(i!=4)assert(s->gpr[i]==before.gpr[i]);
+        if(!strcmp(name,"free"))assert(s->gpr[0]==0xaabbccdd);
+    } else assert(!memcmp(s,&before,sizeof(before)) && r->calls==calls);
+    return s->gpr[0];
+}
+static void heap_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
+{
+    PwVmRegion arena;PwGuestHeap heap;PwHeapBlock blocks[32];
+    assert(vm->reserve_at(NULL,0x03400000,65536,4096,&arena)==PW_OK);
+    assert(vm->commit(NULL,&arena,0,65536,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+    assert(pw_guest_heap_init(&heap,0x03400000,65536,blocks,32)==PW_OK);
+    r->heap=&heap;r->crt_errno=77;
+    s->memory_count=1;s->memory[0]=(PwX86Memory){0x03400000,0x03410000,PW_X86_READ|PW_X86_WRITE};
+    uint32_t a=heap_call(r,s,"malloc",36,0,PW_OK);assert(a==0x03400000 && r->crt_errno==77);
+    memset((void *)(uintptr_t)a,0x5a,36);
+    uint32_t b=heap_call(r,s,"calloc",9,4,PW_OK);assert(b && b!=a);
+    for(unsigned i=0;i<36;i++)assert(*(uint8_t *)(uintptr_t)(b+i)==0);
+    uint32_t c=heap_call(r,s,"realloc",a,128,PW_OK);assert(c && c!=a);
+    for(unsigned i=0;i<36;i++)assert(*(uint8_t *)(uintptr_t)(c+i)==0x5a);
+    heap_call(r,s,"free",c+4,0,PW_ERR_PRECONDITION);assert(r->crt_errno==77);
+    heap_call(r,s,"free",b,0,PW_OK);heap_call(r,s,"free",0,0,PW_OK);
+    for(unsigned mode=0;mode<2;mode++) {
+        r->new_mode=mode;r->crt_errno=77;
+        assert(heap_call(r,s,"realloc",c,UINT32_MAX,PW_OK)==0 && r->crt_errno==12);
+        assert(*(uint8_t *)(uintptr_t)c==0x5a);
+        r->crt_errno=77;assert(heap_call(r,s,"calloc",UINT32_MAX,2,PW_OK)==0 && r->crt_errno==12);
+        r->crt_errno=77;assert(heap_call(r,s,"malloc",65536,0,PW_OK)==0 && r->crt_errno==12);
+    }
+    assert(heap_call(r,s,"realloc",c,0,PW_OK)==0 && heap.count==1);
+    a=heap_call(r,s,"realloc",0,0,PW_OK);assert(a);heap_call(r,s,"free",a,0,PW_OK);
+    s->memory[0].permissions=PW_X86_READ;heap_call(r,s,"malloc",1,0,PW_ERR_VM);
+    assert(heap.count==1 && !blocks[0].used);
+    r->heap=NULL;r->new_mode=0;s->memory_count=0;
+    assert(vm->release(NULL,&arena)==PW_OK);
+}
 static void length_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
 {
     PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"lstrlenA");
@@ -199,5 +244,6 @@ int main(void)
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
     string_tests(&runtime,&state);
     length_tests(&runtime,&state,&vm);
+    heap_tests(&runtime,&state,&vm);
     assert(vm.release(NULL,&data)==PW_OK);return 0;
 }
