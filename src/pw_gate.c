@@ -291,7 +291,8 @@ int pw_gate_compat32(PwGateReport *report, const PwCompat32Report *probe)
     field_u64(&line, "schema", 1u);
     field_text(&line, "install", pw_result_name(probe->install_result));
     field_u64(&line, "install_errno", (uint64_t)(unsigned)probe->install_errno);
-    field_u64(&line, "ldt_index", probe->ldt_index);
+    field_u64(&line, "ldt_code", probe->ldt_code_index);
+    field_u64(&line, "ldt_data", probe->ldt_data_index);
     field_hex(&line, "code_sel", probe->code_selector);
     field_hex(&line, "data_sel", probe->data_selector);
     field_hex(&line, "cs64", probe->cs64);

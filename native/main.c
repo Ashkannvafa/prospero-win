@@ -204,6 +204,27 @@ int main(int argc, char **argv)
      * 32-bit programs run natively through ABI thunking or need
      * recompilation, and it costs one syscall to ask.
      */
+    {
+        /*
+         * The argument matrix first. A single EINVAL cannot distinguish an
+         * unavailable operation from a malformed call, and an earlier
+         * version of this probe read one as a platform refusal when its own
+         * arguments were wrong.
+         */
+        PwLdtAttempt attempts[PW_LDT_ATTEMPTS];
+        uint32_t attempt_count = 0u;
+
+        if (pw_compat32_ps5_diagnose(attempts, PW_LDT_ATTEMPTS,
+                                     &attempt_count) == PW_OK) {
+            for (uint32_t index = 0; index < attempt_count; ++index)
+                PS5LOG_LOG("PW_LDT_TRY label=%s op=%d start=0x%x num=%u "
+                           "rc=%d errno=%d", attempts[index].label,
+                           attempts[index].op, attempts[index].start,
+                           attempts[index].num, attempts[index].rc,
+                           attempts[index].os_errno);
+        }
+    }
+
     if (pw_compat32_ps5_platform(&compat32_state, &compat32_platform) ==
         PW_OK) {
         PwCompat32Report compat32;

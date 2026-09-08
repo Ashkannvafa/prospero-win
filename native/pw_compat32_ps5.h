@@ -23,7 +23,27 @@ typedef struct PwCompat32Ps5 {
     int last_errno;
 } PwCompat32Ps5;
 
+/* One row of the sysarch argument matrix. */
+typedef struct PwLdtAttempt {
+    const char *label;
+    int op;
+    uint32_t start;
+    uint32_t num;
+    int rc;
+    int os_errno;
+} PwLdtAttempt;
+
+enum { PW_LDT_ATTEMPTS = 7 };
+
 int pw_compat32_ps5_platform(PwCompat32Ps5 *state,
                              PwCompat32Platform *platform);
+
+/*
+ * Runs every argument shape and reports each result, with a known-good
+ * sysarch operation as a control, so a uniform failure can be told apart
+ * from a malformed call.
+ */
+int pw_compat32_ps5_diagnose(PwLdtAttempt *out, uint32_t capacity,
+                             uint32_t *count);
 
 #endif

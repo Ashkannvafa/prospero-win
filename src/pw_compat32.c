@@ -201,7 +201,8 @@ int pw_compat32_probe(const PwCompat32Platform *platform,
     void *data_page = NULL;
     uint32_t code_base = 0u;
     uint32_t data_base = 0u;
-    uint32_t index = 0u;
+    uint32_t code_index = 0u;
+    uint32_t data_index = 0u;
     int os_errno = 0;
     int status;
 
@@ -221,15 +222,18 @@ int pw_compat32_probe(const PwCompat32Platform *platform,
 
     /* Stage one: ask the kernel for the descriptors. No execution yet. */
     status = platform->install(platform->context, pw_segment_compat32_code(),
-                               pw_segment_compat32_data(), &index, &os_errno);
+                               pw_segment_compat32_data(), &code_index,
+                               &data_index, &os_errno);
     report->install_result = status;
     report->install_errno = os_errno;
     if (status != PW_OK)
         return status;
-    report->ldt_index = index;
-    report->code_selector = pw_segment_ldt_selector(index, PW_SEG_RING_USER);
+    report->ldt_code_index = code_index;
+    report->ldt_data_index = data_index;
+    report->code_selector =
+        pw_segment_ldt_selector(code_index, PW_SEG_RING_USER);
     report->data_selector =
-        pw_segment_ldt_selector(index + 1u, PW_SEG_RING_USER);
+        pw_segment_ldt_selector(data_index, PW_SEG_RING_USER);
 
     status = platform->reserve_low(platform->context, &code_page, &code_base,
                                    &data_page, &data_base);

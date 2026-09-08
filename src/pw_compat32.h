@@ -73,11 +73,13 @@ typedef struct PwCompat32Platform {
     void *context;
     /*
      * Asks the kernel to install both descriptors and reports the index of
-     * the first. Returns PW_OK, or an error with *os_errno set.
+     * each. They are reported separately because a kernel that allocates
+     * indices on demand does so one descriptor at a time and need not
+     * return adjacent slots. Returns PW_OK, or an error with *os_errno set.
      */
     int (*install)(void *context, uint64_t code_descriptor,
-                   uint64_t data_descriptor, uint32_t *index_out,
-                   int *os_errno);
+                   uint64_t data_descriptor, uint32_t *code_index_out,
+                   uint32_t *data_index_out, int *os_errno);
     /*
      * Reserves one executable and one writable page, both below 2 GiB.
      * They may be the same mapping when the platform allows it; the report
@@ -103,7 +105,8 @@ typedef struct PwCompat32Report {
     int seal_result;
     int seal_errno;
     int transfer_result;
-    uint32_t ldt_index;
+    uint32_t ldt_code_index;
+    uint32_t ldt_data_index;
     uint16_t code_selector;
     uint16_t data_selector;
     uint16_t cs64;

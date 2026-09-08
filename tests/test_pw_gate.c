@@ -346,7 +346,8 @@ static void test_compat32_record(void)
     probe.build_result = PW_OK;
     probe.seal_result = PW_OK;
     probe.transfer_result = PW_OK;
-    probe.ldt_index = 0u;
+    probe.ldt_code_index = 0u;
+    probe.ldt_data_index = 1u;
     probe.code_selector = 0x0007u;
     probe.data_selector = 0x000fu;
     probe.code_base = 0x20000000u;

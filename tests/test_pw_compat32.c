@@ -193,8 +193,8 @@ static void test_probe_preconditions(void)
 #if PW_HAVE_LIVE_PROBE
 
 static int host_install(void *context, uint64_t code_descriptor,
-                        uint64_t data_descriptor, uint32_t *index_out,
-                        int *os_errno)
+                        uint64_t data_descriptor, uint32_t *code_index_out,
+                        uint32_t *data_index_out, int *os_errno)
 {
     struct user_desc desc;
     uint64_t installed = 0;
@@ -235,7 +235,8 @@ static int host_install(void *context, uint64_t code_descriptor,
         assert((installed & ~avl) == (pw_segment_compat32_data() & ~avl));
     }
 
-    *index_out = 0u;
+    *code_index_out = 0u;
+    *data_index_out = 1u;
     *os_errno = 0;
     return PW_OK;
 }

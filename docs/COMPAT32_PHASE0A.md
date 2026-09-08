@@ -7,28 +7,71 @@ opcodes on the silicon, zero instruction emulation — or whether reaching
 them needs JIT recompilation instead.
 
 **Status: answered on FW 12.02 on 2026-09-08. Compatibility mode is
-refused.**
+unavailable, and the reason is now understood rather than merely observed.**
+
+The first answer to this gate was reached from a **malformed call** and its
+evidence was worthless on its own. The probe asked
+`sysarch(I386_SET_LDT, ...)` for two descriptors in one call with
+`LDT_AUTO_ALLOC`. FreeBSD's amd64 `amd64_set_ldt` honours that sentinel only
+for a single descriptor; with `num=2` it takes the range-check path instead,
+where a `start` of `0xffffffff` is refused as `EINVAL` whatever the kernel's
+policy happens to be. `EINVAL` means *invalid argument*, and the argument
+really was invalid.
+
+Re-measured properly, with every argument shape tried and a control, from an
+`elfldr` payload that runs with more privilege than a title:
 
 ```text
-PW_COMPAT32 install=unsupported install_errno=22 cs64=0x43 ds64=0x3b
-            attempted=0 returned=0 proven=0
+AMD64_GET_FSBASE (control)          rc=0   errno=0   fsbase=0x8ff800080
+machdep.max_ldt_segment             rc=-1  errno=2 (ENOENT)  value absent
+I386_GET_LDT      start=0 num=1     rc=-1  errno=22 (EINVAL)
+I386_SET_LDT auto        num=1      rc=-1  errno=22   <- the correct call
+I386_SET_LDT auto        num=2      rc=-1  errno=22   <- the malformed one
+I386_SET_LDT      start=0 num=1     rc=-1  errno=22
+I386_SET_LDT      start=1 num=1     rc=-1  errno=22
+I386_GET_LDT      start=0 num=4     rc=-1  errno=22
 ```
 
-`sysarch(I386_SET_LDT, ...)` returns `EINVAL`. A title cannot install a
-local descriptor on this firmware, so it cannot enter 32-bit compatibility
-mode, and WoW64-style ABI thunking is **not available**. Reaching the 32-bit
-catalogue now means JIT recompilation or restricting scope to 64-bit
-programs; that is an owner decision, and it is no longer a guess.
+Four things follow, and together they are conclusive where the first
+attempt was not:
 
-Everything downstream reported `precondition` and claimed nothing: the
-descriptors were never installed, so the pages were never reserved and the
-transfer was never attempted. The two-stage split did exactly what it was
-built for, and the host-validated stub was never reached on the console.
+1. **`sysarch` works.** The control operation returns a real FS base, so
+   the syscall is present, reachable and dispatching. This is not a missing
+   or stubbed syscall.
+2. **The correct call fails identically.** Single-descriptor auto-allocation
+   — the shape FreeBSD documents — is refused exactly like the malformed
+   one, so the original `num=2` defect was real but not the cause.
+3. **Reads fail too.** `I386_GET_LDT` is a pure read and also returns
+   `EINVAL`. A uniform refusal across reads, writes, explicit indices and
+   auto-allocation is the signature of a zero-sized descriptor table: every
+   index is out of range, so every start value fails the same check.
+4. **`machdep.max_ldt_segment` does not exist.** On stock FreeBSD amd64 that
+   sysctl is declared in the same file as the LDT implementation, so its
+   absence points at the support being compiled out rather than merely
+   configured to zero. There is no knob here to turn on.
 
-The round trip still works on an x86-64 Linux host inside `make test`, which
-is what makes the console result attributable to the platform rather than to
-a defect in the stub. Observed for the record: the console's user selectors
-are `cs=0x43` and `ds=0x3b`.
+And the whole matrix was run from `elfldr`, which is more privileged than a
+title, so this is **not a sandbox restriction on titles** — it is kernel
+wide. The title reproduces it exactly, in run
+`20260908T113831241Z_PPSA99995_prospero-win_0xf7861c1d7e16`, which records
+each attempt as its own `PW_LDT_TRY` record with the control passing and
+every LDT operation refused. Both halves of that run are in the evidence
+trail: the matrix, and the pe-map gate passing alongside it.
+
+The only route left in principle is installing a descriptor from kernel
+context with the laboratory's kernel read/write primitives. That is a kernel
+patch, not something a homebrew compatibility layer can rely on, and it is
+out of scope for this project; it is recorded here so nobody has to
+re-derive that it was considered.
+
+So ABI thunking is unavailable, and reaching the 32-bit catalogue means JIT
+recompilation or a 64-bit-only scope. That is an owner decision, and it is
+now backed by a measurement that survives scrutiny.
+
+The probe still completes a full round trip on an ordinary x86-64 Linux host
+inside `make test`, which is what makes the console refusal attributable to
+the platform rather than to the stub. Recorded for the record: the console's
+user selectors are `cs=0x43` and `ds=0x3b`.
 
 ## Why this is a measurement and not a lookup
 
@@ -46,6 +89,19 @@ title to do — the porting playbook's first principle, applied to evidence
 even weaker than an export. Prospero may have dropped LDT support, or
 filtered `sysarch` to the `fsbase`/`gsbase` operations an ordinary title
 needs.
+
+## Reading an errno is not the same as answering the question
+
+`EINVAL` is the weakest possible evidence of a platform limit, because it is
+also what a wrong argument produces. The first pass through this gate made
+exactly that mistake and published a conclusion from it. What turned the
+observation into an answer was three additions, none of them expensive: a
+**control** operation known to work, so a failure can be attributed to the
+specific operation rather than to the syscall; the **full argument matrix**,
+so a uniform refusal can be told apart from one malformed shape; and a
+**privilege comparison**, so a sandbox restriction can be told apart from a
+kernel-wide one. Any future probe of a refused platform call should carry
+all three before its result is written down.
 
 ## Two stages, so a crash still tells you something
 
@@ -147,7 +203,7 @@ either answer.
 
 | Observation | Meaning | Next step |
 | --- | --- | --- |
-| `install` failed | **This is what happened.** `EINVAL`. The kernel refuses LDT descriptors to a title, so ABI thunking is out on this firmware | Scope narrows to 64-bit-only or JIT recompilation |
+| `install` failed | **This is what happened**, uniformly and at elevated privilege, with a working control alongside it. ABI thunking is out on this firmware | Scope narrows to 64-bit-only or JIT recompilation |
 | `install=ok`, `seal` failed | Descriptors work; a read-write to read-execute transition does not | Gate 0.2b first: the `jitshm` double mapping, then retry |
 | `install=ok`, transfer attempted, no return | The descriptor was accepted but the transfer or its fault path is broken | Ghidra on the kernel's LDT and trap paths — the inspection layer the playbook reserves for an ambiguous platform result |
 | `proven=1` | 32-bit code executes natively on the console | Phase 1 gains a second dimension: a 32-bit stub and a marshalling thunk per Win32 entry point. Size it against `EXECUTION_MODEL.md` |
