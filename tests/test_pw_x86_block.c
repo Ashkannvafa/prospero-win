@@ -105,6 +105,36 @@ static void arithmetic_tests(void)
     assert(run(write,sizeof(write),0xa10)==-1 && state.eip==0xa10);
     assert(state.eflags==flags);
 }
+static void ret_cleanup_tests(void)
+{
+    for(unsigned dec=0;dec<2;dec++)for(unsigned memory=0;memory<2;memory++)for(unsigned carry=0;carry<2;carry++) {
+        uint32_t value=dec?0x80000000:0x7fffffff;
+        state.gpr[0]=value;state.gpr[1]=state.stack_low;state.eflags=0x202|carry;
+        memcpy(stack.write_base,&value,4);
+        const uint8_t incdec[]={0xff,(uint8_t)((memory?1:0xc0)|(dec<<3)),0x90};
+        assert(run(incdec,3,0xc010)==0 && state.eip==0xc013);
+        uint32_t after=state.gpr[0];if(memory)memcpy(&after,stack.write_base,4);
+        assert(after==(dec?0x7fffffff:0x80000000));
+        assert(state.eflags==((dec?0xa16u:0xa96u)|carry));
+    }
+    const unsigned pops[]={0,1,4,8,12,13,255,65535};
+    for(unsigned i=0;i<sizeof(pops)/sizeof(pops[0]);i++) {
+        state.gpr[4]=state.stack_high-16;state.eflags=0xad7;
+        uint32_t target=0x1001234;memcpy((void *)(uintptr_t)state.gpr[4],&target,4);
+        const uint8_t ret[]={0xc2,(uint8_t)pops[i],(uint8_t)(pops[i]>>8)};
+        assert(run(ret,3,0xc000)==(pops[i]<=12?0:-1));
+        assert(state.eflags==0xad7);
+        assert(state.gpr[4]==state.stack_high-16+(pops[i]<=12?4+pops[i]:0));
+        assert(state.eip==(pops[i]<=12?target:0xc000));
+    }
+    state.gpr[4]=state.stack_high-16;state.eip=0x1003000;
+    PwX86State caller=state;PwGuestCallback callback={0};uint32_t args[]={17,23};
+    assert(pw_guest_callback_enter(&callback,&state,0x1004000,0xf1000020,args,2,PW_GUEST_STDCALL)==PW_OK);
+    const uint8_t guest[]={0xb8,42,0,0,0,0xc2,8,0};
+    assert(run(guest,sizeof(guest),0x1004000)==0 && state.eip==0xf1000020);
+    uint64_t result;assert(pw_guest_callback_leave(&callback,32,&result)==PW_OK && result==42);
+    assert(!memcmp(&caller,&state,sizeof(state)));
+}
 static void byte_tests(void)
 {
     for(unsigned src=0;src<8;src++)for(unsigned dst=0;dst<8;dst++)for(unsigned direction=0;direction<2;direction++) {
@@ -493,6 +523,7 @@ int main(int argc, char **argv)
     arithmetic_memory_tests();
     unary_leave_tests();
     byte_tests();
+    ret_cleanup_tests();
     /* Enter an actual translated guest callback, then restore its caller. */
     state.gpr[4]=state.stack_high-16;state.eip=0xf0000010;
     PwX86State caller=state;PwGuestCallback callback={0};

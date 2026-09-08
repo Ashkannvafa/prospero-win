@@ -32,12 +32,12 @@ typedef struct PwX86Block {
  * mov register/immediate, register/register or registered memory (ModRM/SIB),
  * MOV immediate/register or memory, register/memory ADD/SUB/XOR with arithmetic flags,
  * NOT/NEG register/memory, LEAVE,
- * byte MOV/CMP/TEST (including high registers), register INC/DEC,
+ * byte MOV/CMP/TEST (including high registers), register/memory INC/DEC,
  * immediate ALU 16/32-bit (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP),
  * CMP register/memory 32-bit, TEST 32-bit register/memory/immediate, MOVZX word,
  * short/near Jcc and register-byte SETcc using guest arithmetic flags,
  * LEA, absolute and FS moffs32/EAX loads/stores, nop,
- * direct/indirect near call/jump and ret. No copied 32-bit stack instructions. A successful
+ * direct/indirect near call/jump and ret/ret imm16. No copied 32-bit stack instructions. A successful
  * block is a SysV int(PwX86State*) function returning 0, or -1 on memory bounds.
  * Direct transfers update guest EIP and return to the dispatcher.
  * Stack range must be live RW identity-mapped guest memory below 4 GiB.

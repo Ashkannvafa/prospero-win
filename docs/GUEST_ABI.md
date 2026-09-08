@@ -70,8 +70,9 @@ guest FP-state services, not a claim of generic cdecl compatibility.
   void returns, varargs bounds, double completion and register corruption.
 - Callback state tests cover both cleanup conventions. A separate integrated
   test enters an actual translated synthetic cdecl callback that returns 42,
-  verifies its result and restores the caller. The stdcall callback unit test
-  models the return state; it is not translated RET-immediate evidence.
+  verifies its result and restores the caller. A second translated callback
+  returns 42 using RET 8, exercising stdcall argument cleanup and caller-state
+  restoration through the real generated-code boundary.
 - Host tests pass under ASan/UBSan. The shared C service compiles with the
   PS5 target toolchain. No hardware callback evidence is claimed yet.
 
@@ -106,7 +107,7 @@ Translated indirect calls push a guest return PC and yield to the dispatcher.
 The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
-and the time/identity calls plus GetStartupInfoA, then stops after 317 instructions
+and the time/identity calls plus GetStartupInfoA, then stops after 325 instructions
 (4096-event host limit), after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.

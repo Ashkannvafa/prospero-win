@@ -248,12 +248,13 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if (result!=PW_OK) return result;
             if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
             if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
-            if (op==0xff && operand.reg!=2 && operand.reg!=4 && operand.reg!=6) return PW_ERR_UNSUPPORTED;
+            if (op==0xff && operand.reg!=0 && operand.reg!=1 && operand.reg!=2 && operand.reg!=4 && operand.reg!=6) return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
         } else if (op == 0x6a || op == 0xeb) length = 2;
         else if (op == 0x68 || op == 0xe8 || op == 0xe9 || op==0xa1 || op==0xa3 ||
                  (op >= 0xb8 && op <= 0xbf)) length = 5;
+        else if(op==0xc2)length=3;
         else if (op == 0xc3 || op == 0xc9 || op == 0x90 || (op >= 0x50 && op <= 0x5f)) length = 1;
         else return PW_ERR_UNSUPPORTED;
         if (length > bytes-cursor) return PW_ERR_TRUNCATED;
@@ -363,6 +364,13 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             unsigned condition=(op==0x0f?source[cursor+1]:op)&15;
             uint32_t delta=op==0x0f?read32(source+cursor+2):(uint32_t)(int32_t)(int8_t)source[cursor+1];
             conditional_target(&e,condition,next,next+delta);terminal=1;
+        } else if(op==0xff && operand.reg<2) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
+            byte(&e,0xff);byte(&e,(operand.mod==3?0xc0:0)|(operand.reg<<3));
+            if(operand.mod==3)store_eax(&e,operand.rm*4);
+            save_arithmetic_flags(&e,0x8d4);
+            store(&e,offsetof(PwX86State,eip),next);
         } else if (op==0xff) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {
@@ -463,15 +471,19 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                                       : read32(source+cursor+1);
             next += delta;
             terminal = 1;
-        } else if (op == 0xc3) {
+        } else if (op == 0xc3 || op==0xc2) {
             stack_address(&e,0);
             byte(&e,0x8b); byte(&e,0x08); /* ecx = guest return */
-            byte(&e,0x83); byte(&e,0xc0); byte(&e,4);
+            uint32_t pop=4+(op==0xc2?((uint32_t)source[cursor+1]|(uint32_t)source[cursor+2]<<8):0);
+            byte(&e,0x05);word(&e,pop);
+            require_condition(&e,0x73); /* unsigned ESP addition must not wrap */
+            byte(&e,0x3b);byte(&e,0x47);byte(&e,offsetof(PwX86State,stack_high));
+            require_condition(&e,0x76);
             store_eax(&e,offsetof(PwX86State,gpr[4]));
             byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             terminal = 1;
         }
-        if (op != 0xc3 && op!=0xff && !conditional) store(&e,offsetof(PwX86State,eip),next);
+        if (op != 0xc3 && op!=0xc2 && op!=0xff && !conditional) store(&e,offsetof(PwX86State,eip),next);
         cursor += length; ++count;
         if (terminal) break;
     }
