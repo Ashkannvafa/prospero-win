@@ -64,9 +64,10 @@ patch, not something a homebrew compatibility layer can rely on, and it is
 out of scope for this project; it is recorded here so nobody has to
 re-derive that it was considered.
 
-So ABI thunking is unavailable, and reaching the 32-bit catalogue means JIT
-recompilation or a 64-bit-only scope. That is an owner decision, and it is
-now backed by a measurement that survives scrutiny.
+The tested hardware compatibility-mode route is unavailable. The owner has
+selected software x86 translation, with original Space Cadet Pinball as the
+first game target. ABI marshalling still applies to translated code and to
+Win64/native crossings; see EXECUTION_MODEL.md and ROADMAP.md.
 
 The probe still completes a full round trip on an ordinary x86-64 Linux host
 inside `make test`, which is what makes the console refusal attributable to
@@ -203,8 +204,8 @@ either answer.
 
 | Observation | Meaning | Next step |
 | --- | --- | --- |
-| `install` failed | **This is what happened**, uniformly and at elevated privilege, with a working control alongside it. ABI thunking is out on this firmware | Scope narrows to 64-bit-only or JIT recompilation |
-| `install=ok`, `seal` failed | Descriptors work; a read-write to read-execute transition does not | Gate 0.2b first: the `jitshm` double mapping, then retry |
+| `install` failed | **This is what happened**, uniformly and at elevated privilege, with a working control alongside it. The tested compatibility-mode route is refused | Software x86 execution selected; ABI marshalling remains necessary |
+| `install=ok`, `seal` failed | That allocation could not be sealed | Investigate the specific failure; the separate low-memory probe accepted RW-to-RX, so double mapping is not automatically required |
 | `install=ok`, transfer attempted, no return | The descriptor was accepted but the transfer or its fault path is broken | Ghidra on the kernel's LDT and trap paths — the inspection layer the playbook reserves for an ambiguous platform result |
 | `proven=1` | 32-bit code executes natively on the console | Phase 1 gains a second dimension: a 32-bit stub and a marshalling thunk per Win32 entry point. Size it against `EXECUTION_MODEL.md` |
 

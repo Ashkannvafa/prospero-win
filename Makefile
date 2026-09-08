@@ -2,7 +2,7 @@ CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Werror
 BUILD := build/host
 
-.PHONY: all test audit inspect sample native native-release clean
+.PHONY: all test sanitize audit inspect inspect-only sample native native-release clean
 
 all: test audit
 
@@ -50,11 +50,20 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe
 audit:
 	python3 tools/audit_publication.py
 
+# Rebuild so previously cached non-instrumented binaries cannot pass this gate.
+sanitize:
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 $(MAKE) -B test CC=clang CFLAGS='-O1 -g -std=c11 -Wall -Wextra -Werror -fno-omit-frame-pointer -fsanitize=address,undefined'
+
 # Structural report for a private Windows binary. Nothing is copied here.
 #   make inspect PE_INPUT=/private/path/game.exe PE_DIR=/private/path
 inspect: $(BUILD)/inspect_pe
 	@test -n "$(PE_INPUT)" || { echo 'PE_INPUT is required' >&2; exit 2; }
 	$(BUILD)/inspect_pe "$(PE_INPUT)" $(if $(PE_DIR),--dir "$(PE_DIR)",)
+
+# Inventory a target even before its DLLs or low-address backend are available.
+inspect-only: $(BUILD)/inspect_pe
+	@test -n "$(PE_INPUT)" || { echo 'PE_INPUT is required' >&2; exit 2; }
+	$(BUILD)/inspect_pe "$(PE_INPUT)" --no-map
 
 # Synthetic images for a gate run that needs no proprietary input at all.
 sample:

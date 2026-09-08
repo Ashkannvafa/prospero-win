@@ -100,8 +100,12 @@ Every import is classified by canonical name:
 The classification table in `pw_module_name.c` is sorted and searched by
 binary search, so its order is a correctness property; a test asserts it
 stays sorted, and asserts that known third-party names are absent. A name
-missing from the table is treated as local, which is the safe default: the
-loader then fails with `PW_ERR_NOT_FOUND` and says which file to stage.
+missing from the table is treated as local; an unresolved file produces
+`PW_ERR_NOT_FOUND`. This is provisional mapping-gate policy, not Windows
+DLL search-order conformance. Familiar names such as d3d9.dll and dinput8.dll
+can be application-local wrappers. Before execution/import binding, replace
+this classification with explicit core-host, API-set, local-override and
+fallback rules, covered by resolver fixtures. See ROADMAP.md gate 0.3.
 
 ## Bounds, cycles and failure
 

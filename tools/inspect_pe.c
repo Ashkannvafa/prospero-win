@@ -49,14 +49,15 @@ static void print_image(const PeImage *image, const PeLayout *layout)
     }
 }
 
-static void print_imports(const PeImage *image)
+static int print_imports(const PeImage *image)
 {
     PeImportTable table;
+    static PeImportSymbol symbols[PE_IMPORT_MAX_SYMBOLS];
     const int status = pe_import_parse(&table, image);
 
     if (status != PW_OK) {
         (void)printf("imports unreadable: %s\n", pw_result_name(status));
-        return;
+        return status;
     }
     (void)printf("imports modules=%u symbols=%u\n", table.module_count,
                  table.symbol_count);
@@ -72,7 +73,21 @@ static void print_imports(const PeImage *image)
                      canonical_status == PW_OK && pw_module_is_system(canonical)
                          ? "host" : "local",
                      module->bound ? " bound" : "");
+        uint32_t count = 0;
+        const int result = pe_import_enumerate(image, module, symbols,
+                                               PE_IMPORT_MAX_SYMBOLS, &count);
+        if (result != PW_OK)
+            return result;
+        for (uint32_t symbol = 0; symbol < count; ++symbol) {
+            if (symbols[symbol].by_ordinal)
+                (void)printf("    import %s ordinal=%u\n", module->name,
+                             symbols[symbol].ordinal);
+            else
+                (void)printf("    import %s name=%s\n", module->name,
+                             symbols[symbol].name);
+        }
     }
+    return PW_OK;
 }
 
 int main(int argc, char **argv)
@@ -87,6 +102,8 @@ int main(int argc, char **argv)
     PeImage image;
     PeLayout layout;
     int status;
+    int exit_code = 1;
+    int loader_ready = 0;
 
     for (int index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--dir") == 0 && index + 1 < argc)
@@ -116,38 +133,46 @@ int main(int argc, char **argv)
                       pw_result_name(status));
         return 1;
     }
+    (void)pw_file_posix_provider(&files, &provider);
     (void)printf("file=%s bytes=%zu\n", image_path, span.size);
 
     status = pe_image_parse(&image, span.bytes, span.size);
     if (status != PW_OK) {
         (void)fprintf(stderr, "parse failed: %s\n", pw_result_name(status));
-        return 1;
+        goto cleanup;
     }
     status = pe_layout_plan(&layout, &image);
     if (status != PW_OK) {
         (void)fprintf(stderr, "layout refused: %s\n", pw_result_name(status));
-        return 1;
+        goto cleanup;
     }
     print_image(&image, &layout);
-    print_imports(&image);
+    status = print_imports(&image);
+    if (status != PW_OK) {
+        (void)fprintf(stderr, "import inspection failed: %s\n",
+                      pw_result_name(status));
+        goto cleanup;
+    }
 
-    if (!map_image)
-        return 0;
+    if (!map_image) {
+        exit_code = 0;
+        goto cleanup;
+    }
 
-    (void)pw_file_posix_provider(&files, &provider);
     (void)pw_vm_posix_backend(&backend);
     status = pw_loader_init(&loader, &provider, &backend);
     if (status != PW_OK) {
         (void)fprintf(stderr, "loader init failed: %s\n",
                       pw_result_name(status));
-        return 1;
+        goto cleanup;
     }
+    loader_ready = 1;
     status = pw_loader_load(&loader, span.bytes, span.size, "root.exe");
     if (status != PW_OK) {
         (void)fprintf(stderr, "load failed: %s%s%s\n", pw_result_name(status),
                       loader.missing[0] != '\0' ? " missing=" : "",
                       loader.missing);
-        return 1;
+        goto cleanup;
     }
     (void)printf("graph modules=%u local=%u host=%u depth=%u cycles=%u "
                  "reserved=%llu\n",
@@ -170,19 +195,23 @@ int main(int argc, char **argv)
     if (status != PW_OK) {
         (void)fprintf(stderr, "protections failed: %s\n",
                       pw_result_name(status));
-        return 1;
+        goto cleanup;
     }
     (void)printf("protections pages=%u merged=%u wx=%u calls=%u\n",
                  pw_loader_module(&loader, 0u)->mapped.protection.pages,
                  pw_loader_module(&loader, 0u)->mapped.protection.merged_pages,
                  pw_loader_module(&loader, 0u)->mapped.protection.wx_pages,
                  pw_loader_module(&loader, 0u)->mapped.protection.protect_calls);
-    status = pw_loader_release(&loader);
-    if (status != PW_OK) {
-        (void)fprintf(stderr, "release failed: %s\n", pw_result_name(status));
-        return 1;
+    exit_code = 0;
+cleanup:
+    if (loader_ready) {
+        status = pw_loader_release(&loader);
+        if (status != PW_OK) {
+            (void)fprintf(stderr, "release failed: %s\n", pw_result_name(status));
+            exit_code = 1;
+        }
     }
     provider.close(provider.context, &span);
     (void)printf("released opens=%u closes=%u\n", files.opens, files.closes);
-    return 0;
+    return exit_code;
 }

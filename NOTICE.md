@@ -37,7 +37,7 @@ for its own ports rather than anything discovered here: the libc heap
 ceiling and the resulting use of anonymous mappings for large allocations,
 the unusability of libc directory listing on the read-only application
 image, `sceKernelOpen` with libc `read`/`lseek` as the working file path, the
-absence of a supported read-write to read-execute transition, and the rule
+measured support for read-write to read-execute transitions, and the rule
 that a title must not return from `main()`. Each is cited where it shapes the
 code.
 

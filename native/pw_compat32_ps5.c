@@ -238,9 +238,9 @@ static int seal_code(void *context, void *code_page, int *os_errno)
         if (state)
             state->last_errno = errno;
         /*
-         * No read-write to read-execute transition here. Reaching this
-         * point means the gate needs the jitshm double mapping from gate
-         * 0.2b before the transfer can be attempted at all.
+         * Preserve this run's failure. The separate FW 12.02 low-memory
+         * probe accepted RW-to-RX; failure here does not establish that
+         * all executable allocations require a double mapping.
          */
         return PW_ERR_VM;
     }

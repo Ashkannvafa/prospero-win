@@ -4,6 +4,7 @@ docs/COMPAT32_PHASE0A.md
 docs/DEVELOPMENT.md
 docs/EXECUTION_MODEL.md
 docs/PE_MAPPING_PHASE0.md
+docs/PINBALL_TARGET.md
 docs/ROADMAP.md
 docs/TELEMETRY.md
 .gitignore

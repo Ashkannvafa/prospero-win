@@ -121,6 +121,30 @@ class SampleChainTest(unittest.TestCase):
         # The console runs 64-bit user code only; see docs/EXECUTION_MODEL.md.
         self.assertIn("native_execution=no", output)
         self.assertRegex(output, r"binkw32\.dll\s+named=2")
+        self.assertEqual(field(output, "opens"), "1")
+        self.assertEqual(field(output, "closes"), "1")
+        self.assertIn("import KERNEL32.dll ordinal=291", output)
+        self.assertIn("import KERNEL32.dll name=CreateFileA", output)
+
+    def test_malformed_input_releases_root(self) -> None:
+        path = self.path / "invalid.exe"
+        path.write_bytes(b"invalid PE input")
+        completed = subprocess.run([str(INSPECT), str(path), "--no-map"],
+                                   capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn("parse failed:", completed.stderr)
+        self.assertIn("released opens=1 closes=1", completed.stdout)
+
+    def test_missing_dependency_releases_root(self) -> None:
+        self.stage()
+        (self.path / "binkw32.dll").unlink()
+        completed = subprocess.run([str(INSPECT), str(self.path / "sample.exe"),
+                                    "--dir", str(self.path)],
+                                   capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn("load failed:", completed.stderr)
+        self.assertEqual(field(completed.stdout, "opens"),
+                         field(completed.stdout, "closes"))
 
     def test_encoder_output_is_deterministic(self) -> None:
         first = make_test_pe.sample_chain()

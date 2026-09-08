@@ -25,7 +25,8 @@ then remove the worktree from the primary checkout.
 ## Required gates
 
 ```sh
-make test        # nine C suites, four Python suites
+make test        # C contracts and Python integration suites
+make sanitize    # clean Clang ASan/UBSan rebuild, including leak detection
 make audit       # fail-closed publication audit
 git diff --check
 git status --short
@@ -48,6 +49,7 @@ To study a binary you own without copying anything into the tree:
 
 ```sh
 make inspect PE_INPUT=/private/path/game.exe PE_DIR=/private/path
+make inspect-only PE_INPUT=/private/path/PINBALL.EXE
 ```
 
 That prints the machine, layout, per-section protections, the full import

@@ -3,11 +3,10 @@
  * Virtual-memory contract for manual mapping.
  *
  * A backend reserves one contiguous span per image, then commits and
- * protects sub-ranges of it. Two aliases are exposed because the PS5 has no
- * usable read-write to read-execute transition: executable memory is
- * published through a second mapping of the same pages (the jitshm double
- * mapping measured in the laboratory), so mapping writes go to write_base
- * while the image actually runs at exec_base.
+ * protects sub-ranges of it. The measured FW 12.02 backend uses one mapping
+ * and supports mprotect from RW to RX. Two aliases remain an optional
+ * backend capability: writes go to write_base and execution to exec_base,
+ * which are equal unless PW_VM_CAP_ALIASED_EXEC is advertised.
  *
  * Consequence for callers: a base relocation delta is computed against
  * exec_base, the address the code will observe, and the patched bytes are
