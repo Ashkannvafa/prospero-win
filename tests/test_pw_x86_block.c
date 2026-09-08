@@ -83,9 +83,17 @@ static void arithmetic_tests(void)
             unsigned parity=0;for(unsigned bit=0;bit<8;bit++)parity^=(z>>bit)&1;
             if(!parity)f|=4;
             assert(state.eflags==(0x602|f));
+            state.gpr[0]=x;state.gpr[1]=y;state.eflags=0x612;
+            const uint8_t logical[]={direction?0x33:0x31,direction?0xc1:0xc8};
+            assert(run(logical,2,0x904)==0 && state.gpr[0]==(x^y));
+            uint32_t v=x^y,lf=(v==0?0x40:0)|((v>>31)?0x80:0);
+            unsigned lp=0;for(unsigned bit=0;bit<8;bit++)lp^=(v>>bit)&1;
+            if(!lp)lf|=4;
+            assert(state.eflags==(0x612|lf));
+            uint32_t before_mov=state.eflags;
             const uint8_t mov[]={0xc7,0xc2,0x12,0x34,0x56,0x78};
             assert(run(mov,sizeof(mov),0x902)==0 && state.gpr[2]==0x78563412);
-            assert(state.eflags==(0x602|f));
+            assert(state.eflags==before_mov);
         }
     state.gpr[4]=state.stack_high-32;
     const uint8_t write[]={0xc7,0x44,0x24,4,0xff,0xff,0xff,0xff};
@@ -192,6 +200,28 @@ int main(int argc, char **argv)
     /* Base+offset overflow fails before dereferencing address zero. */
     const uint8_t overflow[]={0x64,0xa1,4,0,0,0};
     assert(run(overflow,sizeof(overflow),0x560)==-1);
+    /* General MOV memory uses explicit read/write permissions, not merely
+     * presence of a live mapping. */
+    state.memory_count=1;
+    state.memory[0]=(PwX86Memory){0x03002000,0x03003000,PW_X86_READ};
+    const uint8_t read_region[]={0x8b,0x05,0,0x20,0,3};
+    const uint8_t write_region[]={0x89,0x05,0,0x20,0,3};
+    assert(run(read_region,sizeof(read_region),0xb00)==0);
+    uint32_t saved=*(uint32_t *)thread.write_base;
+    state.gpr[0]=0x12345678;
+    assert(run(write_region,sizeof(write_region),0xb10)==-1);
+    assert(*(uint32_t *)thread.write_base==saved);
+    state.memory[0].permissions=PW_X86_WRITE;
+    assert(run(write_region,sizeof(write_region),0xb20)==0);
+    assert(*(uint32_t *)thread.write_base==0x12345678);
+    assert(run(read_region,sizeof(read_region),0xb30)==-1);
+    state.memory[0].permissions=PW_X86_READ;
+    state.memory[0].high=0x03002003;
+    assert(run(read_region,sizeof(read_region),0xb40)==-1);
+    state.memory_count=PW_X86_MEMORY_REGIONS+1;
+    assert(run(read_region,sizeof(read_region),0xb50)==-1);
+    state.memory_count=0;
+    assert(run(read_region,sizeof(read_region),0xb60)==-1);
     assert(backend.release(NULL,&thread)==PW_OK);
     addressing_tests();
     arithmetic_tests();

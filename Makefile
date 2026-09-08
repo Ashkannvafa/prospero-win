@@ -30,7 +30,7 @@ $(eval $(call test_rule,test_pw_segment,tests/test_pw_segment.c src/pw_segment.c
 $(eval $(call test_rule,test_pw_compat32,tests/test_pw_compat32.c src/pw_compat32.c src/pw_segment.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_gate,tests/test_pw_gate.c $(CORE) src/pw_gate.c,))
 $(eval $(call test_rule,test_pw_x86_block,tests/test_pw_x86_block.c src/pw_x86_block.c src/pw_vm.c src/pw_vm_posix.c,))
-$(eval $(call test_rule,trace_x86_entry,tools/trace_x86_entry.c src/pw_x86_block.c src/pe_image.c src/pw_vm.c src/pw_vm_posix.c,))
+$(eval $(call test_rule,trace_x86_entry,tools/trace_x86_entry.c src/pw_x86_block.c $(CORE),))
 $(eval $(call test_rule,test_pw_win64,tests/test_pw_win64.c src/pw_exec_probe.c src/pw_win64_call.S $(CORE),))
 $(eval $(call test_rule,inspect_pe,tools/inspect_pe.c $(CORE) src/pw_file_posix.c,))
 

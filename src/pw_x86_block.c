@@ -46,6 +46,34 @@ static void stack_bounds(Emitter *e)
     byte(e,0x83); byte(e,0xea); byte(e,4);
     byte(e,0x39); byte(e,0xd0); require_condition(e,0x76);
 }
+static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write)
+{
+    uint64_t end=(uint64_t)address+4;
+    unsigned permission=write?PW_X86_WRITE:PW_X86_READ;
+    if (!address || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
+        return 0;
+    if(address>=state->stack_low && end<=state->stack_high)return address;
+    for(unsigned i=0;i<state->memory_count;i++) {
+        const PwX86Memory *m=&state->memory[i];
+        if(m->high<=0x100000000ull && address>=m->low && end<=m->high &&
+           (m->permissions&permission))return address;
+    }
+    return 0;
+}
+static void memory_address(Emitter *e,unsigned write)
+{
+    /* Effective address is EAX. SysV helper checks the live memory registry.
+     * Save context RDI and align native RSP before the call. */
+    byte(e,0x89);byte(e,0xc6); /* esi = address */
+    byte(e,0xba);word(e,write);
+    byte(e,0x57);
+    byte(e,0x48);byte(e,0xb8);
+    uint64_t target=(uint64_t)(uintptr_t)&memory_pointer;
+    word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
+    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);
+    byte(e,0x48);byte(e,0x85);byte(e,0xc0);
+    require_condition(e,0x75);
+}
 static void stack_address(Emitter *e, int push)
 {
     load_eax(e,offsetof(PwX86State,gpr[4]));
@@ -105,14 +133,14 @@ static void success(Emitter *e)
 {
     byte(e,0x31); byte(e,0xc0); byte(e,0xc3);
 }
-static void save_arithmetic_flags(Emitter *e)
+static void save_arithmetic_flags(Emitter *e,uint32_t mask)
 {
     /* Snapshot before any emitter bookkeeping changes flags. Native RSP is
      * balanced; guest control flags (DF/IF/etc.) are never loaded into RFLAGS. */
     byte(e,0x9c); byte(e,0x59); /* pushfq; pop rcx */
-    byte(e,0x81); byte(e,0xe1); word(e,0x8d5); /* OF SF ZF AF PF CF */
+    byte(e,0x81); byte(e,0xe1); word(e,mask);
     byte(e,0x8b); byte(e,0x57); byte(e,offsetof(PwX86State,eflags));
-    byte(e,0x81); byte(e,0xe2); word(e,~0x8d5u);
+    byte(e,0x81); byte(e,0xe2); word(e,~mask);
     byte(e,0x09); byte(e,0xca);
     byte(e,0x89); byte(e,0x57); byte(e,offsetof(PwX86State,eflags));
 }
@@ -148,12 +176,12 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if (source[cursor+1]!=0xa1 && source[cursor+1]!=0xa3)
                 return PW_ERR_UNSUPPORTED;
             length=6;
-        } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 || op==0x29 || op==0x2b) {
+        } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 || op==0x29 || op==0x2b || op==0x31 || op==0x33) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if (result!=PW_OK) return result;
             if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
             if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
-            if ((op==0x29 || op==0x2b) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
+            if ((op==0x29 || op==0x2b || op==0x31 || op==0x33) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
         } else if (op == 0x6a || op == 0xeb) length = 2;
@@ -165,18 +193,21 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if (op==0x29 || op==0x2b) {
-            unsigned dest=op==0x29?operand.rm:operand.reg;
-            unsigned src=op==0x29?operand.reg:operand.rm;
+        if (op==0x29 || op==0x2b || op==0x31 || op==0x33) {
+            unsigned reverse=op==0x29 || op==0x31;
+            unsigned logical=op==0x31 || op==0x33;
+            unsigned dest=reverse?operand.rm:operand.reg;
+            unsigned src=reverse?operand.reg:operand.rm;
             load_eax(&e,dest*4);
-            byte(&e,0x2b); byte(&e,0x47); byte(&e,src*4);
+            byte(&e,logical?0x33:0x2b); byte(&e,0x47); byte(&e,src*4);
             store_eax(&e,dest*4);
-            save_arithmetic_flags(&e);
+            /* XOR's AF is undefined: retain guest AF deterministically. */
+            save_arithmetic_flags(&e,logical?0x8c5:0x8d5);
         } else if (op==0xc7) {
             uint32_t value=read32(source+cursor+length-4);
             if (operand.mod==3) store(&e,operand.rm*4,value);
             else {
-                effective_address(&e,&operand);stack_bounds(&e);
+                effective_address(&e,&operand);memory_address(&e,1);
                 byte(&e,0xc7);byte(&e,0x00);word(&e,value);
             }
         } else if (op == 0x64) {
@@ -196,7 +227,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                 effective_address(&e,&operand);
                 if (op==0x8d) store_eax(&e,operand.reg*4);
                 else {
-                    stack_bounds(&e);
+                    memory_address(&e,op==0x89);
                     if (op==0x8b) {
                         byte(&e,0x8b); byte(&e,0x00);
                         store_eax(&e,operand.reg*4);

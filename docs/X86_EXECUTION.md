@@ -6,8 +6,8 @@ to establish 4-byte guest stack semantics and dispatcher transitions needed
 by Pinball's entry. It is not a complete decoder or CPU implementation.
 
 Supported encodings: push imm8/imm32/r32, pop r32, mov r32/imm32,
-mov r32/r32 and r32/stack-memory (89/8B ModRM/SIB), LEA,
-MOV immediate/r32 or stack-memory (C7 /0), register SUB (29/2B),
+mov r32/r32 and r32/memory (89/8B ModRM/SIB), LEA,
+MOV immediate/r32 or memory (C7 /0), register SUB (29/2B), XOR (31/33),
 FS-prefixed A1/A3 moffs32 loads/stores
 through EAX, nop, direct call rel32,
 jmp rel8/rel32 and ret. Calls push a 32-bit guest return PC and yield the
@@ -30,8 +30,13 @@ This is an addressing primitive, not a complete TEB or exception subsystem.
 
 ModRM/SIB uses 32-bit effective-address arithmetic, including wraparound,
 signed disp8 and absolute disp32 (never host RIP-relative). LEA only computes
-an address. MOV currently accepts memory addresses within the live stack
-range; PE data, heap and other regions still require a general memory map.
+an address. MOV accepts the live stack or up to eight additional identity-
+mapped regions with independent read/write permissions. The caller owns
+their lifetime and must register only real, accessible mappings. A SysV
+helper validates each dword before access; generated blocks contain its
+process-local address and are not serializable. Native RSP is aligned and
+the context pointer preserved across that call. This registry is not a
+virtual-memory allocator or a security boundary against a hostile host.
 All three memory ModRM modes and every SIB byte are covered by host LEA
 tests, including truncated encodings. These tests are not a full decoder
 conformance suite; operand/address-size overrides are not supported.
@@ -41,6 +46,8 @@ SUB snapshots the six arithmetic flags (OF/SF/ZF/AF/PF/CF) after the native
 Guest control flags are never installed in native RFLAGS. Tests cover edge
 values for borrow, signed overflow, auxiliary carry, parity, sign and zero;
 MOV and failed memory accesses preserve the recorded guest flags.
+XOR updates its five defined arithmetic flags, clears OF/CF, and preserves
+the previous guest AF as a deterministic choice for that undefined flag.
 
 ## Host evidence
 
@@ -79,24 +86,36 @@ file through this engine. Build `make build/host/trace_x86_entry`, then run
 stop, not successful application startup; exit 1 is setup/cleanup failure.
 The tracer owns a synthetic stack and FS region and initializes only the
 exception-chain sentinel, not a complete Windows TEB. It fetches from
-executable PE sections but does not map or expose PE data to guest loads.
+executable PE sections through the existing mapper and registers headers
+and sections with their logical access permissions. Imports are not bound.
+The current tracer requires mapping at the preferred base; it rejects an
+alternate base instead of executing with inconsistent guest addresses.
 It stops at 256 instructions, unsupported decoding or memory-bound failure.
 
 On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
-completed 22 translated instructions, including the startup helper's return:
+initially completed 22 translated instructions through the startup helper.
+With XOR and mapped-image reads, the same input now completes 25:
 
 ```
-kind=host-entry-trace steps=22 stop=unsupported eip=0x01020fa1 esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000206
+kind=host-entry-trace steps=25 stop=unsupported eip=0x01020faa esp=0x030fff68 ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
 ```
 
-The next unsupported instruction is register XOR. This is host evidence
+The next unsupported instruction is an indirect register call, after an
+IAT load. Its unbound value must not be invoked as a host function. This is host evidence
 only: no Win32 imports have run, no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
 stop. Executable bytes remain private; no extracted routine is embedded here.
 
-Next coverage: general guest memory regions, arithmetic and
+The IAT slot at RVA 0x10f0 resolves by its preserved import lookup table to
+`KERNEL32!GetModuleHandleA`; the caller pushes a null argument. The bound
+address still belongs to the old Windows image, not this host. Next is
+explicit import-slot rebinding and a guest-call dispatcher, with stdcall
+stack handling and a real main-module handle response, not a fake blanket
+success stub.
+
+Next coverage: import binding and dispatch, more arithmetic and
 guest EFLAGS, TEB initialization and broader FS encodings, indirect calls into import adapters,
 x87/SSE state and fault semantics. There is no block cache, invalidation,
 full memory model or scheduling yet. Before a broader decoder is adopted,

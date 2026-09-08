@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* Host-only bounded instruction tracer. Private input is never staged.
- * This is not an application loader: only stack and synthetic FS exist. */
+ * This is not an application loader: no Win32 imports are bound. */
 #include "../src/pe_image.h"
+#include "../src/pw_map.h"
 #include "../src/pw_x86_block.h"
 #include "../src/pw_vm_posix.h"
 #include <stdio.h>
@@ -32,7 +33,8 @@ int main(int argc,char **argv)
        image.image_base+image.size_of_image>UINT32_MAX)goto done;
     PwVmBackend vm;
     PwVmRegion code={0},stack={0},thread={0};
-    int have_code=0,have_stack=0,have_thread=0;
+    PwMappedImage mapped={0};PeLayout layout;
+    int have_code=0,have_stack=0,have_thread=0,have_image=0;
     if(pw_vm_posix_backend(&vm)!=PW_OK)goto done;
     if(vm.reserve(NULL,8192,4096,&code)!=PW_OK)goto done;
     have_code=1;
@@ -43,6 +45,21 @@ int main(int argc,char **argv)
     if(vm.commit(NULL,&stack,0,stack.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK ||
        vm.commit(NULL,&thread,0,thread.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
     PwX86State state={0};
+    if(pe_layout_plan(&layout,&image)!=PW_OK ||
+       layout.section_count+1>PW_X86_MEMORY_REGIONS)goto cleanup;
+    if(pw_map_image(&mapped,&image,&layout,&vm)!=PW_OK)goto cleanup;
+    have_image=1;
+    if(mapped.actual_base!=image.image_base ||
+       pw_map_finalize_protections(&mapped,&layout,&vm)!=PW_OK)goto cleanup;
+    state.memory[state.memory_count++]=(PwX86Memory){(uint32_t)mapped.actual_base,
+        mapped.actual_base+layout.header_bytes,PW_X86_READ};
+    for(unsigned i=0;i<layout.section_count;i++) {
+        const PeLayoutSection *s=&layout.sections[i];
+        state.memory[state.memory_count++]=(PwX86Memory){(uint32_t)mapped.actual_base+s->rva,
+            mapped.actual_base+s->rva+s->mapped_bytes,
+            ((s->protection&PW_PROT_READ)?PW_X86_READ:0)|
+            ((s->protection&PW_PROT_WRITE)?PW_X86_WRITE:0)};
+    }
     state.stack_low=0x03000000;state.stack_high=0x03100000;
     state.gpr[4]=state.stack_high-4;state.fs_base=0x03200000;state.fs_bytes=4096;
     state.eflags=0x202;state.eip=(uint32_t)image.image_base+image.entry_point;
@@ -60,7 +77,8 @@ int main(int argc,char **argv)
         for(unsigned n=1;n<=15;n++) {
             size_t offset;
             if(pe_image_file_offset(&image,rva,n,&offset)!=PW_OK)break;
-            status=pw_x86_translate(bytes+offset,n,state.eip,code.write_base,code.bytes,&block);
+            status=pw_x86_translate((const uint8_t *)(uintptr_t)state.eip,n,state.eip,
+                                    code.write_base,code.bytes,&block);
             if(status!=PW_ERR_TRUNCATED)break;
         }
         if(status!=PW_OK){stop=status==PW_ERR_UNSUPPORTED?"unsupported":"decode-failure";break;}
@@ -74,6 +92,7 @@ int main(int argc,char **argv)
     /* A classified stop is evidence, never a successful game startup. */
     result=2;
 cleanup:
+    if(have_image && pw_map_release(&mapped,&vm)!=PW_OK)result=1;
     if(have_thread && vm.release(NULL,&thread)!=PW_OK)result=1;
     if(have_stack && vm.release(NULL,&stack)!=PW_OK)result=1;
     if(have_code && vm.release(NULL,&code)!=PW_OK)result=1;

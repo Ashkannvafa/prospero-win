@@ -17,6 +17,8 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
         (bytes.fromhex("ebfe"), 256, "budget"),
         (bytes.fromhex("bc00000000 50"), 1, "memory-bounds"),
         (bytes.fromhex("64a100000000 50 59 cc"), 3, "unsupported"),
+        (bytes.fromhex("8b0500000001 cc"), 1, "unsupported"),
+        (bytes.fromhex("c7050000000178563412"), 0, "memory-bounds"),
     ]:
         path.write_bytes(build_pe(Spec(name="synthetic.exe", pe32plus=False,
             image_base=0x01000000, relocate_data_pointer=False,
