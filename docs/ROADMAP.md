@@ -63,7 +63,8 @@ structured ps5log/1 evidence and an independently checked result.
   bypassed. Add resolver conformance fixtures.
   A shared PE32 IAT binder now plans all name/ordinal destinations before
   writing, distinguishes function/data imports and rejects partial failures.
-  The actual catalog, forwarders and dynamic resolver remain to integrate.
+  Pinball's catalog now binds 205 function tokens and two CRT data words in
+  the host tracer. Forwarders, dynamic imports and most handlers remain pending.
 - [ ] **0.4 Initialisation.** Dependency ordering, TLS, CRT entry, DllMain
   and teardown required by the target. Track unsupported features.
 - [ ] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
@@ -72,10 +73,9 @@ structured ps5log/1 evidence and an independently checked result.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
   See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing of the original executable executes 25 instructions
-  through the startup helper and an IAT load, then stops at an indirect call.
-  Imports remain unbound. This is not
-  application entry, import execution, or PS5 execution evidence.
+  Bounded host tracing now executes 26 instructions and GetModuleHandleA(NULL)
+  after binding all 207 imports. The next stop is a 16-bit memory compare.
+  This is not application entry or PS5 execution evidence; most APIs are pending.
 - [ ] Implement the observed Win32 surface: process/error state, heap,
   virtual memory, files/resources, registry subset if needed, clocks and
   synchronisation. Unsupported calls identify themselves and stop with a

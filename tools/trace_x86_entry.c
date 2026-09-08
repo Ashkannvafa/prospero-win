@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* Host-only bounded instruction tracer. Private input is never staged.
- * This is not an application loader: no Win32 imports are bound. */
+ * This is not a complete application loader or Win32 implementation. */
 #include "../src/pe_image.h"
 #include "../src/pw_map.h"
 #include "../src/pw_x86_block.h"
 #include "../src/pw_vm_posix.h"
+#include "../src/pw_win32.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,7 @@ __attribute__((no_sanitize("function")))
 #endif
 static int invoke(void *entry,PwX86State *state)
 { return ((int (*)(PwX86State *))entry)(state); }
+static PwImportBindWorkspace binding_work;
 
 int main(int argc,char **argv)
 {
@@ -32,9 +34,9 @@ int main(int argc,char **argv)
        image.machine!=PE_MACHINE_I386 || image.image_base>UINT32_MAX ||
        image.image_base+image.size_of_image>UINT32_MAX)goto done;
     PwVmBackend vm;
-    PwVmRegion code={0},stack={0},thread={0};
+    PwVmRegion code={0},stack={0},thread={0},crt={0};
     PwMappedImage mapped={0};PeLayout layout;
-    int have_code=0,have_stack=0,have_thread=0,have_image=0;
+    int have_code=0,have_stack=0,have_thread=0,have_image=0,have_crt=0;
     if(pw_vm_posix_backend(&vm)!=PW_OK)goto done;
     if(vm.reserve(NULL,8192,4096,&code)!=PW_OK)goto done;
     have_code=1;
@@ -42,15 +44,31 @@ int main(int argc,char **argv)
     have_stack=1;
     if(vm.reserve_at(NULL,0x03200000,4096,4096,&thread)!=PW_OK)goto cleanup;
     have_thread=1;
+    if(vm.reserve_at(NULL,0x03300000,4096,4096,&crt)!=PW_OK)goto cleanup;
+    have_crt=1;
+    if(vm.commit(NULL,&crt,0,4096,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
     if(vm.commit(NULL,&stack,0,stack.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK ||
        vm.commit(NULL,&thread,0,thread.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
     PwX86State state={0};
     if(pe_layout_plan(&layout,&image)!=PW_OK ||
-       layout.section_count+1>PW_X86_MEMORY_REGIONS)goto cleanup;
+       layout.section_count+2>PW_X86_MEMORY_REGIONS ||
+       image.image_base+image.size_of_image>PW_WIN32_TOKEN_BASE)goto cleanup;
     if(pw_map_image(&mapped,&image,&layout,&vm)!=PW_OK)goto cleanup;
     have_image=1;
-    if(mapped.actual_base!=image.image_base ||
-       pw_map_finalize_protections(&mapped,&layout,&vm)!=PW_OK)goto cleanup;
+    PwMapVerify verified;
+    if(mapped.actual_base!=image.image_base || pw_map_verify(&mapped,&image,&layout,&verified)!=PW_OK ||
+       verified.raw_mismatches || verified.zero_tail_violations || verified.alias_mismatches)goto cleanup;
+    PwWin32 runtime;
+    const char *base=strrchr(argv[1],'/');base=base?base+1:argv[1];
+    if(strchr(base,'"') || strchr(base,'\\'))goto cleanup;
+    char commandline[512];
+    int command_bytes=snprintf(commandline,sizeof(commandline),"\"C:\\game\\%s\"",base);
+    if(command_bytes<0 || (size_t)command_bytes>=sizeof(commandline))goto cleanup;
+    if(pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline)!=PW_OK)goto cleanup;
+    PwImportBindReport binding;
+    if(pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,&binding_work,&binding)!=PW_OK)goto cleanup;
+    printf("kind=host-import-bind total=%u functions=%u data=%u\n",binding.total,binding.functions,binding.data);
+    if(pw_map_finalize_protections(&mapped,&layout,&vm)!=PW_OK)goto cleanup;
     state.memory[state.memory_count++]=(PwX86Memory){(uint32_t)mapped.actual_base,
         mapped.actual_base+layout.header_bytes,PW_X86_READ};
     for(unsigned i=0;i<layout.section_count;i++) {
@@ -60,13 +78,25 @@ int main(int argc,char **argv)
             ((s->protection&PW_PROT_READ)?PW_X86_READ:0)|
             ((s->protection&PW_PROT_WRITE)?PW_X86_WRITE:0)};
     }
+    state.memory[state.memory_count++]=(PwX86Memory){0x03300000,0x03301000,PW_X86_READ|PW_X86_WRITE};
     state.stack_low=0x03000000;state.stack_high=0x03100000;
     state.gpr[4]=state.stack_high-4;state.fs_base=0x03200000;state.fs_bytes=4096;
     state.eflags=0x202;state.eip=(uint32_t)image.image_base+image.entry_point;
     *(uint32_t *)thread.write_base=0xffffffffu;
-    unsigned steps=0;
+    unsigned steps=0,events=0;
     const char *stop="budget";
-    for(;steps<256;steps++) {
+    for(;events<256;events++) {
+        int dispatched=pw_win32_dispatch(&runtime,&state);
+        if(dispatched==PW_OK) {
+            printf("kind=host-api dll=%s name=%s result=0x%08x\n",runtime.last_dll,runtime.last_name,state.gpr[0]);
+            continue;
+        }
+        if(dispatched!=PW_ERR_NOT_FOUND){
+            printf("kind=host-api-stop dll=%s name=%s status=%d\n",
+                   runtime.last_dll?runtime.last_dll:"unknown",
+                   runtime.last_name?runtime.last_name:"unknown",dispatched);
+            stop=dispatched==PW_ERR_UNSUPPORTED?"unimplemented-api":"api-frame-error";break;
+        }
         if(state.eip<image.image_base){stop="outside-image";break;}
         uint32_t rva=state.eip-(uint32_t)image.image_base;
         const PeSection *section=pe_image_section_for_rva(&image,rva);
@@ -85,6 +115,7 @@ int main(int argc,char **argv)
         if(block.instructions!=1)goto cleanup;
         if(vm.protect(NULL,&code,0,code.bytes,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK)goto cleanup;
         if(invoke(code.exec_base,&state)!=0){stop="memory-bounds";break;}
+        steps++;
     }
     printf("kind=host-entry-trace steps=%u stop=%s eip=0x%08x esp=0x%08x "
            "ebp=0x%08x fs0=0x%08x flags=0x%08x\n",steps,stop,state.eip,
@@ -92,6 +123,7 @@ int main(int argc,char **argv)
     /* A classified stop is evidence, never a successful game startup. */
     result=2;
 cleanup:
+    if(have_crt && vm.release(NULL,&crt)!=PW_OK)result=1;
     if(have_image && pw_map_release(&mapped,&vm)!=PW_OK)result=1;
     if(have_thread && vm.release(NULL,&thread)!=PW_OK)result=1;
     if(have_stack && vm.release(NULL,&stack)!=PW_OK)result=1;

@@ -176,11 +176,12 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if (source[cursor+1]!=0xa1 && source[cursor+1]!=0xa3)
                 return PW_ERR_UNSUPPORTED;
             length=6;
-        } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 || op==0x29 || op==0x2b || op==0x31 || op==0x33) {
+        } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 || op==0x29 || op==0x2b || op==0x31 || op==0x33 || op==0xff) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if (result!=PW_OK) return result;
             if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
             if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
+            if (op==0xff && operand.reg!=2 && operand.reg!=4) return PW_ERR_UNSUPPORTED;
             if ((op==0x29 || op==0x2b || op==0x31 || op==0x33) && operand.mod!=3) return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
@@ -193,7 +194,17 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if (op==0x29 || op==0x2b || op==0x31 || op==0x33) {
+        if (op==0xff) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {
+                effective_address(&e,&operand);memory_address(&e,0);
+                byte(&e,0x8b);byte(&e,0x00);
+            }
+            byte(&e,0x89);byte(&e,0xc1); /* preserve target across guest push */
+            if(operand.reg==2)push_imm(&e,next);
+            byte(&e,0x89);byte(&e,0x4f);byte(&e,offsetof(PwX86State,eip));
+            terminal=1;
+        } else if (op==0x29 || op==0x2b || op==0x31 || op==0x33) {
             unsigned reverse=op==0x29 || op==0x31;
             unsigned logical=op==0x31 || op==0x33;
             unsigned dest=reverse?operand.rm:operand.reg;
@@ -269,7 +280,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             terminal = 1;
         }
-        if (op != 0xc3) store(&e,offsetof(PwX86State,eip),next);
+        if (op != 0xc3 && op!=0xff) store(&e,offsetof(PwX86State,eip),next);
         cursor += length; ++count;
         if (terminal) break;
     }

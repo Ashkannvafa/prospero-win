@@ -1,0 +1,44 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+#include "../src/pw_win32.h"
+#include "../src/pw_vm_posix.h"
+#include <assert.h>
+#include <string.h>
+int main(void)
+{
+    PwVmBackend vm;PwVmRegion data;
+    assert(pw_vm_posix_backend(&vm)==PW_OK);
+    assert(vm.reserve_at(NULL,0x03000000,8192,4096,&data)==PW_OK);
+    assert(vm.commit(NULL,&data,0,8192,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+    PwWin32 runtime={0};
+    assert(pw_win32_init(&runtime,0x01000000,0x03000000,"\"C:\\game\\sample.exe\"")==PW_OK);
+    PeImportSymbol symbol={0};PwImportTarget target;
+    strcpy(symbol.name,"_acmdln");
+    assert(pw_win32_resolve(&runtime,"MSVCRT.DLL",&symbol,&target)==PW_OK && target.kind==PW_IMPORT_DATA);
+    uint32_t pointer;memcpy(&pointer,(void *)(uintptr_t)target.address,4);
+    assert(!strcmp((char *)(uintptr_t)pointer,"\"C:\\game\\sample.exe\""));
+    strcpy(symbol.name,"_adjust_fdiv");
+    assert(pw_win32_resolve(&runtime,"msvcrt.dll",&symbol,&target)==PW_OK && target.kind==PW_IMPORT_DATA);
+    uint32_t adjust;memcpy(&adjust,(void *)(uintptr_t)target.address,4);assert(adjust==0);
+    strcpy(symbol.name,"GetModuleHandleA");
+    assert(pw_win32_resolve(&runtime,"KERNEL32.dll",&symbol,&target)==PW_OK && target.kind==PW_IMPORT_FUNCTION);
+    PwX86State state={0};state.stack_low=0x03001000;state.stack_high=0x03002000;
+    state.gpr[4]=state.stack_high-8;state.eip=(uint32_t)target.address;
+    uint32_t words[]={0x01001234,0};memcpy((void *)(uintptr_t)state.gpr[4],words,8);
+    assert(pw_win32_dispatch(&runtime,&state)==PW_OK);
+    assert(state.gpr[0]==0x01000000 && state.eip==words[0] && state.gpr[4]==state.stack_high);
+    assert(runtime.calls==1);
+    state.gpr[4]-=8;state.eip=(uint32_t)target.address;words[1]=0x03000010;
+    memcpy((void *)(uintptr_t)state.gpr[4],words,8);PwX86State before=state;
+    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_UNSUPPORTED);
+    assert(memcmp(&state,&before,sizeof(state))==0 && runtime.calls==1);
+    strcpy(symbol.name,"GetLastError");
+    assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_OK);
+    state.eip=(uint32_t)target.address;before=state;
+    assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_UNSUPPORTED);
+    assert(!strcmp(runtime.last_name,"GetLastError") && memcmp(&state,&before,sizeof(state))==0);
+    strcpy(symbol.name,"NotInCatalog");
+    assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_NOT_FOUND);
+    symbol.by_ordinal=1;symbol.ordinal=42;
+    assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
+    assert(vm.release(NULL,&data)==PW_OK);return 0;
+}

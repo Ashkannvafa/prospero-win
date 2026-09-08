@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """Synthetic PE execution/stop tests; no original game is required."""
 import subprocess
+import json
+import struct
 import sys
 import tempfile
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / "tools"))
-from make_test_pe import Spec, Section, build_pe, SCN_CNT_CODE, SCN_MEM_READ, SCN_MEM_EXECUTE
+from make_test_pe import Spec, Section, Import, build_pe, SCN_CNT_CODE, SCN_MEM_READ, SCN_MEM_EXECUTE
 
 with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
     path = Path(directory) / "synthetic.exe"
@@ -28,4 +30,24 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
                                 capture_output=True, text=True, timeout=5)
         assert result.returncode == 2, result.stderr
         assert f"steps={steps} stop={reason} " in result.stdout, result.stdout
+    # Full synthetic PE -> IAT binding -> translated call -> Win32 return.
+    for api, reason in [("GetModuleHandleA", "unsupported"), ("GetLastError", "unimplemented-api")]:
+        code=bytearray.fromhex("6a00 ff1500000000 cc")
+        spec=Spec(name="synthetic.exe",pe32plus=False,image_base=0x01000000,
+                  relocate_data_pointer=False,
+                  sections=[Section(".text",SCN_CNT_CODE|SCN_MEM_READ|SCN_MEM_EXECUTE,bytes(code))],
+                  imports=[Import("KERNEL32.dll",(api,))])
+        path.write_bytes(build_pe(spec))
+        inspected=subprocess.run([str(root/"build/host/inspect_pe"),str(path),"--imports-json"],
+                                 check=True,capture_output=True,text=True)
+        slot=json.loads(inspected.stdout)["modules"][0]["imports"][0]["iat_rva"]
+        struct.pack_into("<I",code,4,0x01000000+slot)
+        spec.sections[0].data=bytes(code);path.write_bytes(build_pe(spec))
+        result=subprocess.run([str(root/"build/host/trace_x86_entry"),str(path)],
+                              capture_output=True,text=True,timeout=5)
+        assert result.returncode==2, result.stderr
+        assert f"steps=2 stop={reason} " in result.stdout,result.stdout
+        assert "total=1 functions=1 data=0" in result.stdout
+        if api=="GetModuleHandleA":
+            assert "name=GetModuleHandleA result=0x01000000" in result.stdout
 print("host entry tracer passed: synthetic execution and bounded classified stops")

@@ -27,7 +27,7 @@ evidence must account for subsequent deliberate IAT modifications.
 Synthetic tests cover named/ordinal imports, function/data classification,
 late resolver failure without partial writes, invalid targets, overlapping
 IATs and refusal after final protections. The service compiles for PS5 but
-has not yet been integrated into the original-game trace or console runner.
+is now integrated into the host original-game trace, but not the console runner.
 
 ## Guest calls into an adapter
 
@@ -75,7 +75,24 @@ guest FP-state services, not a claim of generic cdecl compatibility.
 - Host tests pass under ASan/UBSan. The shared C service compiles with the
   PS5 target toolchain. No hardware callback evidence is claimed yet.
 
-The existing Pinball host trace still stops at its first indirect import
-call. Connecting a reviewed symbol catalog, separate data/function IAT
-bindings and these services is the next integration step; no API has been
-silently replaced by a success stub.
+## Initial runtime integration
+
+`pw_win32.c` uses the generated factual code/data catalog for Pinball's 207
+imports. Unknown names/ordinals are refused. All 205 function imports bind
+to unique dispatcher tokens, not host addresses; only
+`GetModuleHandleA(NULL)` is implemented initially. Named-module arguments
+and other API calls stop explicitly without guest-state mutation or a false
+success. A bound function is not necessarily an implemented function.
+
+The two CRT data imports bind to separate guest words: `_acmdln` points to
+the guest command-line string and `_adjust_fdiv` starts at zero, matching
+the reviewed Wine CRT initialization. The owner supplies a live mapped CRT
+region; this is not yet the full CRT startup/environment implementation.
+The tracer uses a virtual `C:\\game\\<input basename>` command line; no
+filesystem adapter is implied by that namespace.
+
+Translated indirect calls push a guest return PC and yield to the dispatcher.
+The original Pinball trace binds 207 imports (205 function/2 data), invokes
+GetModuleHandleA(NULL), returns its actual mapped base and stops at the next
+unsupported instruction. Synthetic PE tests cover that full path and a
+named stop for a pending API. No PS5 execution of this integration is claimed.

@@ -14,8 +14,9 @@ DRM, anti-cheat and kernel drivers are out of scope.
   protection, dependency classification, verification and release.
 - **Measured:** the tested LDT route is refused; low allocations and
   mprotect RW-to-RX/RWX work in a title.
-- **Host progress:** 25 translated instructions from the original Pinball
-  startup; 207 static imports inventoried and cross-referenced against Wine.
+- **Host progress:** 26 translated instructions and GetModuleHandleA(NULL)
+  from original Pinball startup; 207 imports bound as 205 functions/2 data.
+  Other function handlers remain pending, not implicitly successful.
 - **Next:** reviewed Win32 subsystem reuse, guest ABI services and broader
   execution-engine coverage. Wine references are not implemented APIs.
 - **Not yet implemented:** a complete execution engine, Win32 API surface

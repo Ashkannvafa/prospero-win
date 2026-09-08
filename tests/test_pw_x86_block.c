@@ -235,6 +235,17 @@ int main(int argc, char **argv)
     uint64_t callback_result=0;
     assert(pw_guest_callback_leave(&callback,32,&callback_result)==PW_OK);
     assert(callback_result==42 && memcmp(&caller,&state,sizeof(state))==0);
+    state.gpr[4]=state.stack_high;state.gpr[7]=0xe0000120;
+    const uint8_t indirect_call[]={0xff,0xd7};
+    assert(run(indirect_call,2,0x2000)==0);
+    assert(state.eip==0xe0000120 && state.gpr[4]==state.stack_high-4);
+    assert(*(uint32_t *)(uintptr_t)state.gpr[4]==0x2002);
+    state.gpr[0]=state.gpr[4];
+    const uint8_t indirect_jump[]={0xff,0x20};
+    assert(run(indirect_jump,2,0x2100)==0 && state.eip==0x2002);
+    assert(state.gpr[4]==state.stack_high-4);
+    state.gpr[4]=state.stack_low;
+    assert(run(indirect_call,2,0x2200)==-1 && state.eip==0x2200);
     uint8_t scratch[4096]; PwX86Block block;
     const uint8_t fs[]={0x64,0x90};
     assert(pw_x86_translate(fs,sizeof(fs),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);

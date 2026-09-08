@@ -9,7 +9,7 @@ Supported encodings: push imm8/imm32/r32, pop r32, mov r32/imm32,
 mov r32/r32 and r32/memory (89/8B ModRM/SIB), LEA,
 MOV immediate/r32 or memory (C7 /0), register SUB (29/2B), XOR (31/33),
 FS-prefixed A1/A3 moffs32 loads/stores
-through EAX, nop, direct call rel32,
+through EAX, nop, direct call rel32, indirect near call/jump (FF /2,/4),
 jmp rel8/rel32 and ret. Calls push a 32-bit guest return PC and yield the
 target EIP to the caller. Ret reads that PC and yields again. Guest ESP
 lives in the state structure, independently from native RSP. No guest stack
@@ -87,33 +87,38 @@ stop, not successful application startup; exit 1 is setup/cleanup failure.
 The tracer owns a synthetic stack and FS region and initializes only the
 exception-chain sentinel, not a complete Windows TEB. It fetches from
 executable PE sections through the existing mapper and registers headers
-and sections with their logical access permissions. Imports are not bound.
+and sections with their logical access permissions. A typed catalog binds
+function tokens and CRT data, with unsupported APIs stopped by identity.
 The current tracer requires mapping at the preferred base; it rejects an
 alternate base instead of executing with inconsistent guest addresses.
-It stops at 256 instructions, unsupported decoding or memory-bound failure.
+It stops at 256 dispatch/instruction events, unsupported decoding/API behavior
+or memory-bound failure. The printed steps count excludes API dispatch events.
 
 On 2026-09-08, input SHA-256
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`
 initially completed 22 translated instructions through the startup helper.
-With XOR and mapped-image reads, the same input now completes 25:
+With import binding and indirect-call dispatch, the same input now completes
+26 instructions and one implemented API call:
 
 ```
-kind=host-entry-trace steps=25 stop=unsupported eip=0x01020faa esp=0x030fff68 ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
+kind=host-import-bind total=207 functions=205 data=2
+kind=host-api dll=kernel32.dll name=GetModuleHandleA result=0x01000000
+kind=host-entry-trace steps=26 stop=unsupported eip=0x01020fac esp=0x030fff6c ebp=0x030ffff8 fs0=0x030fffe8 flags=0x00000246
 ```
 
-The next unsupported instruction is an indirect register call, after an
-IAT load. Its unbound value must not be invoked as a host function. This is host evidence
-only: no Win32 imports have run, no gameplay has begun, and this tracer has
+The next unsupported instruction is a 16-bit immediate compare against
+memory. This is host evidence only: one narrow Win32 API case has run,
+no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
 stop. Executable bytes remain private; no extracted routine is embedded here.
 
 The IAT slot at RVA 0x10f0 resolves by its preserved import lookup table to
 `KERNEL32!GetModuleHandleA`; the caller pushes a null argument. The bound
-address still belongs to the old Windows image, not this host. Next is
-explicit import-slot rebinding and a guest-call dispatcher, with stdcall
-stack handling and a real main-module handle response, not a fake blanket
-success stub.
+address in the original file belongs to the old Windows image, not this
+host. The mapper's writable copy is now rebound; the original file remains
+unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
+base and the shared stdcall return service. Other API cases remain pending.
 
 Next coverage: import binding and dispatch, more arithmetic and
 guest EFLAGS, TEB initialization and broader FS encodings, indirect calls into import adapters,
