@@ -12,6 +12,15 @@ target:
     movl $1, %ebx
     movl $4, %eax
     int $0x80
+    movl $0xfffffff0, %eax
+    movl $3, %ecx
+    leal 0x20(%eax,%ecx,8), %edx
+    pushl %edx
+    movl %esp, %ecx
+    movl $4, %edx
+    movl $1, %ebx
+    movl $4, %eax
+    int $0x80
     movl $0, %ebx
     movl $1, %eax
     int $0x80

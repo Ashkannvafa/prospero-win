@@ -24,6 +24,50 @@ static int run(const uint8_t *source, size_t bytes, uint32_t pc)
     assert(backend.protect(NULL,&code,0,code.bytes,PW_PROT_READ|PW_PROT_EXEC)==PW_OK);
     return invoke((BlockFn)code.exec_base,&state);
 }
+static void addressing_tests(void)
+{
+    /* Exercise every 32-bit SIB encoding in all memory displacement modes.
+     * Expected arithmetic is C uint32_t, independent from emitted code. */
+    for(unsigned mod=0;mod<3;mod++)for(unsigned rm=0;rm<8;rm++)
+        for(unsigned sib=0;sib<(rm==4?256u:1u);sib++) {
+            for(unsigned i=0;i<8;i++)state.gpr[i]=0xf0000100u+i*17;
+            uint32_t before[8];memcpy(before,state.gpr,sizeof(before));
+            uint8_t lea[7]={0x8d,(uint8_t)((mod<<6)|(3<<3)|rm)};
+            size_t n=2;
+            unsigned base=rm, index=4, scale=0;
+            if(rm==4) {lea[n++]=(uint8_t)sib;base=sib&7;index=(sib>>3)&7;scale=sib>>6;}
+            uint32_t value=(mod==0 && base==5)?0:before[base];
+            if(rm==4 && index!=4)value+=before[index]<<scale;
+            if(mod==1) {lea[n++]=0xf0;value-=16;}
+            else if(mod==2 || (mod==0 && base==5)) {
+                lea[n++]=3;lea[n++]=0;lea[n++]=0;lea[n++]=0x80;
+                value+=0x80000003u;
+            }
+            assert(run(lea,n,0x600)==0);
+            before[3]=value;
+            assert(memcmp(before,state.gpr,sizeof(before))==0);
+            assert(state.eip==0x600+n);
+            /* Every proper prefix must be rejected as incomplete. */
+            uint8_t out[512];PwX86Block block;
+            for(size_t len=1;len<n;len++)
+                assert(pw_x86_translate(lea,len,0,out,sizeof(out),&block)==PW_ERR_TRUNCATED);
+        }
+    state.gpr[4]=state.stack_high-64;
+    state.gpr[0]=0x12345678;
+    const uint8_t save[]={0x89,0x44,0x24,0xfc}; /* [esp-4] = eax */
+    const uint8_t load[]={0x8b,0x6c,0x24,0xfc}; /* ebp = [esp-4] */
+    assert(run(save,sizeof(save),0x700)==0);
+    assert(run(load,sizeof(load),0x704)==0);
+    assert(state.gpr[5]==0x12345678);
+    /* Absolute disp32 is guest absolute, not host RIP-relative. */
+    const uint8_t absolute[]={0x8b,0x15,0xbc,0x0f,0x00,0x03};
+    assert(run(absolute,sizeof(absolute),0x710)==0);
+    assert(state.gpr[2]==0x12345678);
+    state.gpr[4]=state.stack_low;
+    assert(run(save,sizeof(save),0x720)==-1 && state.eip==0x720);
+    state.gpr[5]=0xabcddcba;
+    assert(run(load,sizeof(load),0x730)==-1 && state.gpr[5]==0xabcddcba);
+}
 int main(int argc, char **argv)
 {
     assert(pw_vm_posix_backend(&backend)==PW_OK);
@@ -41,6 +85,12 @@ int main(int argc, char **argv)
     assert(top[0]==0x0100000c && top[1]==0x11223344 && top[2]==0xffffffffu);
     if (argc==2 && strcmp(argv[1],"--emit")==0)
         assert(fwrite(top,4,3,stdout)==3);
+    const uint8_t address_reference[]={0xb8,0xf0,0xff,0xff,0xff,
+        0xb9,3,0,0,0,0x8d,0x54,0xc8,0x20};
+    assert(run(address_reference,sizeof(address_reference),0x800)==0);
+    assert(state.gpr[2]==0x28);
+    if (argc==2 && strcmp(argv[1],"--emit")==0)
+        assert(fwrite(&state.gpr[2],4,1,stdout)==1);
     const uint8_t ret[]={0xc3};
     assert(run(ret,1,0x02000000)==0);
     assert(state.eip==0x0100000c && state.gpr[4]==state.stack_high-8);
@@ -115,6 +165,7 @@ int main(int argc, char **argv)
     const uint8_t overflow[]={0x64,0xa1,4,0,0,0};
     assert(run(overflow,sizeof(overflow),0x560)==-1);
     assert(backend.release(NULL,&thread)==PW_OK);
+    addressing_tests();
     uint8_t scratch[4096]; PwX86Block block;
     const uint8_t fs[]={0x64,0x90};
     assert(pw_x86_translate(fs,sizeof(fs),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);

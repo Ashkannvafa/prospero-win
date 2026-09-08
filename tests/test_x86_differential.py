@@ -16,5 +16,5 @@ with tempfile.TemporaryDirectory(prefix="pw-x86-reference-") as directory:
                             capture_output=True, timeout=5).stdout
     translated = subprocess.run([str(root / "build/host/test_pw_x86_block"), "--emit"],
                                 check=True, capture_output=True, timeout=5).stdout
-    assert len(native) == 12 and translated == native, (native.hex(), translated.hex())
-print("x86 differential passed: sign extension, 4-byte pushes and call return address")
+    assert len(native) == 16 and translated == native, (native.hex(), translated.hex())
+print("x86 differential passed: stack/call semantics and 32-bit SIB address wrap")

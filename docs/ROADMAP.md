@@ -43,6 +43,9 @@ structured ps5log/1 evidence and an independently checked result.
   differential sequence pass; see X86_EXECUTION.md for its limited coverage.
   Register MOV and bounded guest FS moffs32 primitives pass host tests;
   Windows TEB initialization and exception dispatch are not implemented yet.
+  ModRM/SIB LEA and stack-memory MOV now pass host tests; wrapping SIB
+  arithmetic also matches native i386 execution. General guest data/heap
+  accesses remain unsupported by this initial translator.
 - [ ] **Memory feasibility.** Test scattered low allocations, reserve versus
   commit/decommit and realistic working sets. A 256 MiB low mapping does not
   prove a 2 GiB guest address space or sufficient resident memory.

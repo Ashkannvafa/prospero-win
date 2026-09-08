@@ -18,7 +18,8 @@ typedef struct PwX86Block {
 } PwX86Block;
 
 /* Initial bounded DBT subset: push immediate/register, pop register,
- * mov register/immediate or register/register, FS moffs32/EAX, nop,
+ * mov register/immediate, register/register or stack memory (ModRM/SIB),
+ * LEA, FS moffs32/EAX, nop,
  * direct call/jump and ret. No copied 32-bit stack instructions. A successful
  * block is a SysV int(PwX86State*) function returning 0, or -1 on memory bounds.
  * Direct transfers update guest EIP and return to the dispatcher.
