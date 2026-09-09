@@ -20,6 +20,8 @@ static int invoke(void *entry,PwX86State *state)
 { return ((int (*)(PwX86State *))entry)(state); }
 static PwImportBindWorkspace binding_work;
 static PwHeapBlock heap_blocks[4096];
+static PwRegistryKey registry_keys[32];
+static PwRegistryValue registry_values[128];
 static int host_string(void *opaque,uint32_t module,uint32_t id,const uint8_t **text,size_t *units)
 {
     const PeImage *im=opaque;
@@ -65,7 +67,7 @@ int main(int argc,char **argv)
        image.image_base+image.size_of_image>UINT32_MAX)goto done;
     PwVmBackend vm;
     PwVmRegion code={0},stack={0},thread={0},crt={0},heap_region={0};
-    PwGuestHeap heap;
+    PwGuestHeap heap;PwRegistry registry;
     PwMappedImage mapped={0};PeLayout layout;
     int have_code=0,have_stack=0,have_thread=0,have_image=0,have_crt=0,have_heap=0;
     if(pw_vm_posix_backend(&vm)!=PW_OK)goto done;
@@ -101,7 +103,8 @@ int main(int argc,char **argv)
     int command_bytes=snprintf(commandline,sizeof(commandline),"\"C:\\game\\%s\"",base);
     if(command_bytes<0 || (size_t)command_bytes>=sizeof(commandline))goto cleanup;
     if(pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline)!=PW_OK)goto cleanup;
-    runtime.heap=&heap;
+    if(pw_registry_init(&registry,registry_keys,32,registry_values,128)!=PW_OK)goto cleanup;
+    runtime.heap=&heap;runtime.registry=&registry;
     runtime.services=(PwWin32Services){.opaque=&image,.clock_ns=host_clock,.process_id=1,.thread_id=2,
         .string_resource=host_string,.ansi_codepage=1252};
     PwImportBindReport binding;

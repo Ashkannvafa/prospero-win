@@ -14,13 +14,20 @@ DRM, anti-cheat and kernel drivers are out of scope.
   protection, dependency classification, verification and release.
 - **Measured:** the tested LDT route is refused; low allocations and
   mprotect RW-to-RX/RWX work in a title.
-- **Host progress:** 495 translated instructions (4096-event limit), 24 Win32/CRT calls and
+- **Host progress:** 723 translated instructions, 38 completed Win32/CRT calls and
   one original initializer callback completed
   from original Pinball startup; 207 imports bound as 205 functions/2 data.
-  Heap, startup and initial string handlers have unit coverage; registry and
-  most other handlers remain pending.
-- **Next:** reviewed Win32 subsystem reuse, guest ABI services and broader
-  execution-engine coverage. Wine references are not implemented APIs.
+  Heap, startup, initial strings and the seven-function registry package have
+  unit coverage. The next classified stop is `GetModuleFileNameA`.
+- **Measured execution scope:** 22,816/25,538 reachable static instructions
+  are accepted. The 2,300 x87 occurrences reduce to 54 unique semantic forms
+  (36 in the startup graph), not 2,300 separate implementation tasks.
+- **Verified oracle:** the target SHA-1, public PDB identity and ten public
+  symbol addresses match the pinned MIT source reconstruction. The generated
+  manifest groups source-confirmed startup, graphics, input and audio APIs.
+- **Next:** integrate the new block-cache lifecycle, implement the measured
+  x87 forms and continue source-ranked Win32 packages. Wine remains a contract
+  and test reference, not a claim of implemented compatibility.
 - **Not yet implemented:** a complete execution engine, Win32 API surface
   or a running Windows game.
 
@@ -52,6 +59,8 @@ make native PS5LOG_DEV_CONF=/private/path/dev.conf
 [Roadmap](docs/ROADMAP.md) · [Pinball target](docs/PINBALL_TARGET.md) ·
 [Architecture](docs/ARCHITECTURE.md) ·
 [Execution model](docs/EXECUTION_MODEL.md) ·
+[Source oracle](docs/PINBALL_SOURCE_ORACLE.json) ·
+[x86 coverage](docs/PINBALL_X86_COVERAGE.json) ·
 [Import plan](docs/IMPORT_PLAN.md) · [Wine reuse audit](docs/WINE_REUSE_AUDIT.md) ·
 [Development workflow](docs/DEVELOPMENT.md) ·
 [Telemetry](docs/TELEMETRY.md)

@@ -10,8 +10,18 @@ PE32/i386, 281088 file bytes, 307200 image bytes, required base 0x01000000,
 no base relocations. Static imports: 207 symbols across eight DLLs.
 GDI32 supplies BitBlt/StretchDIBits and palettes; WINMM supplies waveOut,
 MMIO and MCI. No static DirectDraw/Direct3D imports were found. LoadLibraryA
-and GetProcAddress require further dynamic dependency analysis. Exact
-version metadata and runtime working set remain unverified.
+and GetProcAddress require further dynamic dependency analysis. Runtime
+working set remains unverified.
+
+The file's SHA-1 is
+`2a5b525e0f631bb6107639e2a69df15986fb0d05`, exactly the Windows XP target
+identified by the public SpaceCadetPinball reconstruction. The reproducible
+`pw-source-oracle/1` report pins the original-Win32 semantic revision
+`6756c54d3b17bf41cab82a822125140aed2e3120`, maintained revision
+`cb9b7b886244a27773f66b0b19fdc2998392565e`, MIT license and public PDB
+GUID/age. Its segment-1 offsets plus the PE `.text` RVA reproduce ten public
+symbol addresses, including Ghidra's independently identified entry,
+`WinMain` and window procedure. See `PINBALL_SOURCE_ORACLE.json`.
 
 An independent host objdump inspection confirms stripped relocations,
 no TLS directory and no delay-import directory. It does contain a bound
@@ -101,10 +111,18 @@ sessions and structured lifecycle evidence. Video alone does not prove
 artifact identity, renderer completion or cleanup.
 
 [SpaceCadetPinball](https://github.com/k4zmu2a/SpaceCadetPinball) provides
-MIT-licensed reconstructed source and a modern SDL implementation useful
-for understanding behavior. Its API choices do not establish the original
-binary's imports. A native port is separate from Windows binary compatibility.
-Original resources are not included upstream or here.
+MIT-licensed reconstructed source, the public PDB dump and a modern SDL
+implementation. Because the target identity and public symbol addresses match,
+the pinned pre-SDL revision is a verified semantic oracle for package ordering;
+Ghidra and the executable remain authoritative for instructions and ABI.
+A native port is separate from Windows binary compatibility. Original
+resources are not included upstream or here. Reproduce the privacy-safe report:
+
+```sh
+python3 tools/build_source_oracle.py \
+  --config references/spacecadet_pinball.json \
+  --reference-dir /path/to/SpaceCadetPinball --image /private/PINBALL.EXE
+```
 
 ## Graphics direction
 

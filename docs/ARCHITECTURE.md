@@ -18,6 +18,10 @@ src/               the portable loader core
   pw_map        reserve, copy, zero, relocate, verify, protect
   pw_loader     recursive dependency graph and load order
   pw_gate       the structured report one load produces
+  pw_registry   fixed-capacity guest keys, values and opaque handles
+  pw_x86_block  bounded x86-to-x86-64 translation
+  pw_x86_cache  mapping-generation-scoped translated-block lifecycle
+  pw_guest_fp   isolated x87/SSE control and raw 80-bit stack state
   pw_vm_posix   anonymous-mapping backend (host and console)
   pw_file_posix directory backend (host tools and tests only)
 

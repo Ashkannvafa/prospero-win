@@ -83,11 +83,13 @@ structured ps5log/1 evidence and an independently checked result.
   code and original resources private; publish only original contracts/tests.
   Runtime classified stops validate integration, not the primary discovery plan.
   A callback-inclusive Ghidra survey now measures 22,816 of 25,538 exact static
-  instruction forms accepted (89.34%) across 393 reachable functions. x87
-  accounts for 2,300 of the 2,722 rejected forms; 422 rejected non-x87 forms
+  instructions accepted (89.34%) across 393 reachable functions. x87 accounts
+  for 2,300 occurrences but only 54 unique semantic forms (36 in startup);
+  422 rejected non-x87 instructions
   and indirect/callback graph incompleteness remain. See STARTUP_ANALYSIS.md.
-  After startup coverage, move from the diagnostic single-instruction runner
-  to cached blocks and measured dispatch optimization. No fast-JIT performance
+  A generation-scoped cache metadata/lifecycle core is tested; next integrate
+  it with multi-instruction translation and measured dispatch optimization.
+  No fast-JIT performance
   claim is currently validated. The full completion target remains playable
   original Pinball on PS5 with graphics, input, audio, persistence and cleanup.
   Keep guest pointers and
@@ -95,10 +97,11 @@ structured ps5log/1 evidence and an independently checked result.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
   See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing now executes 495 instructions (4096-event limit), GetModuleHandleA(NULL),
+  Bounded host tracing now executes 723 instructions, GetModuleHandleA(NULL),
   __set_app_type, both CRT mode-pointer getters, _controlfp, _initterm and __getmainargs after binding all 207 imports.
   UTC/tick/counter/ID, GetStartupInfoA, LoadStringA, lstrlenA, lstrcpyA and
-  lstrcatA also complete; the next stop is RegCreateKeyExA. The guest heap
+  lstrcatA and all seven imported registry adapters are complete; the next stop
+  is GetModuleFileNameA. The guest heap
   family and all four CRT adapters pass
   host ownership/fragmentation/ABI tests; original malloc now succeeds.
   Guest errno is modeled, with pointer export and registered new-handler
@@ -109,8 +112,8 @@ structured ps5log/1 evidence and an independently checked result.
   RET imm16 also has an actual translated stdcall callback regression.
   Six time/counter and identity handlers have injected-service tests; PS5 clock backends remain pending.
   Initializer callbacks have complete translated synthetic tests and one complete
-  original-game callback in host. Twenty-four implemented API cases have unit
-  tests, eighteen have original-game host evidence. FP control state exists;
+  original-game callback in host. Registry storage/ABI and error branches have
+  synthetic tests. FP control plus an isolated raw 80-bit x87 stack exists;
   x87/SSE arithmetic and exception execution remain pending.
   This is not application entry or PS5 execution evidence; most APIs are pending.
 - [ ] Implement the observed Win32 surface: process/error state, heap,

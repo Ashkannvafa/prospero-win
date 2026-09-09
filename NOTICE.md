@@ -19,6 +19,14 @@ The PE/COFF structures the reader parses are described by Microsoft's
 published PE format specification. Only field offsets and semantics are
 used; no Microsoft code, header or binary is included.
 
+`references/spacecadet_pinball.json` pins the MIT-licensed public
+[SpaceCadetPinball](https://github.com/k4zmu2a/SpaceCadetPinball) history and
+PDB dump as an external semantic reference. The checked source-oracle manifest
+contains commit/file identities, public symbol addresses and aggregate API
+name occurrences only. No source file, PDB, game resource or executable is
+vendored. Copyright in that external project remains with Andrey Muzychenko
+and its contributors.
+
 ## Reused from the laboratory
 
 - `native/ps5log/` is a verbatim copy of the `ps5log/1` client from the

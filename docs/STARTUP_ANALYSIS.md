@@ -40,16 +40,17 @@ window procedure. It passed every exact instruction byte sequence to
 operand forms, rather than assuming that every instruction sharing a mnemonic
 is supported.
 
-| Root | Reachable functions | Unique static instructions | Accepted forms |
-| --- | ---: | ---: | ---: |
-| Entry | 151 | 8,082 | 7,547 (93.38%) |
-| Application startup | 145 | 7,905 | 7,371 (93.24%) |
-| Main window procedure | 350 | 23,338 | 20,641 (88.44%) |
-| Union of all three | 393 | 25,538 | 22,816 (89.34%) |
+| Root | Reachable functions | Static instructions | Accepted | Unique x87 forms |
+| --- | ---: | ---: | ---: | ---: |
+| Entry | 151 | 8,082 | 7,547 (93.38%) | 36 |
+| Application startup | 145 | 7,905 | 7,371 (93.24%) | 36 |
+| Main window procedure | 350 | 23,338 | 20,641 (88.44%) | 54 |
+| Union of all three | 393 | 25,538 | 22,816 (89.34%) | 54 |
 
 All 393 function bodies were read successfully. Of 2,722 rejected static
-instructions, 2,300 are x87 encodings (84.50%); none of those x87 forms is
-implemented yet. The remaining 422 include unsupported MOV forms, string
+instructions, 2,300 are x87 occurrences (84.50%) comprising only 54 unique
+semantic encoding forms; none executes yet. The startup graph needs 36 forms.
+The remaining 422 include unsupported MOV forms, string
 operations shown by Ghidra as MOVSD, IMUL, CDQ and less frequent integer forms.
 The largest x87 groups are FSTP (781), FLD (583), FLDZ (279), FNSTSW (129) and
 FMUL (125). If every observed x87 form alone were implemented, the arithmetic
@@ -77,6 +78,23 @@ The survey never writes raw instructions or assembly. Its output contains only
 aggregate counts, and the classifier calls the production translator so future
 instruction support changes are reflected without maintaining a duplicate
 opcode allowlist.
+
+The checked `PINBALL_X86_COVERAGE.json` is the sanitized aggregate result; it
+contains no bytes or assembly. Form identifiers retain mnemonic, opcode class,
+ModR/M group and register operand only, enough to distinguish semantics without
+publishing proprietary instructions.
+
+## Source/PDB/binary crosswalk
+
+`tools/build_source_oracle.py` independently verifies the private image hashes,
+the two pinned public source commits, MIT license, public PDB GUID/age and ten
+symbol addresses. The PDB's segment-1 offsets map through `.text` RVA 0x1000:
+`_WinMainCRTStartup` becomes 0x01020f95, `_WinMain@16` 0x0100833a and
+`_message_handler@16` 0x01007a3e, matching the existing Ghidra roots exactly.
+The resulting `PINBALL_SOURCE_ORACLE.json` records only public provenance,
+addresses and aggregate API references. The pre-SDL revision is used for Win32
+flow; current source is useful for maintained game logic. Neither replaces
+compiled ABI/disassembly checks.
 
 ## Startup structure
 
@@ -137,8 +155,8 @@ x87 dependency, not the complete floating-point requirements of gameplay.
    Windows keyboard messages and guest audio callbacks remain guest contracts.
 6. **Execution coverage and measured DBT.** Survey opcode families across the
    callback-inclusive graph, including x87 and unresolved indirect targets.
-   Expand and test groups, then add code-cache/block lifecycle and measure
-   dispatch cost. The current host single-instruction trace is correctness
+   Expand and test groups, integrate the new generation-scoped code-cache
+   lifecycle and measure dispatch cost. The current host single-instruction trace is correctness
    evidence, not a performance benchmark or a production execution loop.
 
 ## Wine comparison for the first package
@@ -161,10 +179,9 @@ format=json_edges and limit=0, get_function_call_graph, disassemble_function
 and decompile_function. Raw responses containing proprietary code stay private.
 Do not infer function-level execution order from unordered graph edges.
 
-Next: turn the six packages into an executable coverage checklist, continue
-with the CRT/string group after the default-handler heap integration; extend the
-callback-inclusive instruction survey and verify key structures against
-assembly. Host evidence now reaches 495 instructions, 24 completed API calls
-and a classified stop at RegCreateKeyExA after two real guest allocations and
-the initial string construction. No window, gameplay or translated PS5 execution
-is established by this static analysis.
+The source-confirmed registry package now implements all seven imported Advapi
+entry points over fixed owner-supplied storage. Host evidence reaches 723
+instructions and 38 completed API calls, including create/query-default,
+create/set and balanced closes; the classified stop is `GetModuleFileNameA`.
+This is original-binary host integration evidence, not a window, gameplay or
+translated PS5 execution claim.

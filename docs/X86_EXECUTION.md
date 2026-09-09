@@ -144,9 +144,11 @@ kind=host-entry-trace steps=495 stop=unimplemented-api eip=0xe0000010 esp=0x030f
 kind=host-heap-summary blocks=3 live=2 requested=2041 arena=8388608 valid=1
 ```
 
-The next stop is the RegCreateKeyExA dispatcher token. Before it, two malloc
-calls allocate guest memory, two lstrcpyA and two lstrcatA calls construct
-startup strings, and LoadStringA copies two private PE string resources. The CRT reads
+That historical trace stopped at `RegCreateKeyExA`. The current registry
+package completes create/query/close and create/set/close using real guest
+arguments. The current trace reaches 723 translated instructions and stops at
+`GetModuleFileNameA`; two live allocations request 541 bytes at that point.
+Before it, malloc, string and resource calls construct the startup state. The CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
 guest ABI bridge. Clock values (and derived flags) vary across live runs;
@@ -209,8 +211,10 @@ host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
 base and the shared stdcall return service. Other API cases remain pending.
 
-Next coverage: import binding and dispatch, more arithmetic and
+Next coverage: module paths, import binding and dispatch, more arithmetic and
 guest EFLAGS, TEB initialization and broader FS encodings, indirect calls into import adapters,
-x87/SSE state and fault semantics. There is no block cache, invalidation,
-full memory model or scheduling yet. Before a broader decoder is adopted,
+x87/SSE execution and fault semantics. A tested generation-scoped cache
+metadata/lifecycle core now rejects duplicate publication and arena/capacity
+overflow, but the diagnostic tracer does not consume it yet. There is no
+eviction policy, full memory model or scheduling. Before a broader decoder is adopted,
 retain these semantic tests and extend differential coverage.

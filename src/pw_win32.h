@@ -5,6 +5,7 @@
 #include "pw_guest_call.h"
 #include "pw_guest_args.h"
 #include "pw_guest_heap.h"
+#include "pw_registry.h"
 enum { PW_WIN32_TOKEN_BASE=0xe0000000u, PW_WIN32_CALLBACK_BASE=0xe1000000u,
        PW_WIN32_INIT_DEPTH=8, PW_WIN32_INIT_ENTRIES=1024 };
 typedef struct PwWin32Init {
@@ -30,6 +31,7 @@ typedef struct PwWin32 {
     PwGuestArgs args;
     uint32_t new_mode;
     PwGuestHeap *heap; /* owner-supplied arena, registered RW in guest memory */
+    PwRegistry *registry; /* owner-supplied fixed-capacity Win32 registry */
     uint32_t crt_errno; /* logical per-guest-thread errno; pointer export pending */
     uint32_t last_error; /* Win32 per-guest-thread error, distinct from CRT errno */
     uint16_t startup_show; /* explicit GUI launch profile: SW_SHOWNORMAL by default */
@@ -52,7 +54,8 @@ int pw_win32_resolve(void *,const char *,const PeImportSymbol *,PwImportTarget *
  * No pending API reports success. Dispatcher must intercept tokens before
  * code fetch. Initial surface: GetModuleHandleA(NULL), __set_app_type,
  * __p__fmode, __p__commode and _controlfp (requires initialized state.fp).
- * __getmainargs supports non-wildcard argv/env and new_mode 0/1.
+ * __getmainargs supports non-wildcard argv/env and new_mode 0/1. The imported
+ * Advapi registry group dispatches through owner-supplied PwRegistry storage.
  * _initterm can schedule guest callbacks: PW_OK with callback_pending=1 is
  * a yield, not an API return; fetch guest EIP next. Intercept callback tokens
  * here before fetching code. CRT pointer results refer to live guest words. */

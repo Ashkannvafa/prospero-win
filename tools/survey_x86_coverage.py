@@ -99,6 +99,21 @@ def parse_root(value: str) -> Root:
     return Root(address.lower(), label if separator else address.lower())
 
 
+def x87_form(raw: bytes, mnemonic: str) -> str | None:
+    """Return a privacy-safe semantic encoding class, not instruction bytes."""
+    index = 0
+    while index < len(raw) and raw[index] in {
+            0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67,
+            0x9B, 0xF0, 0xF2, 0xF3}:
+        index += 1
+    if index + 1 >= len(raw) or not 0xD8 <= raw[index] <= 0xDF:
+        return None
+    opcode, modrm = raw[index], raw[index + 1]
+    mode, group, operand = modrm >> 6, (modrm >> 3) & 7, modrm & 7
+    shape = f"{mnemonic.upper()}:op{opcode - 0xD8}/{'reg' if mode == 3 else 'mem'}/g{group}"
+    return shape + (f"/r{operand}" if mode == 3 else "")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", default="http://127.0.0.1:8089")
@@ -146,6 +161,7 @@ def main() -> int:
     supported_counts: collections.Counter[str] = collections.Counter()
     unsupported_counts: collections.Counter[str] = collections.Counter()
     x87_total = x87_supported = 0
+    x87_forms: collections.Counter[str] = collections.Counter()
     indirect_calls = indirect_jumps = 0
     status_by_address: dict[str, int] = {}
     for item, status in zip(instructions, statuses):
@@ -153,11 +169,11 @@ def main() -> int:
         mnemonic = str(item["mnemonic"]).upper()
         all_counts[mnemonic] += 1
         raw = bytes.fromhex(str(item["bytes"]))
-        is_x87 = bool(raw) and (0xD8 <= raw[0] <= 0xDF or
-                               (raw[0] == 0x9B and len(raw) > 1 and
-                                0xD8 <= raw[1] <= 0xDF))
-        if is_x87:
+        form = x87_form(raw, mnemonic)
+        is_x87 = form is not None
+        if form:
             x87_total += 1
+            x87_forms[form] += 1
         prefix = 0
         while prefix < len(raw) and raw[prefix] in {
                 0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67,
@@ -180,14 +196,20 @@ def main() -> int:
         addresses = set().union(*(function_addresses.get(node, set()) for node in nodes))
         root_supported = sum(status_by_address.get(address) == 0
                              for address in addresses)
+        root_x87 = [x87_form(bytes.fromhex(str(by_address[address]["bytes"])),
+                             str(by_address[address]["mnemonic"]))
+                    for address in addresses if address in by_address]
         per_root[label] = {
             "reachable_functions": len(nodes),
             "unique_static_instructions": len(addresses),
             "exact_forms_supported": root_supported,
             "exact_form_coverage_percent": round(
                 100.0 * root_supported / len(addresses), 2) if addresses else 0.0,
+            "x87_occurrences": sum(form is not None for form in root_x87),
+            "x87_unique_forms": len({form for form in root_x87 if form}),
         }
     report = {
+        "schema": "pw-x86-coverage/1",
         "program": args.program,
         "roots": per_root,
         "reachable_function_union": len(functions),
@@ -196,7 +218,12 @@ def main() -> int:
         "exact_forms_supported": supported,
         "exact_forms_unsupported": total - supported,
         "exact_form_coverage_percent": round(100.0 * supported / total, 2) if total else 0.0,
-        "x87": {"total": x87_total, "supported": x87_supported},
+        "x87": {
+            "occurrences": x87_total,
+            "supported_occurrences": x87_supported,
+            "unique_forms": len(x87_forms),
+            "top_forms": x87_forms.most_common(30),
+        },
         "unsupported_non_x87": total - supported - (x87_total - x87_supported),
         "indirect_control_transfers": {
             "calls": indirect_calls, "jumps": indirect_jumps,

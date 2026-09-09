@@ -64,6 +64,119 @@ static int string_length(PwX86State *s,uint32_t address,uint32_t *length)
     }
     return PW_ERR_LIMIT;
 }
+static int guest_string(PwX86State *s,uint32_t address,char *output,size_t capacity,
+                        unsigned nullable)
+{
+    if(!address) {
+        if(!nullable)return PW_ERR_VM;
+        output[0]=0;return PW_OK;
+    }
+    uint32_t length;int status=string_length(s,address,&length);
+    if(status!=PW_OK)return status;
+    if((uint64_t)length+1>capacity)return PW_ERR_LIMIT;
+    memcpy(output,(const void *)(uintptr_t)address,(size_t)length+1);return PW_OK;
+}
+static int registry_dispatch(PwWin32 *r,PwX86State *state)
+{
+    if(strcmp(r->last_dll,"advapi32.dll"))return PW_ERR_NOT_FOUND;
+    if(!r->registry)return PW_ERR_STATE;
+    const char *name=r->last_name;PwGuestCall call={0};uint32_t a[9]={0};
+    unsigned count;
+    if(!strcmp(name,"RegCreateKeyExA"))count=9;
+    else if(!strcmp(name,"RegOpenKeyA"))count=3;
+    else if(!strcmp(name,"RegOpenKeyExA"))count=5;
+    else if(!strcmp(name,"RegQueryValueA"))count=4;
+    else if(!strcmp(name,"RegQueryValueExA") || !strcmp(name,"RegSetValueExA"))count=6;
+    else if(!strcmp(name,"RegCloseKey"))count=1;
+    else return PW_ERR_UNSUPPORTED;
+    int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,count*4,0);
+    if(status!=PW_OK)return status;
+    for(unsigned i=0;i<count;i++)if((status=pw_guest_call_u32(&call,i*4,&a[i]))!=PW_OK)return status;
+
+    if(!strcmp(name,"RegCloseKey")) {
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t result=pw_registry_close(r->registry,a[0]);after.gpr[0]=result;
+        *state=after;r->calls++;return PW_OK;
+    }
+    if(!strcmp(name,"RegCreateKeyExA")) {
+        char key[PW_REG_PATH_MAX+1];
+        if(a[2] || a[3] || a[4] || a[6])return PW_ERR_UNSUPPORTED;
+        if((status=guest_string(state,a[1],key,sizeof(key),0))!=PW_OK)return status;
+        if((status=word_access(state,a[7],PW_X86_WRITE))!=PW_OK)return status;
+        if(a[8] && (status=word_access(state,a[8],PW_X86_WRITE))!=PW_OK)return status;
+        if(a[8] && (uint64_t)a[7]<a[8]+4ull && (uint64_t)a[8]<a[7]+4ull)
+            return PW_ERR_UNSUPPORTED;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t handle=0,disposition=0;
+        uint32_t result=pw_registry_create(r->registry,a[0],key,&handle,&disposition);
+        after.gpr[0]=result;
+        if(!result){memcpy((void *)(uintptr_t)a[7],&handle,4);if(a[8])memcpy((void *)(uintptr_t)a[8],&disposition,4);}
+        *state=after;r->calls++;return PW_OK;
+    }
+    if(!strcmp(name,"RegOpenKeyA") || !strcmp(name,"RegOpenKeyExA")) {
+        unsigned extended=!strcmp(name,"RegOpenKeyExA");uint32_t result_pointer=a[extended?4:2];
+        if(extended && a[2])return PW_ERR_UNSUPPORTED;
+        char key[PW_REG_PATH_MAX+1];
+        if((status=guest_string(state,a[1],key,sizeof(key),1))!=PW_OK)return status;
+        if((status=word_access(state,result_pointer,PW_X86_WRITE))!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t handle=0,result=pw_registry_open(r->registry,a[0],key,&handle);
+        after.gpr[0]=result;if(!result)memcpy((void *)(uintptr_t)result_pointer,&handle,4);
+        *state=after;r->calls++;return PW_OK;
+    }
+    if(!strcmp(name,"RegSetValueExA")) {
+        if(a[2])return PW_ERR_UNSUPPORTED;
+        char value_name[PW_REG_NAME_MAX+1];uint8_t data[PW_REG_DATA_MAX];
+        if((status=guest_string(state,a[1],value_name,sizeof(value_name),1))!=PW_OK)return status;
+        if(a[5]>sizeof(data))return PW_ERR_UNSUPPORTED;
+        if(a[5] && (status=range_access(state,a[4],a[5],PW_X86_READ))!=PW_OK)return status;
+        if(a[5])memcpy(data,(const void *)(uintptr_t)a[4],a[5]);
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t result=pw_registry_set(r->registry,a[0],value_name,a[3],data,a[5]);
+        after.gpr[0]=result;*state=after;r->calls++;return PW_OK;
+    }
+    if(!strcmp(name,"RegQueryValueExA")) {
+        if(a[2])return PW_ERR_UNSUPPORTED;
+        char value_name[PW_REG_NAME_MAX+1];uint8_t data[PW_REG_DATA_MAX];uint32_t type=0,size;
+        if((status=guest_string(state,a[1],value_name,sizeof(value_name),1))!=PW_OK)return status;
+        if((status=word_access(state,a[5],PW_X86_READ|PW_X86_WRITE))!=PW_OK)return status;
+        memcpy(&size,(const void *)(uintptr_t)a[5],4);
+        if(a[3] && (status=word_access(state,a[3],PW_X86_WRITE))!=PW_OK)return status;
+        uint32_t result=pw_registry_query(r->registry,a[0],value_name,&type,
+                                          a[4]?data:NULL,&size);
+        if(!result && a[4] && size && (status=range_access(state,a[4],size,PW_X86_WRITE))!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
+        if(result!=PW_REG_ERROR_FILE_NOT_FOUND && result!=PW_REG_ERROR_INVALID_HANDLE &&
+           result!=PW_REG_ERROR_INVALID_PARAMETER) {
+            memcpy((void *)(uintptr_t)a[5],&size,4);
+            if(a[3])memcpy((void *)(uintptr_t)a[3],&type,4);
+            if(!result && a[4] && size)memcpy((void *)(uintptr_t)a[4],data,size);
+        }
+        *state=after;r->calls++;return PW_OK;
+    }
+    /* RegQueryValueA reads the unnamed value of a key or child key. */
+    char subkey[PW_REG_PATH_MAX+1];uint8_t data[PW_REG_DATA_MAX];uint32_t size;
+    if((status=guest_string(state,a[1],subkey,sizeof(subkey),1))!=PW_OK)return status;
+    if((status=word_access(state,a[3],PW_X86_READ|PW_X86_WRITE))!=PW_OK)return status;
+    memcpy(&size,(const void *)(uintptr_t)a[3],4);uint32_t handle=a[0],opened=0,result=0;
+    if(*subkey){result=pw_registry_open(r->registry,a[0],subkey,&handle);opened=!result;}
+    if(!result)result=pw_registry_query(r->registry,handle,"",NULL,a[2]?data:NULL,&size);
+    if(opened)(void)pw_registry_close(r->registry,handle);
+    if(!result && a[2] && size && (status=range_access(state,a[2],size,PW_X86_WRITE))!=PW_OK)return status;
+    PwX86State after=*state;call.state=&after;
+    if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
+    if(result!=PW_REG_ERROR_FILE_NOT_FOUND && result!=PW_REG_ERROR_INVALID_HANDLE &&
+       result!=PW_REG_ERROR_INVALID_PARAMETER) {
+        memcpy((void *)(uintptr_t)a[3],&size,4);
+        if(!result && a[2] && size)memcpy((void *)(uintptr_t)a[2],data,size);
+    }
+    *state=after;r->calls++;return PW_OK;
+}
 static int cp1252(uint32_t c,uint8_t *out)
 {
     static const uint16_t high[32]={0x20ac,0,0x201a,0x192,0x201e,0x2026,0x2020,0x2021,
@@ -142,6 +255,7 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
     if(offset%16 || index>=sizeof(pw_catalog)/sizeof(pw_catalog[0]) ||
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
+    if(!strcmp(r->last_dll,"advapi32.dll"))return registry_dispatch(r,state);
     if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"LoadStringA")) {
         if(!r->services.string_resource || r->services.ansi_codepage!=1252)return PW_ERR_UNSUPPORTED;
         PwGuestCall call={0};uint32_t arg[4];

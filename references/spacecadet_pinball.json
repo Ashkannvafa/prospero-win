@@ -1,0 +1,74 @@
+{
+  "schema": "pw-source-oracle-config/1",
+  "repository": "https://github.com/k4zmu2a/SpaceCadetPinball",
+  "license": "MIT",
+  "win32_oracle_commit": "6756c54d3b17bf41cab82a822125140aed2e3120",
+  "maintained_commit": "cb9b7b886244a27773f66b0b19fdc2998392565e",
+  "target": {
+    "sha1": "2a5b525e0f631bb6107639e2a69df15986fb0d05",
+    "sha256": "2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc"
+  },
+  "pdb": {
+    "path": "Doc/.pdb dump.txt",
+    "guid": "1C24FD97-10EA-CC4F-8960-A06F3BABE841",
+    "age": 2
+  },
+  "symbols": {
+    "_WinMainCRTStartup": "01020f95",
+    "_WinMain@16": "0100833a",
+    "_message_handler@16": "01007a3e",
+    "_options_path_init@4": "010034b6",
+    "_options_path_uninit@0": "010034e7",
+    "_options_path@4": "01003503",
+    "_options_path_free@0": "0100356c",
+    "_options_get_int@12": "01003588",
+    "_options_get_string@20": "01003601",
+    "_options_set_int@12": "0100367c"
+  },
+  "source_groups": {
+    "startup": {
+      "files": [
+        "SpaceCadetPinball/winmain.cpp",
+        "SpaceCadetPinball/pinball.cpp",
+        "SpaceCadetPinball/options.cpp"
+      ],
+      "apis": [
+        "RegCreateKeyExA", "RegQueryValueExA", "RegSetValueExA", "RegCloseKey",
+        "LoadStringA",
+        "RegisterWindowMessageA", "FindWindowA", "RegisterClassA",
+        "CreateWindowExA", "ShowWindow", "UpdateWindow", "timeGetTime"
+      ]
+    },
+    "graphics": {
+      "files": [
+        "SpaceCadetPinball/gdrv.cpp",
+        "SpaceCadetPinball/fullscrn.cpp",
+        "SpaceCadetPinball/splash.cpp"
+      ],
+      "apis": [
+        "BitBlt", "StretchDIBits", "CreateCompatibleBitmap", "CreateCompatibleDC",
+        "CreateDIBitmap", "CreatePalette", "SelectObject", "SelectPalette",
+        "SetPaletteEntries", "RealizePalette", "GetDC", "ReleaseDC"
+      ]
+    },
+    "message_input": {
+      "files": ["SpaceCadetPinball/winmain.cpp"],
+      "apis": [
+        "PeekMessageA", "GetMessageA", "TranslateMessage", "DispatchMessageA",
+        "PostQuitMessage", "GetCursorPos", "SetCursorPos", "SetCapture", "ReleaseCapture"
+      ]
+    },
+    "audio": {
+      "files": [
+        "SpaceCadetPinball/Sound.cpp",
+        "SpaceCadetPinball/WaveMix.cpp",
+        "SpaceCadetPinball/midi.cpp"
+      ],
+      "apis": [
+        "waveOutOpen", "waveOutPrepareHeader", "waveOutWrite", "waveOutPause",
+        "waveOutRestart", "waveOutReset", "waveOutUnprepareHeader", "waveOutClose",
+        "waveOutGetPosition", "mciSendCommandA", "sndPlaySoundA"
+      ]
+    }
+  }
+}

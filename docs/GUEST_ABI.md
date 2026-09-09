@@ -108,8 +108,9 @@ The original Pinball trace binds 207 imports (205 function/2 data), invokes
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
 and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA, malloc,
-lstrcpyA and lstrcatA, then stops at RegCreateKeyExA after 495 instructions
-(4096-event host limit), after an original-game initializer callback has returned.
+lstrcpyA and lstrcatA. The registry package then completes the source-confirmed
+read-default and write-default sequences; the trace stops at GetModuleFileNameA
+after 723 instructions, after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
@@ -229,9 +230,27 @@ References: [PE resource layout](https://learn.microsoft.com/en-us/windows/win32
 [LoadStringA](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-loadstringa),
 [CP1252 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP1252.TXT).
 
+## Registry service
+
+`pw_registry` is a process-local, fixed-capacity registry whose key/value
+metadata and payload storage are supplied by the runtime owner. Handles are
+opaque 32-bit values; paths and value names use locale-independent ASCII
+case-folding. The core supports `REG_DWORD`, `REG_SZ` and `REG_BINARY`, default
+values, create/open disposition, balanced opens/closes, size-only queries and
+`ERROR_MORE_DATA` without overwriting a short destination.
+
+The Win32 dispatcher implements all seven registry imports present in this
+target: `RegCreateKeyExA`, both open variants, both query variants,
+`RegSetValueExA` and `RegCloseKey`. Guest pointers and output spans are checked
+before writes or registry mutation. Source-oracle evidence confirms the startup
+read-default and write-default sequences; the 723-instruction host trace
+executes both. Persistence is intentionally a later injected service—this core
+does not use the host filesystem or claim Windows security/access semantics.
+
 ## Guest floating-point control
 
-`PwX86State.fp` owns raw x87 control and MXCSR words. Initialize each guest
+`PwX86State.fp` owns x87 control/status/tag/opcode/IP/DP, eight architectural
+80-bit register slots and MXCSR. Initialize each guest
 thread using `pw_guest_fp_init`: CRT defaults are 0x027f and 0x1f80.
 `pw_guest_fp_control` implements the reviewed i386/SSE2 `_controlfp` control
 mapping entirely with integer operations: mask filtering (including preserved
@@ -242,8 +261,9 @@ queries preserve status. The cdecl adapter reads two 32-bit arguments and
 commits FP changes only after successful ABI return.
 
 Tests cover the field mappings, defaults, status handling, queries, ambiguous
-state, invalid/uninitialized calls, and unchanged host x87/MXCSR controls.
-This is **control-state support only**: no x87 register stack, arithmetic,
+state, raw 80-bit push/peek/pop, TOP wrap, zero/valid tags, overflow/underflow,
+invalid/uninitialized calls, and unchanged host x87/MXCSR controls.
+This is **state support only**: no x87 arithmetic,
 exception delivery or SSE execution is implemented. Future instruction and
 CRT math handlers must consume this same per-thread state, not host defaults.
 

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pw_guest_fp.h"
 #include "../include/prospero_win.h"
+#include <string.h>
 /* MSVCRT flag encodings, reviewed against pinned Wine msvcrt/math.c and
  * include/msvcrt/float.h. This is guest integer state, not host FP calls. */
 enum { EM=0x8001f, DENORMAL=0x80000, RC=0x300, PC=0x30000,
@@ -39,7 +40,8 @@ static uint32_t encode(uint32_t raw,uint32_t flags,unsigned sse)
 }
 void pw_guest_fp_init(PwGuestFp *fp)
 {
-    if(fp)*fp=(PwGuestFp){.x87_control=0x027f,.mxcsr=0x1f80,.initialized=1};
+    if(fp)*fp=(PwGuestFp){.x87_control=0x027f,.x87_tag=0xffff,
+                         .mxcsr=0x1f80,.initialized=1};
 }
 int pw_guest_fp_control(PwGuestFp *fp,uint32_t value,uint32_t mask,uint32_t *result)
 {
@@ -53,4 +55,45 @@ int pw_guest_fp_control(PwGuestFp *fp,uint32_t value,uint32_t mask,uint32_t *res
     fp->mxcsr=encode(fp->mxcsr,s,1);
     *result=x|s|(((x^s)&(EM|RC))?0x80000000u:0);
     return PW_OK;
+}
+static unsigned top(const PwGuestFp *fp){return (fp->x87_status>>11)&7;}
+static unsigned tag(const PwGuestFp *fp,unsigned slot){return (fp->x87_tag>>(slot*2))&3;}
+static void set_tag(PwGuestFp *fp,unsigned slot,unsigned value)
+{
+    fp->x87_tag=(uint16_t)((fp->x87_tag&~(3u<<(slot*2)))|(value<<(slot*2)));
+}
+static unsigned classify80(const uint8_t value[10])
+{
+    uint64_t significand=0;
+    for(unsigned i=0;i<8;i++)significand|=(uint64_t)value[i]<<(i*8);
+    unsigned exponent=((unsigned)value[8]|(unsigned)value[9]<<8)&0x7fff;
+    if(!exponent && !significand)return 1; /* zero */
+    if(!exponent || exponent==0x7fff || !(significand>>63))return 2; /* special */
+    return 0; /* finite normalized */
+}
+int pw_guest_x87_push(PwGuestFp *fp,const uint8_t value[10])
+{
+    if(!fp || !value)return PW_ERR_PRECONDITION;
+    if(!fp->initialized)return PW_ERR_STATE;
+    unsigned slot=(top(fp)-1)&7;
+    if(tag(fp,slot)!=3)return PW_ERR_LIMIT;
+    memcpy(fp->x87_st[slot],value,10);set_tag(fp,slot,classify80(value));
+    fp->x87_status=(uint16_t)((fp->x87_status&~0x3800u)|(slot<<11));return PW_OK;
+}
+int pw_guest_x87_peek(const PwGuestFp *fp,unsigned logical_index,uint8_t value[10])
+{
+    if(!fp || !value || logical_index>=8)return PW_ERR_PRECONDITION;
+    if(!fp->initialized)return PW_ERR_STATE;
+    unsigned slot=(top(fp)+logical_index)&7;
+    if(tag(fp,slot)==3)return PW_ERR_NOT_FOUND;
+    memcpy(value,fp->x87_st[slot],10);return PW_OK;
+}
+int pw_guest_x87_pop(PwGuestFp *fp,uint8_t value[10])
+{
+    if(!fp || !value)return PW_ERR_PRECONDITION;
+    if(!fp->initialized)return PW_ERR_STATE;
+    unsigned slot=top(fp);
+    if(tag(fp,slot)==3)return PW_ERR_NOT_FOUND;
+    memcpy(value,fp->x87_st[slot],10);memset(fp->x87_st[slot],0,10);set_tag(fp,slot,3);
+    fp->x87_status=(uint16_t)((fp->x87_status&~0x3800u)|(((slot+1)&7)<<11));return PW_OK;
 }

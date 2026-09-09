@@ -199,6 +199,67 @@ static void copy_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
     assert(r->crt_errno==77);
     assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
 }
+static int registry_call(PwWin32 *r,PwX86State *s,const char *name,
+                         const uint32_t *args,unsigned count)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,name);
+    assert(pw_win32_resolve(r,"advapi32.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-4-count*4;s->eflags=0xad7;
+    uint32_t frame[10]={0x01001234};memcpy(frame+1,args,count*4);
+    memcpy((void *)(uintptr_t)s->gpr[4],frame,(count+1)*4);
+    return pw_win32_dispatch(r,s);
+}
+static void registry_tests(PwWin32 *r,PwX86State *s)
+{
+    uint32_t base=s->stack_low+0x100,key_name=base,value_name=base+64;
+    uint32_t key_out=base+128,disposition=base+132,size_out=base+136;
+    strcpy((char *)(uintptr_t)key_name,"Software\\Pinball");
+    strcpy((char *)(uintptr_t)value_name,"Table Version");
+    uint32_t create[]={PW_HKEY_CURRENT_USER,key_name,0,0,0,0xf003f,0,key_out,disposition};
+    unsigned calls=r->calls;
+    assert(registry_call(r,s,"RegCreateKeyExA",create,9)==PW_OK && s->gpr[0]==0);
+    assert(s->eip==0x01001234 && s->gpr[4]==s->stack_high && s->eflags==0xad7);
+    uint32_t key;memcpy(&key,(void *)(uintptr_t)key_out,4);
+    uint32_t disp;memcpy(&disp,(void *)(uintptr_t)disposition,4);
+    assert(key && disp==PW_REG_CREATED_NEW_KEY && r->calls==calls+1);
+
+    uint32_t default_value=7;memcpy((void *)(uintptr_t)(base+144),&default_value,4);
+    uint32_t set[]={key,value_name,0,PW_REG_DWORD,base+144,4};
+    assert(registry_call(r,s,"RegSetValueExA",set,6)==PW_OK && s->gpr[0]==0);
+    uint32_t capacity=4;memcpy((void *)(uintptr_t)size_out,&capacity,4);
+    uint32_t query[]={key,value_name,0,base+140,base+148,size_out};
+    assert(registry_call(r,s,"RegQueryValueExA",query,6)==PW_OK && s->gpr[0]==0);
+    uint32_t output,type;memcpy(&output,(void *)(uintptr_t)(base+148),4);
+    memcpy(&type,(void *)(uintptr_t)(base+140),4);memcpy(&capacity,(void *)(uintptr_t)size_out,4);
+    assert(output==7 && type==PW_REG_DWORD && capacity==4);
+
+    capacity=2;memcpy((void *)(uintptr_t)size_out,&capacity,4);
+    output=0xfeedbeef;memcpy((void *)(uintptr_t)(base+148),&output,4);
+    assert(registry_call(r,s,"RegQueryValueExA",query,6)==PW_OK && s->gpr[0]==PW_REG_ERROR_MORE_DATA);
+    memcpy(&output,(void *)(uintptr_t)(base+148),4);memcpy(&capacity,(void *)(uintptr_t)size_out,4);
+    assert(output==0xfeedbeef && capacity==4);
+
+    uint32_t close[]={key};assert(registry_call(r,s,"RegCloseKey",close,1)==PW_OK && s->gpr[0]==0);
+    uint32_t open[]={PW_HKEY_CURRENT_USER,key_name,key_out};
+    assert(registry_call(r,s,"RegOpenKeyA",open,3)==PW_OK && s->gpr[0]==0);
+    memcpy(&key,(void *)(uintptr_t)key_out,4);
+    strcpy((char *)(uintptr_t)(base+160),"default");
+    uint32_t set_default[]={key,0,0,PW_REG_SZ,base+160,8};
+    assert(registry_call(r,s,"RegSetValueExA",set_default,6)==PW_OK && s->gpr[0]==0);
+    capacity=16;memcpy((void *)(uintptr_t)size_out,&capacity,4);
+    uint32_t query_default[]={key,0,base+176,size_out};
+    assert(registry_call(r,s,"RegQueryValueA",query_default,4)==PW_OK && s->gpr[0]==0);
+    assert(!strcmp((char *)(uintptr_t)(base+176),"default"));
+    memcpy(&capacity,(void *)(uintptr_t)size_out,4);assert(capacity==8);
+    close[0]=key;assert(registry_call(r,s,"RegCloseKey",close,1)==PW_OK && s->gpr[0]==0);
+    uint32_t open_ex[]={PW_HKEY_CURRENT_USER,key_name,0,0x20019,key_out};
+    assert(registry_call(r,s,"RegOpenKeyExA",open_ex,5)==PW_OK && s->gpr[0]==0);
+    memcpy(&key,(void *)(uintptr_t)key_out,4);close[0]=key;
+    assert(registry_call(r,s,"RegCloseKey",close,1)==PW_OK && s->gpr[0]==0);
+    calls=r->calls;create[7]=0xffffffffu;
+    assert(registry_call(r,s,"RegCreateKeyExA",create,9)==PW_ERR_VM);
+    assert(r->calls==calls && r->registry->keys[0].open_count==0);
+}
 int main(void)
 {
     PwVmBackend vm;PwVmRegion data;
@@ -207,6 +268,9 @@ int main(void)
     assert(vm.commit(NULL,&data,0,8192,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
     PwWin32 runtime={0};
     assert(pw_win32_init(&runtime,0x01000000,0x03000000,"\"C:\\game\\sample.exe\"")==PW_OK);
+    PwRegistry registry;PwRegistryKey registry_keys[8];PwRegistryValue registry_values[16];
+    assert(pw_registry_init(&registry,registry_keys,8,registry_values,16)==PW_OK);
+    runtime.registry=&registry;
     PeImportSymbol symbol={0};PwImportTarget target;
     strcpy(symbol.name,"_acmdln");
     assert(pw_win32_resolve(&runtime,"MSVCRT.DLL",&symbol,&target)==PW_OK && target.kind==PW_IMPORT_DATA);
@@ -317,6 +381,7 @@ int main(void)
     string_tests(&runtime,&state);
     length_tests(&runtime,&state,&vm);
     copy_tests(&runtime,&state,&vm);
+    registry_tests(&runtime,&state);
     heap_tests(&runtime,&state,&vm);
     assert(vm.release(NULL,&data)==PW_OK);return 0;
 }

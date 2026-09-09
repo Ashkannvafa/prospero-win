@@ -13,6 +13,7 @@ int main(void)
     pw_guest_fp_init(&fp);
     assert(pw_guest_fp_control(&fp,0,0,&result)==PW_OK && result==0x9001f);
     assert(fp.x87_control==0x027f && fp.mxcsr==0x1f80);
+    assert(fp.x87_status==0 && fp.x87_tag==0xffff);
     const unsigned winbits[]={0x10,0x80000,8,4,2,1};
     for(unsigned i=0;i<6;i++) {
         pw_guest_fp_init(&fp);
@@ -43,5 +44,20 @@ int main(void)
     __asm__ volatile("fnstcw %0":"=m"(after_cw));
     __asm__ volatile("stmxcsr %0":"=m"(after_sse));
     assert(host_cw==after_cw && host_sse==after_sse);
+    pw_guest_fp_init(&fp);
+    uint8_t one[10]={0,0,0,0,0,0,0,0x80,0xff,0x3f},zero[10]={0},out[10];
+    assert(pw_guest_x87_peek(&fp,0,out)==PW_ERR_NOT_FOUND);
+    assert(pw_guest_x87_push(&fp,one)==PW_OK && ((fp.x87_status>>11)&7)==7);
+    assert(((fp.x87_tag>>(7*2))&3)==0 && pw_guest_x87_peek(&fp,0,out)==PW_OK);
+    assert(!memcmp(out,one,10));
+    assert(pw_guest_x87_push(&fp,zero)==PW_OK && ((fp.x87_status>>11)&7)==6);
+    assert(((fp.x87_tag>>(6*2))&3)==1 && pw_guest_x87_peek(&fp,1,out)==PW_OK);
+    assert(!memcmp(out,one,10));
+    assert(pw_guest_x87_pop(&fp,out)==PW_OK && !memcmp(out,zero,10));
+    assert(((fp.x87_status>>11)&7)==7 && ((fp.x87_tag>>(6*2))&3)==3);
+    for(unsigned i=0;i<7;i++)assert(pw_guest_x87_push(&fp,one)==PW_OK);
+    before=fp;assert(pw_guest_x87_push(&fp,one)==PW_ERR_LIMIT && !memcmp(&fp,&before,sizeof(fp)));
+    for(unsigned i=0;i<8;i++)assert(pw_guest_x87_pop(&fp,out)==PW_OK);
+    before=fp;assert(pw_guest_x87_pop(&fp,out)==PW_ERR_NOT_FOUND && !memcmp(&fp,&before,sizeof(fp)));
     return 0;
 }
