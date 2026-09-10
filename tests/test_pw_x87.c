@@ -129,5 +129,28 @@ int main(void)
     assert(pw_x87_execute(&fp,PW_X87_FADD_F32,(uintptr_t)&one,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FCOM_F32,(uintptr_t)&zero32,NULL)==PW_OK && !(fp.x87_status&0x4500));
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==one);
+
+    /* Unmasked exceptions publish status/pending state but neither the
+     * arithmetic destination nor a requested pop/store side effect. */
+    pw_guest_fp_init(&fp);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&one,NULL)==PW_OK);
+    PwGuestFp before=fp;fp.x87_control=(uint16_t)(fp.x87_control&~4u);
+    before.x87_control=fp.x87_control;
+    assert(pw_x87_execute(&fp,PW_X87_FDIV_F32,(uintptr_t)&zero32,NULL)==PW_ERR_X87_TRAP);
+    assert((fp.x87_status&0x84)==0x84 && fp.x87_pending==4);
+    assert(fp.x87_tag==before.x87_tag && !memcmp(fp.x87_st,before.x87_st,sizeof(fp.x87_st)));
+
+    pw_guest_fp_init(&fp);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&negative_half,NULL)==PW_OK);
+    before=fp;fp.x87_control=(uint16_t)(fp.x87_control&~1u);before.x87_control=fp.x87_control;
+    assert(pw_x87_execute(&fp,PW_X87_FSQRT,0,NULL)==PW_ERR_X87_TRAP);
+    assert((fp.x87_status&0x81)==0x81 && fp.x87_pending==1 &&
+           fp.x87_tag==before.x87_tag && !memcmp(fp.x87_st,before.x87_st,sizeof(fp.x87_st)));
+
+    pw_guest_fp_init(&fp);assert(pw_guest_x87_push(&fp,half)==PW_OK);
+    fp.x87_control=(uint16_t)(fp.x87_control&~32u);before=fp;stored=0xfeedface;
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_ERR_X87_TRAP);
+    assert(stored==0xfeedface && (fp.x87_status&0xa0)==0xa0 && fp.x87_pending==32 &&
+           fp.x87_tag==before.x87_tag && !memcmp(fp.x87_st,before.x87_st,sizeof(fp.x87_st)));
     return 0;
 }

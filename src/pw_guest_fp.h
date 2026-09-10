@@ -6,7 +6,7 @@
  * x87 values use the architectural 80-bit little-endian memory representation;
  * TOP remains encoded in x87_status and two-bit tags use the hardware layout. */
 typedef struct PwGuestFp {
-    uint16_t x87_control,x87_status,x87_tag,x87_opcode;
+    uint16_t x87_control,x87_status,x87_tag,x87_opcode,x87_pending;
     uint32_t x87_ip,x87_dp,mxcsr;
     uint8_t x87_st[8][10];
     unsigned initialized;

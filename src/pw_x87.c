@@ -21,7 +21,11 @@ static unsigned highest64(uint64_t value)
 static int exception(PwGuestFp *fp,unsigned flag)
 {
     fp->x87_status=(uint16_t)(fp->x87_status|flag);
-    return (fp->x87_control&flag)==flag?PW_OK:PW_ERR_STATE;
+    unsigned pending=flag&~fp->x87_control;
+    if(!pending)return PW_OK;
+    fp->x87_status=(uint16_t)(fp->x87_status|0x80u); /* exception summary */
+    fp->x87_pending=(uint16_t)(fp->x87_pending|pending);
+    return PW_ERR_X87_TRAP;
 }
 static int from_binary(PwGuestFp *fp,uint64_t bits,unsigned fraction_bits,
                        unsigned exponent_bits,unsigned bias,uint8_t out[10])
@@ -146,7 +150,7 @@ static int store_memory(PwGuestFp *fp,uintptr_t operand,unsigned bits,unsigned p
     uint8_t value[10];int status=peek(fp,0,value);if(status!=PW_OK)return status;
     PwGuestFp after=*fp;uint64_t output=0;
     status=to_binary(&after,value,bits==32?23:52,bits==32?8:11,bits==32?127:1023,&output);
-    if(status!=PW_OK)return status;
+    if(status!=PW_OK){if(status==PW_ERR_X87_TRAP)*fp=after;return status;}
     if(pop && (status=pw_guest_x87_pop(&after,value))!=PW_OK)return status;
     if(bits==32){uint32_t word=(uint32_t)output;memcpy((void *)operand,&word,4);}
     else memcpy((void *)operand,&output,8);
@@ -333,7 +337,7 @@ static int binary(PwGuestFp *fp,Soft80 rhs,unsigned operation,unsigned reverse,
         operation==1?soft_mul(&after,left,rhs,result):
         operation==2?soft_add(&after,left,(Soft80){.sig=rhs.sig,.exp=rhs.exp,.sign=!rhs.sign,.kind=rhs.kind},result):
         soft_div(&after,left,rhs,result);
-    if(status!=PW_OK)return status;
+    if(status!=PW_OK){if(status==PW_ERR_X87_TRAP)*fp=after;return status;}
     if((status=replace_st(&after,destination,result))!=PW_OK)return status;
     if(pop && (status=pw_guest_x87_pop(&after,left_raw))!=PW_OK)return status;
     *fp=after;return PW_OK;
@@ -343,14 +347,14 @@ static int memory_operand(PwGuestFp *fp,uintptr_t operand,unsigned bits,Soft80 *
     uint8_t raw[10];int status;uint32_t u32;uint64_t u64;PwGuestFp copy=*fp;
     if(bits==32){memcpy(&u32,(const void *)operand,4);status=from_binary(&copy,u32,23,8,127,raw);}
     else {memcpy(&u64,(const void *)operand,8);status=from_binary(&copy,u64,52,11,1023,raw);}
-    if(status!=PW_OK)return status;
+    if(status!=PW_OK){if(status==PW_ERR_X87_TRAP)*fp=copy;return status;}
     *fp=copy;*value=unpack80(raw);return PW_OK;
 }
 static int compare(PwGuestFp *fp,Soft80 rhs,unsigned pop_count)
 {
     uint8_t left_raw[10];int status=peek(fp,0,left_raw);if(status!=PW_OK)return status;
     Soft80 left=unpack80(left_raw);PwGuestFp after=*fp;unsigned flags;
-    if(left.kind==SOFT_NAN || rhs.kind==SOFT_NAN){flags=0x4500;if((status=exception(&after,X87_IE))!=PW_OK)return status;}
+    if(left.kind==SOFT_NAN || rhs.kind==SOFT_NAN){flags=0x4500;if((status=exception(&after,X87_IE))!=PW_OK){*fp=after;return status;}}
     else if(left.kind==SOFT_ZERO && rhs.kind==SOFT_ZERO)flags=0x4000;
     else if(left.kind==SOFT_ZERO)flags=rhs.sign?0:0x0100;
     else if(rhs.kind==SOFT_ZERO)flags=left.sign?0x0100:0;
@@ -409,7 +413,7 @@ int pw_x87_execute(PwGuestFp *fp,PwX87Action action,uintptr_t operand,uint16_t *
     case PW_X87_FSQRT: {
         if((status=peek(fp,0,value))!=PW_OK)return status;
         PwGuestFp after=*fp;uint8_t result[10];
-        if((status=soft_sqrt(&after,unpack80(value),result))!=PW_OK)return status;
+        if((status=soft_sqrt(&after,unpack80(value),result))!=PW_OK){if(status==PW_ERR_X87_TRAP)*fp=after;return status;}
         if((status=replace_st(&after,0,result))!=PW_OK)return status;
         *fp=after;return PW_OK;
     }

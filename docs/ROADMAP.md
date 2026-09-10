@@ -120,8 +120,10 @@ structured ps5log/1 evidence and an independently checked result.
   original-game callback in host. Registry storage/ABI and error branches have
   synthetic tests. FP control, isolated raw 80-bit state, transfer/constant/status
   operations and startup add/subtract/multiply/divide/compare/square-root families
-  execute without installing guest FP state in the host. Later x87 forms,
-  complete unmasked exception delivery and SSE execution remain pending.
+  execute without installing guest FP state in the host. Unmasked invalid,
+  divide-by-zero and precision exceptions propagate as a pending guest trap
+  without committing their destination. Guest handler delivery, later x87
+  forms and SSE execution remain pending.
   This is not application entry or PS5 execution evidence; most APIs are pending.
 - [ ] Implement the observed Win32 surface: process/error state, heap,
   virtual memory, files/resources, registry subset if needed, clocks and

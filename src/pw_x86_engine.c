@@ -95,7 +95,7 @@ int pw_x86_engine_step(PwX86Engine *engine,PwX86State *state,PwX86StepReport *re
               entry->instruction_ends[report->retired]<=offset)report->retired++;
     }
     engine->retired_instructions+=report->retired;
-    return invoked?PW_ERR_VM:PW_OK;
+    return invoked==PW_ERR_X87_TRAP?PW_ERR_X87_TRAP:invoked?PW_ERR_VM:PW_OK;
 }
 
 int pw_x86_engine_reset(PwX86Engine *engine,uint32_t generation)

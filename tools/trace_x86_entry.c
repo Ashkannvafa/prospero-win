@@ -191,6 +191,7 @@ int main(int argc,char **argv)
         steps+=step.retired;
         if(status!=PW_OK) {
             stop=status==PW_ERR_UNSUPPORTED?"unsupported":
+                 status==PW_ERR_X87_TRAP?"x87-trap":
                  status==PW_ERR_VM?"memory-bounds":
                  status==PW_ERR_LIMIT?"cache-limit":
                  status==PW_ERR_NOT_FOUND?"non-code":"decode-failure";

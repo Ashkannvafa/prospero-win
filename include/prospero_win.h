@@ -31,6 +31,7 @@ enum pw_result {
     PW_ERR_NOT_FOUND = -8,      /* a dependency was not resolvable */
     PW_ERR_VM = -9,             /* the memory backend refused a request */
     PW_ERR_STATE = -10,         /* operation invalid for the current state */
+    PW_ERR_X87_TRAP = -11,      /* guest x87 has a pending unmasked exception */
 };
 
 /* Page protection requested from a PwVmBackend. */

@@ -219,5 +219,7 @@ Next coverage: owned window creation and ordered WndProc entry from `CreateWindo
 initialization and broader FS encodings, plus later wndproc integer/x87 forms.
 The diagnostic tracer uses the tested generation-scoped cache and reports its
 dispatch/publication metrics. Integer-only binary80 execution covers every
-startup x87 form without touching host FP state; complete unmasked exception
-delivery, SSE, cache eviction, a full memory model and scheduling remain.
+startup x87 form without touching host FP state. Unmasked x87 exceptions now
+produce a distinct pending guest trap with precise PC/retirement and no
+destination publication; guest exception-handler delivery, SSE, cache eviction,
+a full memory model and scheduling remain.

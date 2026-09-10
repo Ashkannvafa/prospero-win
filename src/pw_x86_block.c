@@ -189,7 +189,7 @@ static int x87_dispatch(PwX86State *state,unsigned action,uintptr_t operand)
     uint16_t ax=0;int status=pw_x87_execute(&state->fp,(PwX87Action)action,operand,&ax);
     if(status==PW_OK && action==PW_X87_FNSTSW_AX)
         state->gpr[0]=(state->gpr[0]&0xffff0000u)|ax;
-    return status==PW_OK?0:-1;
+    return status;
 }
 static void x87_call(Emitter *e,unsigned action,unsigned register_operand)
 {
@@ -199,7 +199,7 @@ static void x87_call(Emitter *e,unsigned action,unsigned register_operand)
     uint64_t target=(uint64_t)(uintptr_t)&x87_dispatch;
     word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
     byte(e,0xff);byte(e,0xd0);byte(e,0x5f);byte(e,0x85);byte(e,0xc0);
-    require_condition(e,0x74); /* helper success */
+    byte(e,0x74);byte(e,1);byte(e,0xc3); /* propagate helper failure */
 }
 
 int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,

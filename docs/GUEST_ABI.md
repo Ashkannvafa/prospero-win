@@ -277,8 +277,12 @@ invalid/uninitialized calls, and unchanged host x87/MXCSR controls.
 stack operations, status transfer, add/subtract/multiply/divide, comparisons
 and square root. The translator accepts all 36 source-reachable startup forms;
 synthetic encoding and independently stated IEEE-bit golden vectors cover the
-families. Complete unmasked trap delivery, later transcendental forms and SSE
-execution remain pending. Every future handler must consume this same
+families. Unmasked invalid, divide-by-zero and precision exceptions now set
+guest status/summary and pending bits, preserve the destination and requested
+pop/store side effects, and propagate `PW_ERR_X87_TRAP` through the generated
+block and engine with exact retired-prefix accounting. Delivery into a guest
+exception handler, later transcendental forms and SSE execution remain pending.
+Every future handler must consume this same
 per-thread state, not host defaults.
 
 ## Initializer callbacks

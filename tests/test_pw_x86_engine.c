@@ -37,6 +37,18 @@ int main(void)
     assert(pw_x86_engine_step(&engine,&state,&step)==PW_ERR_VM);
     assert(step.instructions==2 && step.retired==1 && state.eip==0x2005);
     assert(engine.retired_instructions==1);
+
+    const uint8_t x87_trap[]={0xd9,0xe8,0xd9,0xee,0xde,0xf9};
+    source=(Source){0x3000,x87_trap,sizeof(x87_trap)};
+    assert(pw_x86_engine_reset(&engine,4)==PW_OK);
+    state=(PwX86State){.eip=0x3000};pw_guest_fp_init(&state.fp);
+    state.fp.x87_control=(uint16_t)(state.fp.x87_control&~4u);
+    assert(pw_x86_engine_step(&engine,&state,&step)==PW_ERR_X87_TRAP);
+    assert(step.instructions==3 && step.retired==2 && state.eip==0x3004 &&
+           state.fp.x87_pending==4 && (state.fp.x87_status&0x84)==0x84);
+    uint8_t value[10];assert(pw_guest_x87_peek(&state.fp,0,value)==PW_OK);
+    assert(pw_guest_x87_peek(&state.fp,1,value)==PW_OK);
+    assert(engine.retired_instructions==2);
     assert(pw_x86_engine_destroy(&engine)==PW_OK);
     return 0;
 }

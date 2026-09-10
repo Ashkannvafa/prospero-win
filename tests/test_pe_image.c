@@ -222,6 +222,7 @@ static void test_result_names(void)
 {
     assert(strcmp(pw_result_name(PW_OK), "ok") == 0);
     assert(strcmp(pw_result_name(PW_ERR_NOT_PE), "not-pe") == 0);
+    assert(strcmp(pw_result_name(PW_ERR_X87_TRAP), "x87-trap") == 0);
     assert(strcmp(pw_result_name(-999), "unknown") == 0);
     assert(strcmp(pw_protection_name(PW_PROT_READ | PW_PROT_EXEC), "r-x") == 0);
     assert(strcmp(pw_protection_name(PW_PROT_NONE), "---") == 0);

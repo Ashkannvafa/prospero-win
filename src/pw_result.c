@@ -21,6 +21,7 @@ const char *pw_result_name(int result)
     case PW_ERR_NOT_FOUND: return "not-found";
     case PW_ERR_VM: return "vm";
     case PW_ERR_STATE: return "state";
+    case PW_ERR_X87_TRAP: return "x87-trap";
     default: return "unknown";
     }
 }
