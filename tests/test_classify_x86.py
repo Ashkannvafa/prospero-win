@@ -14,11 +14,11 @@ parsed = parse_root("01020f95=entry")
 assert (parsed.address, parsed.label) == ("01020f95", "entry")
 result = subprocess.run(
     [str(root / "build/host/classify_x86")],
-    input="8bff\n55\nd9e8\nzz\n\n", text=True, capture_output=True, check=True)
+    input="8bff\n55\nd9e8\nd9ff\nzz\n\n", text=True, capture_output=True, check=True)
 statuses = [int(line) for line in result.stdout.splitlines()]
-assert statuses[:2] == [0, 0], statuses
-assert statuses[2] != 0, statuses
-assert statuses[3:] == [-1, -1], statuses
+assert statuses[:3] == [0, 0, 0], statuses
+assert statuses[3] != 0, statuses
+assert statuses[4:] == [-1, -1], statuses
 print("x86 instruction classifier passed: exact supported and rejected forms")
 
 assert x87_form(bytes.fromhex("d9e8"), "FLD1") == "FLD1:op1/reg/g5/r0"

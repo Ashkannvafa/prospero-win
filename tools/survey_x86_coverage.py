@@ -162,6 +162,7 @@ def main() -> int:
     unsupported_counts: collections.Counter[str] = collections.Counter()
     x87_total = x87_supported = 0
     x87_forms: collections.Counter[str] = collections.Counter()
+    supported_x87_forms: collections.Counter[str] = collections.Counter()
     indirect_calls = indirect_jumps = 0
     status_by_address: dict[str, int] = {}
     for item, status in zip(instructions, statuses):
@@ -186,6 +187,8 @@ def main() -> int:
         if status == 0:
             supported_counts[mnemonic] += 1
             x87_supported += int(is_x87)
+            if form:
+                supported_x87_forms[form] += 1
         else:
             unsupported_counts[mnemonic] += 1
 
@@ -200,6 +203,11 @@ def main() -> int:
             x87_form(bytes.fromhex(str(by_address[address]["bytes"])),
                      str(by_address[address]["mnemonic"]))
             for address in addresses if address in by_address) if form)
+        root_supported_x87 = collections.Counter(form for form in (
+            x87_form(bytes.fromhex(str(by_address[address]["bytes"])),
+                     str(by_address[address]["mnemonic"]))
+            for address in addresses if address in by_address and
+            status_by_address.get(address) == 0) if form)
         per_root[label] = {
             "reachable_functions": len(nodes),
             "unique_static_instructions": len(addresses),
@@ -207,11 +215,14 @@ def main() -> int:
             "exact_form_coverage_percent": round(
                 100.0 * root_supported / len(addresses), 2) if addresses else 0.0,
             "x87_occurrences": sum(root_x87.values()),
+            "x87_supported_occurrences": sum(root_supported_x87.values()),
             "x87_unique_forms": len(root_x87),
             "x87_forms": sorted(root_x87.items()),
+            "x87_supported_forms": sorted(root_supported_x87.items()),
+            "x87_unsupported_forms": sorted((root_x87-root_supported_x87).items()),
         }
     report = {
-        "schema": "pw-x86-coverage/2",
+        "schema": "pw-x86-coverage/3",
         "program": args.program,
         "roots": per_root,
         "reachable_function_union": len(functions),
@@ -226,6 +237,8 @@ def main() -> int:
             "unique_forms": len(x87_forms),
             "top_forms": x87_forms.most_common(30),
             "forms": sorted(x87_forms.items()),
+            "supported_forms": sorted(supported_x87_forms.items()),
+            "unsupported_forms": sorted((x87_forms-supported_x87_forms).items()),
         },
         "unsupported_non_x87": total - supported - (x87_total - x87_supported),
         "indirect_control_transfers": {

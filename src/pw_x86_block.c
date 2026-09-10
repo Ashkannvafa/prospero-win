@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pw_x86_block.h"
+#include "pw_x87.h"
 #include <string.h>
 
 /* Context accesses below use signed disp8 encodings. Fail at build time if
@@ -50,7 +51,8 @@ static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned writ
 {
     uint64_t end=(uint64_t)address+width;
     unsigned permission=write==2?(PW_X86_READ|PW_X86_WRITE):write?PW_X86_WRITE:PW_X86_READ;
-    if (!address || (width!=1 && width!=2 && width!=4) || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
+    if (!address || (width!=1 && width!=2 && width!=4 && width!=8 && width!=10) ||
+        end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
         return 0;
     if(address>=state->stack_low && end<=state->stack_high)return address;
     for(unsigned i=0;i<state->memory_count;i++) {
@@ -182,6 +184,23 @@ static void fs_address(Emitter *e, uint32_t offset)
     /* The last byte of the dword must remain in the 32-bit address space. */
     byte(e,0x3d); word(e,0xfffffffcu); require_condition(e,0x76);
 }
+static int x87_dispatch(PwX86State *state,unsigned action,uintptr_t operand)
+{
+    uint16_t ax=0;int status=pw_x87_execute(&state->fp,(PwX87Action)action,operand,&ax);
+    if(status==PW_OK && action==PW_X87_FNSTSW_AX)
+        state->gpr[0]=(state->gpr[0]&0xffff0000u)|ax;
+    return status==PW_OK?0:-1;
+}
+static void x87_call(Emitter *e,unsigned action,unsigned register_operand)
+{
+    if(register_operand){byte(e,0xba);word(e,register_operand-1);}
+    else {byte(e,0x48);byte(e,0x89);byte(e,0xc2);}
+    byte(e,0xbe);word(e,action);byte(e,0x57);byte(e,0x48);byte(e,0xb8);
+    uint64_t target=(uint64_t)(uintptr_t)&x87_dispatch;
+    word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
+    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);byte(e,0x85);byte(e,0xc0);
+    require_condition(e,0x74); /* helper success */
+}
 
 int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                      uint8_t *output, size_t capacity, PwX86Block *block)
@@ -197,8 +216,50 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         size_t length;
         Operand operand;
         unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,extend=0,setcc=0;
+        unsigned x87=0,x87_width=0,x87_write=0,x87_register=0;
         int terminal = 0;
-        if(op==0xc1 || op==0xd1 || op==0xd3) {
+        if(op>=0xd8 && op<=0xdf) {
+            int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
+            if(result!=PW_OK)return result;
+            length=1+operand.bytes;
+            if(operand.mod!=3) {
+                if(op==0xd9 && operand.reg==0){x87=PW_X87_FLD_F32+1;x87_width=4;}
+                else if(op==0xd9 && operand.reg==2){x87=PW_X87_FST_F32+1;x87_width=4;x87_write=1;}
+                else if(op==0xd9 && operand.reg==3){x87=PW_X87_FSTP_F32+1;x87_width=4;x87_write=1;}
+                else if(op==0xdd && operand.reg==0){x87=PW_X87_FLD_F64+1;x87_width=8;}
+                else if(op==0xdd && operand.reg==3){x87=PW_X87_FSTP_F64+1;x87_width=8;x87_write=1;}
+                else if(op==0xdb && operand.reg==0){x87=PW_X87_FILD_I32+1;x87_width=4;}
+                else if(op==0xd8 && operand.reg<=6) {
+                    static const unsigned actions[]={PW_X87_FADD_F32,PW_X87_FMUL_F32,
+                        PW_X87_FCOM_F32,PW_X87_FCOMP_F32,PW_X87_FSUB_F32,
+                        PW_X87_FSUBR_F32,PW_X87_FDIV_F32};
+                    x87=actions[operand.reg]+1;x87_width=4;
+                } else if(op==0xdc && (operand.reg<=3 || operand.reg==7)) {
+                    static const unsigned actions[]={PW_X87_FADD_F64,PW_X87_FMUL_F64,
+                        PW_X87_FCOM_F64,PW_X87_FCOMP_F64,0,0,0,PW_X87_FDIVR_F64};
+                    x87=actions[operand.reg]+1;x87_width=8;
+                }
+                else return PW_ERR_UNSUPPORTED;
+            } else if(op==0xd9 && operand.reg==0) {
+                x87=PW_X87_FLD_ST+1;x87_register=operand.rm+1;
+            } else if(op==0xd9 && operand.reg==5 && operand.rm==0)x87=PW_X87_FLD1+1;
+            else if(op==0xd9 && operand.reg==5 && operand.rm==6)x87=PW_X87_FLDZ+1;
+            else if(op==0xd9 && operand.reg==4 && operand.rm==1)x87=PW_X87_FABS+1;
+            else if(op==0xd9 && operand.reg==7 && operand.rm==2)x87=PW_X87_FSQRT+1;
+            else if(op==0xdd && operand.reg==3) {
+                x87=PW_X87_FSTP_ST+1;x87_register=operand.rm+1;
+            } else if(op==0xdf && operand.reg==4 && operand.rm==0)x87=PW_X87_FNSTSW_AX+1;
+            else if(op==0xd8 && (operand.reg==0 || operand.reg==1 || operand.reg==2 ||
+                                 operand.reg==4 || operand.reg==6)) {
+                static const unsigned actions[]={PW_X87_FADD_ST,PW_X87_FMUL_ST,
+                    PW_X87_FCOM_ST,0,PW_X87_FSUB_ST,0,PW_X87_FDIV_ST};
+                x87=actions[operand.reg]+1;x87_register=operand.rm+1;
+            } else if(op==0xde && (operand.reg==0 || operand.reg==7)) {
+                x87=(operand.reg==0?PW_X87_FADDP_ST:PW_X87_FDIVP_ST)+1;
+                x87_register=operand.rm+1;
+            } else if(op==0xda && operand.reg==5 && operand.rm==1)x87=PW_X87_FUCOMPP+1;
+            else return PW_ERR_UNSUPPORTED;
+        } else if(op==0xc1 || op==0xd1 || op==0xd3) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if(result!=PW_OK)return result;
             if(operand.reg!=4 && operand.reg!=5 && operand.reg!=7)return PW_ERR_UNSUPPORTED;
@@ -270,7 +331,10 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if(op==0xc1 || op==0xd1 || op==0xd3) {
+        if(x87) {
+            if(operand.mod!=3){effective_address(&e,&operand);memory_address_width(&e,x87_write,x87_width);}
+            x87_call(&e,x87-1,x87_register);
+        } else if(op==0xc1 || op==0xd1 || op==0xd3) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
             if(op==0xd3){byte(&e,0x8b);byte(&e,0x4f);byte(&e,4);}

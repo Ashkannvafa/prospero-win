@@ -42,15 +42,16 @@ is supported.
 
 | Root | Reachable functions | Static instructions | Accepted | Unique x87 forms |
 | --- | ---: | ---: | ---: | ---: |
-| Entry | 151 | 8,082 | 7,558 (93.52%) | 36 |
-| Application startup | 145 | 7,905 | 7,382 (93.38%) | 36 |
-| Main window procedure | 350 | 23,338 | 20,661 (88.53%) | 54 |
-| Union of all three | 393 | 25,538 | 22,839 (89.43%) | 54 |
+| Entry | 151 | 8,082 | 7,942 (98.27%) | 36 |
+| Application startup | 145 | 7,905 | 7,766 (98.24%) | 36 |
+| Main window procedure | 350 | 23,338 | 22,900 (98.12%) | 54 |
+| Union of all three | 393 | 25,538 | 25,092 (98.25%) | 54 |
 
-All 393 function bodies were read successfully. Of 2,699 rejected static
-instructions, 2,300 are x87 occurrences (85.22%) comprising only 54 unique
-semantic encoding forms; none executes yet. The startup graph needs 36 forms.
-The remaining 399 include unsupported MOV forms, string
+All 393 function bodies were read successfully. Integer-only binary80 helpers
+now translate 2,253 of 2,300 x87 occurrences. All 36 startup forms and all 384
+startup x87 occurrences are accepted; the 47 remaining x87 occurrences belong
+to later wndproc/gameplay forms. Another 399 rejected instructions include
+unsupported MOV forms, string
 operations shown by Ghidra as MOVSD, IMUL, CDQ and less frequent integer forms.
 The largest x87 groups are FSTP (781), FLD (583), FLDZ (279), FNSTSW (129) and
 FMUL (125). If every observed x87 form alone were implemented, the arithmetic
@@ -79,10 +80,11 @@ aggregate counts, and the classifier calls the production translator so future
 instruction support changes are reflected without maintaining a duplicate
 opcode allowlist.
 
-The checked `PINBALL_X86_COVERAGE.json` is the sanitized aggregate result; it
+The checked schema-3 `PINBALL_X86_COVERAGE.json` is the sanitized aggregate result; it
 contains no bytes or assembly. Form identifiers retain mnemonic, opcode class,
 ModR/M group and register operand only, enough to distinguish semantics without
-publishing proprietary instructions.
+publishing proprietary instructions. It records supported and unsupported form
+sets globally and per root, so the 36/36 startup assertion is machine-checked.
 
 ## Source/PDB/binary crosswalk
 

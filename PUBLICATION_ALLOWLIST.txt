@@ -72,6 +72,8 @@ src/pw_x86_cache.c
 src/pw_x86_cache.h
 src/pw_x86_engine.c
 src/pw_x86_engine.h
+src/pw_x87.c
+src/pw_x87.h
 src/pw_user32.c
 src/pw_user32.h
 src/pw_guest_call.c
@@ -85,11 +87,13 @@ tools/make_win32_catalog.py
 tests/test_pw_win32.c
 tests/test_win32_catalog.py
 tests/test_classify_x86.py
+tests/test_startup_x87_contract.py
 tests/test_pw_import_bind.c
 tests/test_pw_guest_call.c
 tests/test_pw_x86_block.c
 tests/test_pw_x86_cache.c
 tests/test_pw_x86_engine.c
+tests/test_pw_x87.c
 tests/test_pw_user32.c
 tests/test_pw_x86_reference.S
 tests/test_x86_differential.py

@@ -264,9 +264,13 @@ commits FP changes only after successful ABI return.
 Tests cover the field mappings, defaults, status handling, queries, ambiguous
 state, raw 80-bit push/peek/pop, TOP wrap, zero/valid tags, overflow/underflow,
 invalid/uninitialized calls, and unchanged host x87/MXCSR controls.
-This is **state support only**: no x87 arithmetic,
-exception delivery or SSE execution is implemented. Future instruction and
-CRT math handlers must consume this same per-thread state, not host defaults.
+`pw_x87` adds integer-only binary80 load/store conversion, constants, register
+stack operations, status transfer, add/subtract/multiply/divide, comparisons
+and square root. The translator accepts all 36 source-reachable startup forms;
+synthetic encoding and independently stated IEEE-bit golden vectors cover the
+families. Complete unmasked trap delivery, later transcendental forms and SSE
+execution remain pending. Every future handler must consume this same
+per-thread state, not host defaults.
 
 ## Initializer callbacks
 

@@ -82,11 +82,12 @@ structured ps5log/1 evidence and an independently checked result.
   complete call graph when indirect calls remain unresolved. Keep decompiled
   code and original resources private; publish only original contracts/tests.
   Runtime classified stops validate integration, not the primary discovery plan.
-  A callback-inclusive Ghidra survey now measures 22,839 of 25,538 exact static
-  instructions accepted (89.43%) across 393 reachable functions. x87 accounts
-  for 2,300 occurrences but only 54 unique semantic forms (36 in startup);
-  399 rejected non-x87 instructions
-  and indirect/callback graph incompleteness remain. See STARTUP_ANALYSIS.md.
+  A callback-inclusive Ghidra survey now measures 25,092 of 25,538 exact static
+  instructions accepted (98.25%) across 393 reachable functions. Integer-only
+  binary80 helpers translate 2,253/2,300 x87 occurrences, including all 36 forms
+  and 384 occurrences in startup. The remaining 47 x87 occurrences are later
+  wndproc/gameplay forms; 399 rejected non-x87 instructions and indirect/callback
+  graph incompleteness remain. See STARTUP_ANALYSIS.md.
   The host runner now executes generation-scoped cached multi-instruction
   blocks. It publishes through an ownership-safe RW-to-RX transition, reports
   hit/miss/publish/retirement metrics, and has invalidation and mid-block-fault
@@ -116,8 +117,10 @@ structured ps5log/1 evidence and an independently checked result.
   Six time/counter and identity handlers have injected-service tests; PS5 clock backends remain pending.
   Initializer callbacks have complete translated synthetic tests and one complete
   original-game callback in host. Registry storage/ABI and error branches have
-  synthetic tests. FP control plus an isolated raw 80-bit x87 stack exists;
-  x87/SSE arithmetic and exception execution remain pending.
+  synthetic tests. FP control, isolated raw 80-bit state, transfer/constant/status
+  operations and startup add/subtract/multiply/divide/compare/square-root families
+  execute without installing guest FP state in the host. Later x87 forms,
+  complete unmasked exception delivery and SSE execution remain pending.
   This is not application entry or PS5 execution evidence; most APIs are pending.
 - [ ] Implement the observed Win32 surface: process/error state, heap,
   virtual memory, files/resources, registry subset if needed, clocks and

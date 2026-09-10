@@ -81,6 +81,14 @@ def test_core_imports_nothing_surprising() -> None:
                 f"{relative} calls {symbol}"
 
 
+def test_x87_never_uses_host_floating_point_state() -> None:
+    code = code_without_literals_or_comments(read("src/pw_x87.c"))
+    assert not re.search(r"\b(float|double)\b", code)
+    assert not re.search(r"\b(__asm__|asm)\b", code)
+    for symbol in ("sqrt", "sin", "cos", "fenv", "fesetround"):
+        assert not re.search(rf"\b{symbol}\s*\(", code), symbol
+
+
 def test_posix_backend_is_narrow() -> None:
     text = read("src/pw_vm_posix.c")
     assert set(includes(text)) <= {"<sys/mman.h>", "<unistd.h>"}, \

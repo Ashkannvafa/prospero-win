@@ -22,6 +22,7 @@ src/               the portable loader core
   pw_x86_block  bounded x86-to-x86-64 translation
   pw_x86_cache  mapping-generation-scoped translated-block lifecycle
   pw_x86_engine source-span translation, cache dispatch and RW-to-RX publication
+  pw_x87        integer-only binary80 execution over isolated guest FP state
   pw_user32     process-owned message/window namespace and common-control state
   pw_crt_format allocation-free guest varargs formatting subset
   pw_guest_fp   isolated x87/SSE control and raw 80-bit stack state

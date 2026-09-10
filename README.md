@@ -19,14 +19,16 @@ DRM, anti-cheat and kernel drivers are out of scope.
   1,823 instructions and 105 completed calls (30 distinct APIs). The measured
   run records 417 dispatches, 270 cache hits and 147 published blocks. The next
   classified stop is `LoadIconA`, before window-class registration.
-- **Measured execution scope:** 22,839/25,538 reachable static instructions
-  are accepted. The 2,300 x87 occurrences reduce to 54 unique semantic forms
-  (36 in the startup graph), not 2,300 separate implementation tasks.
+- **Measured execution scope:** 25,092/25,538 reachable static instructions
+  are accepted (98.25%). Integer-only binary80 helpers now translate 2,253 of
+  2,300 x87 occurrences, including all 36 forms and all 384 occurrences in the
+  startup graph. The remaining 47 x87 occurrences are later wndproc/gameplay
+  forms; 399 rejected instructions are non-x87.
 - **Verified oracle:** the target SHA-1, public PDB identity and ten public
   symbol addresses match the pinned MIT source reconstruction. The generated
   manifest groups source-confirmed startup, graphics, input and audio APIs.
-- **Next:** implement the 36 startup x87 forms and the resource/window ownership
-  package beginning at `LoadIconA`. Wine remains a contract
+- **Next:** implement the resource/window ownership package beginning at
+  `LoadIconA`, then exercise x87 on newly reached exact-binary paths. Wine remains a contract
   and test reference, not a claim of implemented compatibility.
 - **Not yet implemented:** a complete execution engine, Win32 API surface
   or a running Windows game.

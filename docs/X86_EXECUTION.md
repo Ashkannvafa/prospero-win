@@ -202,7 +202,7 @@ that field is not a CRT return value (the same applies to `_initterm` and
 GetSystemTimeAsFileTime and GetStartupInfoA). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: sixteen distinct API cases and one original callback have completed,
+This is host evidence only: 30 distinct API cases and one original callback have completed,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
@@ -215,10 +215,9 @@ host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
 base and the shared stdcall return service. Other API cases remain pending.
 
-Next coverage: module paths, import binding and dispatch, more arithmetic and
-guest EFLAGS, TEB initialization and broader FS encodings, indirect calls into import adapters,
-x87/SSE execution and fault semantics. A tested generation-scoped cache
-metadata/lifecycle core now rejects duplicate publication and arena/capacity
-overflow, but the diagnostic tracer does not consume it yet. There is no
-eviction policy, full memory model or scheduling. Before a broader decoder is adopted,
-retain these semantic tests and extend differential coverage.
+Next coverage: the resource/window ownership package from `LoadIconA`, TEB
+initialization and broader FS encodings, plus later wndproc integer/x87 forms.
+The diagnostic tracer uses the tested generation-scoped cache and reports its
+dispatch/publication metrics. Integer-only binary80 execution covers every
+startup x87 form without touching host FP state; complete unmasked exception
+delivery, SSE, cache eviction, a full memory model and scheduling remain.

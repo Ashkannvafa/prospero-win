@@ -69,6 +69,41 @@ static void addressing_tests(void)
     state.gpr[5]=0xabcddcba;
     assert(run(load,sizeof(load),0x730)==-1 && state.gpr[5]==0xabcddcba);
 }
+static void x87_transfer_tests(void)
+{
+    pw_guest_fp_init(&state.fp);state.gpr[0]=0xabcd0000;state.eflags=0xad7;
+    uint32_t address=state.stack_low,bits=0x3f800000;
+    memcpy((void *)(uintptr_t)address,&bits,4);
+    uint8_t load_store[]={0xd9,0x05,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24),
+        0xd9,0x1d,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24)};
+    assert(run(load_store,sizeof(load_store),0xd400)==0);
+    memcpy(&bits,(void *)(uintptr_t)address,4);
+    assert(bits==0x3f800000 && pw_guest_x87_peek(&state.fp,0,(uint8_t[10]){0})==PW_ERR_NOT_FOUND);
+    assert(state.eflags==0xad7 && state.eip==0xd400+sizeof(load_store));
+
+    int32_t integer=-17;memcpy((void *)(uintptr_t)address,&integer,4);
+    uint8_t fild[]={0xdb,0x05,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24)};
+    assert(run(fild,sizeof(fild),0xd420)==0);
+    const uint8_t duplicate_status[]={0xd9,0xc0,0xdd,0xd9,0xdf,0xe0};
+    assert(run(duplicate_status,sizeof(duplicate_status),0xd430)==0);
+    assert((state.gpr[0]&0xffff)==state.fp.x87_status);
+    uint8_t discarded[10];assert(pw_guest_x87_pop(&state.fp,discarded)==PW_OK);
+
+    const uint8_t constants[]={0xd9,0xe8,0xd9,0xee};
+    assert(run(constants,sizeof(constants),0xd440)==0);
+    uint8_t zero[10];assert(pw_guest_x87_pop(&state.fp,zero)==PW_OK);
+    assert(!memcmp(zero,(uint8_t[10]){0},10));
+    assert(pw_guest_x87_pop(&state.fp,discarded)==PW_OK);
+
+    /* An eight-byte load that crosses the live boundary faults atomically. */
+    state.gpr[1]=state.stack_high-7;PwGuestFp before=state.fp;
+    const uint8_t bad[]={0xdd,0x01};
+    assert(run(bad,sizeof(bad),0xd450)==-1 && state.eip==0xd450);
+    assert(!memcmp(&before,&state.fp,sizeof(before)));
+}
 static void arithmetic_tests(void)
 {
     for(unsigned carry=0;carry<2;carry++) {
@@ -574,6 +609,7 @@ int main(int argc, char **argv)
     state.memory_count=0;
     assert(run(read_region,sizeof(read_region),0xb60)==-1);
     assert(backend.release(NULL,&thread)==PW_OK);
+    x87_transfer_tests();
     addressing_tests();
     arithmetic_tests();
     comparison_tests();
