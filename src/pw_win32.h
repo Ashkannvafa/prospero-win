@@ -7,9 +7,11 @@
 #include "pw_guest_heap.h"
 #include "pw_registry.h"
 #include "pw_user32.h"
+#include "pw_gdi.h"
 enum { PW_WIN32_TOKEN_BASE=0xe0000000u, PW_WIN32_CALLBACK_BASE=0xe1000000u,
        PW_WIN32_INIT_DEPTH=8, PW_WIN32_INIT_ENTRIES=1024,
-       PW_WIN32_WINDOW_CALLBACK=PW_WIN32_CALLBACK_BASE+PW_WIN32_INIT_DEPTH*16 };
+       PW_WIN32_WINDOW_CALLBACK=PW_WIN32_CALLBACK_BASE+PW_WIN32_INIT_DEPTH*16,
+       PW_WIN32_UPDATE_CALLBACK=PW_WIN32_WINDOW_CALLBACK+16 };
 typedef struct PwWin32Init {
     PwGuestCall call;
     PwGuestCallback callback;
@@ -21,6 +23,12 @@ typedef struct PwWin32Create {
     uint32_t slot,handle,wndproc,create_struct,phase;
     unsigned active;
 } PwWin32Create;
+typedef struct PwWin32Update {
+    PwGuestCall call;
+    PwGuestCallback callback;
+    uint32_t handle,wndproc;
+    unsigned active;
+} PwWin32Update;
 typedef enum PwClockDomain { PW_CLOCK_UTC=1, PW_CLOCK_UPTIME=2, PW_CLOCK_COUNTER=3 } PwClockDomain;
 typedef struct PwWin32Services {
     void *opaque;
@@ -48,6 +56,7 @@ typedef struct PwWin32 {
     PwGuestHeap *heap; /* owner-supplied arena, registered RW in guest memory */
     PwRegistry *registry; /* owner-supplied fixed-capacity Win32 registry */
     PwUser32 *user32; /* owner-supplied registered-message/window namespace */
+    PwGdi *gdi; /* owner-supplied fixed-capacity GDI object/display namespace */
     uint32_t crt_errno; /* logical per-guest-thread errno; pointer export pending */
     uint32_t last_error; /* Win32 per-guest-thread error, distinct from CRT errno */
     uint16_t startup_show; /* explicit GUI launch profile: SW_SHOWNORMAL by default */
@@ -57,6 +66,7 @@ typedef struct PwWin32 {
     unsigned callback_pending,init_depth;
     PwWin32Init init[PW_WIN32_INIT_DEPTH];
     PwWin32Create create;
+    PwWin32Update update;
 } PwWin32;
 /* Caller supplies a live RW, identity-mapped CRT region of at least 4096
  * bytes. Tokens occupy [TOKEN_BASE,TOKEN_BASE+catalog_count*16); the owner

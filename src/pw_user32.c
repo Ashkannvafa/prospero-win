@@ -159,6 +159,19 @@ int pw_user32_set_window_long(PwUser32 *user,uint32_t handle,int32_t index,
     memcpy(window->extra+(uint32_t)index,&value,sizeof(value));
     return PW_OK;
 }
+int pw_user32_get_window_long(const PwUser32 *user,uint32_t handle,int32_t index,
+                              uint32_t *value)
+{
+    if(!user || !user->windows || !handle || !value)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        const PwUser32Window *window=&user->windows[i];
+        if(!window->used || window->creating || window->handle!=handle)continue;
+        if(index<0 || (uint32_t)index>window->extra_bytes ||
+           window->extra_bytes-(uint32_t)index<sizeof(uint32_t))return PW_ERR_PRECONDITION;
+        memcpy(value,window->extra+(uint32_t)index,sizeof(*value));return PW_OK;
+    }
+    return PW_ERR_NOT_FOUND;
+}
 int pw_user32_configure_desktop(PwUser32 *user,uint32_t width,uint32_t height)
 {
     if(!user || !user->windows || !width || !height || width>INT32_MAX || height>INT32_MAX)
@@ -183,6 +196,104 @@ int pw_user32_get_window_rect(const PwUser32 *user,uint32_t handle,PwUser32Rect 
             return PW_ERR_LIMIT;
         *rect=(PwUser32Rect){(int32_t)window->x,(int32_t)window->y,
             (int32_t)right,(int32_t)bottom};return PW_OK;
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_move_window(PwUser32 *user,uint32_t handle,int32_t x,int32_t y,
+                          uint32_t width,uint32_t height)
+{
+    if(!user || !user->windows || !handle || !width || !height || width>INT32_MAX ||
+       height>INT32_MAX)return PW_ERR_PRECONDITION;
+    int64_t right=(int64_t)x+width,bottom=(int64_t)y+height;
+    if(right<INT32_MIN || right>INT32_MAX || bottom<INT32_MIN || bottom>INT32_MAX)
+        return PW_ERR_LIMIT;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            window->x=(uint32_t)x;window->y=(uint32_t)y;
+            window->width=width;window->height=height;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_show_window(PwUser32 *user,uint32_t handle,uint32_t command,uint32_t *previous)
+{
+    if(!user || !user->windows || !handle || !previous)return PW_ERR_PRECONDITION;
+    if(command!=8)return PW_ERR_UNSUPPORTED; /* SW_SHOWNA: exact splash path */
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            *previous=window->visible;window->visible=1;window->needs_paint=1;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_set_focus(PwUser32 *user,uint32_t handle,uint32_t *previous)
+{
+    if(!user || !user->windows || !handle || !previous)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            *previous=user->focus_window;user->focus_window=handle;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_paint_info(const PwUser32 *user,uint32_t handle,uint32_t *wndproc,
+                         uint32_t *needed)
+{
+    if(!user || !user->windows || !handle || !wndproc || !needed)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        const PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            if(!window->wndproc)return PW_ERR_STATE;
+            *wndproc=window->wndproc;*needed=window->needs_paint;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_finish_paint(PwUser32 *user,uint32_t handle)
+{
+    if(!user || !user->windows || !handle)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            window->needs_paint=0;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_begin_paint(PwUser32 *user,uint32_t handle,uint32_t dc)
+{
+    if(!user || !user->windows || !handle || !dc)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            if(window->painting)return PW_ERR_STATE;
+            window->paint_dc=dc;window->painting=1;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_end_paint(PwUser32 *user,uint32_t handle,uint32_t dc)
+{
+    if(!user || !user->windows || !handle || !dc)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            if(!window->painting || window->paint_dc!=dc)return PW_ERR_STATE;
+            window->paint_dc=0;window->painting=0;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_check_paint(const PwUser32 *user,uint32_t handle,uint32_t dc)
+{
+    if(!user || !user->windows || !handle || !dc)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        const PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle)
+            return window->painting && window->paint_dc==dc?PW_OK:PW_ERR_STATE;
     }
     return PW_ERR_NOT_FOUND;
 }

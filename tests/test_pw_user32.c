@@ -62,9 +62,28 @@ int main(void)
     assert(pw_user32_get_window_rect(&user,handle,&rect)==PW_OK && rect.left==-10 &&
            rect.top==-10 && rect.right==-9 && rect.bottom==-9);
     uint32_t previous=99;
+    assert(pw_user32_move_window(&user,handle,5,6,640,480)==PW_OK);
+    assert(pw_user32_get_window_rect(&user,handle,&rect)==PW_OK && rect.left==5 &&
+           rect.top==6 && rect.right==645 && rect.bottom==486);
+    assert(pw_user32_show_window(&user,handle,8,&previous)==PW_OK && !previous &&
+           windows[1].visible && windows[1].needs_paint);
+    assert(pw_user32_show_window(&user,handle,8,&previous)==PW_OK && previous==1);
+    assert(pw_user32_show_window(&user,handle,5,&previous)==PW_ERR_UNSUPPORTED);
+    assert(pw_user32_set_focus(&user,handle,&previous)==PW_OK && !previous &&
+           user.focus_window==handle);
+    uint32_t wndproc,needed;
+    assert(pw_user32_paint_info(&user,handle,&wndproc,&needed)==PW_OK &&
+           wndproc==window.wndproc && needed==1);
+    assert(pw_user32_begin_paint(&user,handle,0x20000)==PW_OK && windows[1].painting);
+    assert(pw_user32_end_paint(&user,handle,0x20001)==PW_ERR_STATE && windows[1].painting);
+    assert(pw_user32_end_paint(&user,handle,0x20000)==PW_OK && !windows[1].painting);
+    assert(pw_user32_finish_paint(&user,handle)==PW_OK);
+    assert(pw_user32_paint_info(&user,handle,&wndproc,&needed)==PW_OK && !needed);
+    previous=99;
     assert(pw_user32_set_window_long(&user,handle,0,0x12345678,&previous)==PW_OK && !previous);
     assert(pw_user32_set_window_long(&user,handle,0,0x87654321,&previous)==PW_OK &&
            previous==0x12345678);
+    assert(pw_user32_get_window_long(&user,handle,0,&previous)==PW_OK && previous==0x87654321);
     assert(pw_user32_set_window_long(&user,handle,1,0,&previous)==PW_ERR_PRECONDITION);
     assert(pw_user32_set_window_long(&user,0xdeadbeef,0,0,&previous)==PW_ERR_NOT_FOUND);
     windows[1].creating=1;assert(pw_user32_finish_window(&user,slot,0)==PW_OK && !windows[1].used);

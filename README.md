@@ -15,12 +15,13 @@ DRM, anti-cheat and kernel drivers are out of scope.
 - **Measured:** the tested LDT route is refused; low allocations and
   mprotect RW-to-RX/RWX work in a title.
 - **Host progress:** the exact Pinball binary reaches its public-PDB-verified
-  `WinMain` address through generation-scoped cached multi-instruction blocks:
-  2,031 instructions and 120 completed calls (38 distinct APIs). The measured
-  run records 463 dispatches, 288 cache hits and 175 published blocks. Named
-  resources, class registration, synchronous splash WndProc creation, window
-  extra storage and virtual-desktop geometry complete; the next classified
-  stop is `GetDC` at the GDI boundary.
+  `WinMain` address and completes the splash construction and paint path:
+  2,287 translated instructions and 151 completed adapter calls across 58
+  distinct DLL/API pairs. The measured run records 522 DBT dispatches, 298
+  cache hits and 224 published blocks. Owned window/memory DCs, bitmap decode,
+  selection, clipping, palette calls and both splash blits complete. The next
+  classified stop is `MapVirtualKeyA` in keyboard scan-code discovery, beyond
+  the splash package.
 - **Measured execution scope:** 25,092/25,538 reachable static instructions
   are accepted (98.25%). Integer-only binary80 helpers now translate 2,253 of
   2,300 x87 occurrences, including all 36 forms and all 384 occurrences in the
@@ -29,8 +30,8 @@ DRM, anti-cheat and kernel drivers are out of scope.
 - **Verified oracle:** the target SHA-1, public PDB identity and ten public
   symbol addresses match the pinned MIT source reconstruction. The generated
   manifest groups source-confirmed startup, graphics, input and audio APIs.
-- **Next:** define the owned DC/bitmap package required by the splash renderer,
-  then exercise x87 on newly reached exact-binary paths. Wine remains a contract
+- **Next:** implement the source-confirmed keyboard mapping package and advance
+  through main-window creation and the message loop. Wine remains a contract
   and test reference, not a claim of implemented compatibility.
 - **Not yet implemented:** a complete execution engine, Win32 API surface
   or a running Windows game.
@@ -63,6 +64,7 @@ make native PS5LOG_DEV_CONF=/private/path/dev.conf
 [Roadmap](docs/ROADMAP.md) · [Pinball target](docs/PINBALL_TARGET.md) ·
 [Architecture](docs/ARCHITECTURE.md) ·
 [Execution model](docs/EXECUTION_MODEL.md) ·
+[GDI contracts](docs/GDI.md) ·
 [Source oracle](docs/PINBALL_SOURCE_ORACLE.json) ·
 [x86 coverage](docs/PINBALL_X86_COVERAGE.json) ·
 [Import plan](docs/IMPORT_PLAN.md) · [Wine reuse audit](docs/WINE_REUSE_AUDIT.md) ·

@@ -5,6 +5,7 @@ docs/DEVELOPMENT.md
 docs/EXECUTION_MODEL.md
 docs/IMPORT_PLAN.md
 docs/GUEST_ABI.md
+docs/GDI.md
 docs/WINE_REUSE_AUDIT.md
 docs/X86_EXECUTION.md
 docs/PE_MAPPING_PHASE0.md
@@ -76,6 +77,8 @@ src/pw_x87.c
 src/pw_x87.h
 src/pw_user32.c
 src/pw_user32.h
+src/pw_gdi.c
+src/pw_gdi.h
 src/pw_guest_call.c
 src/pw_guest_call.h
 src/pw_import_bind.c
@@ -95,6 +98,8 @@ tests/test_pw_x86_cache.c
 tests/test_pw_x86_engine.c
 tests/test_pw_x87.c
 tests/test_pw_user32.c
+tests/test_pw_gdi.c
+tests/test_pw_gdi_abi.c
 tests/test_pw_window.c
 tests/test_pw_x86_reference.S
 tests/test_x86_differential.py

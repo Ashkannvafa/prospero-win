@@ -106,6 +106,14 @@ static void x87_transfer_tests(void)
 }
 static void arithmetic_tests(void)
 {
+    const uint32_t signed_values[]={0,1,0x7fffffffu,0x80000000u,0xffffffffu};
+    for(unsigned i=0;i<sizeof(signed_values)/sizeof(signed_values[0]);i++) {
+        state.gpr[0]=signed_values[i];state.gpr[2]=0x12345678;state.eflags=0xad7;
+        const uint8_t cdq[]={0x99};
+        assert(run(cdq,sizeof(cdq),0x8e0)==0 && state.gpr[0]==signed_values[i] &&
+               state.gpr[2]==(signed_values[i]&0x80000000u?UINT32_MAX:0) &&
+               state.eflags==0xad7);
+    }
     for(unsigned carry=0;carry<2;carry++) {
         state.gpr[0]=7;state.eflags=0x202|carry;
         const uint8_t sbb[]={0x1b,0xc0};

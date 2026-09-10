@@ -110,7 +110,8 @@ GetModuleHandleA(NULL), returns its actual mapped base, then calls
 and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA, malloc,
 lstrcpyA and lstrcatA. The registry package then completes the source-confirmed
 read-default and write-default sequences; the exact-binary trace reaches
-`WinMain` and stops at `GetDC` after 2,031 instructions and 120 completed calls.
+`WinMain`, completes the splash construction/paint package and stops at
+`MapVirtualKeyA` after 2,287 instructions and 151 completed adapter calls.
 One initializer callback and both synchronous splash-window creation callbacks
 have returned through the shared guest ABI machinery. The adapter constructs a
 48-byte PE32 `CREATESTRUCTA`, keeps the HWND provisional through `WM_NCCREATE`
@@ -256,7 +257,7 @@ The Win32 dispatcher implements all seven registry imports present in this
 target: `RegCreateKeyExA`, both open variants, both query variants,
 `RegSetValueExA` and `RegCloseKey`. Guest pointers and output spans are checked
 before writes or registry mutation. Source-oracle evidence confirms the startup
-read-default and write-default sequences; the 2,031-instruction host trace
+read-default and write-default sequences; the 2,287-instruction host trace
 executes both. Persistence is intentionally a later injected service—this core
 does not use the host filesystem or claim Windows security/access semantics.
 

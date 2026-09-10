@@ -2,6 +2,7 @@
 #include "pe_resource.h"
 static uint32_t u16(const uint8_t *p){return (uint32_t)p[0]|(uint32_t)p[1]<<8;}
 static uint32_t u32(const uint8_t *p){return u16(p)|u16(p+2)<<16;}
+static uint32_t ascii_upper(uint32_t c){return c>='a' && c<='z'?c-('a'-'A'):c;}
 static int span(const PeImage *im,uint32_t offset,uint32_t n,const uint8_t **p)
 {
     const PeDataDirectory *d=pe_image_directory(im,PE_DIR_RESOURCE);
@@ -55,7 +56,8 @@ static int entry_name(const PeImage *im,uint32_t table,const char *name,uint32_t
         if((status=span(im,(key&0x7fffffffu)+2,units*2,&text))!=PW_OK)return status;
         if(units!=wanted)continue;
         unsigned equal=1;
-        for(unsigned j=0;j<units;j++)if(u16(text+j*2)!=(unsigned char)name[j]){equal=0;break;}
+        for(unsigned j=0;j<units;j++)
+            if(ascii_upper(u16(text+j*2))!=ascii_upper((unsigned char)name[j])){equal=0;break;}
         if(equal){*target=value;return PW_OK;}
     }
     return PW_ERR_NOT_FOUND;

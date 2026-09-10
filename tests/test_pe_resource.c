@@ -48,7 +48,7 @@ int main(void)
     const char icon[]="ICON_1";
     for(unsigned i=0;i<6;i++)bytes[0xa2+i*2]=(uint8_t)icon[i];
     assert(pe_resource_find_name(&im,6,"ICON_1",0x409,&r)==PW_OK && r.size==34);
-    assert(pe_resource_find_name(&im,6,"icon_1",0x409,&r)==PW_ERR_NOT_FOUND);
+    assert(pe_resource_find_name(&im,6,"icon_1",0x409,&r)==PW_OK && r.size==34);
     assert(pe_resource_find_name(&im,6,"IC\xff",0x409,&r)==PW_ERR_UNSUPPORTED);
     return 0;
 }

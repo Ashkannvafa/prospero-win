@@ -21,6 +21,9 @@ static PwUser32Message user_messages[128];
 static PwUser32Window user_windows[128];
 static PwUser32Resource user_resources[128];
 static PwUser32Class user_classes[128];
+static PwGdiDc gdi_dcs[128];
+static PwGdiSurface gdi_surfaces[128];
+static uint8_t gdi_pixels[32*1024*1024];
 static PwX86CacheEntry cache_entries[8192];
 typedef struct TraceSource { const PeImage *image;const PeLayout *layout; } TraceSource;
 static int trace_source(void *opaque,uint32_t pc,const uint8_t **source,size_t *bytes)
@@ -103,9 +106,10 @@ int main(int argc,char **argv)
        image.image_base+image.size_of_image>UINT32_MAX)goto done;
     PwVmBackend vm;
     PwVmRegion stack={0},thread={0},crt={0},heap_region={0};
-    PwGuestHeap heap;PwRegistry registry;PwUser32 user32;PwX86Engine engine={0};
+    PwGuestHeap heap;PwRegistry registry;PwUser32 user32;PwGdi gdi;PwX86Engine engine={0};
     PwMappedImage mapped={0};PeLayout layout;TraceSource trace_view={&image,&layout};
-    int have_engine=0,have_stack=0,have_thread=0,have_image=0,have_crt=0,have_heap=0;
+    int have_engine=0,have_stack=0,have_thread=0,have_image=0,have_crt=0,have_heap=0,
+        have_gdi=0;
     if(pw_vm_posix_backend(&vm)!=PW_OK)goto done;
     if(vm.reserve_at(NULL,0x03000000,0x100000,4096,&stack)!=PW_OK)goto cleanup;
     have_stack=1;
@@ -142,7 +146,10 @@ int main(int argc,char **argv)
     if(pw_user32_init_resources(&user32,user_resources,128)!=PW_OK)goto cleanup;
     /* Deterministic virtual display profile for host-only startup tracing. */
     if(pw_user32_configure_desktop(&user32,1920,1080)!=PW_OK)goto cleanup;
-    runtime.heap=&heap;runtime.registry=&registry;runtime.user32=&user32;
+    if(pw_gdi_init(&gdi,gdi_dcs,128,gdi_surfaces,128,gdi_pixels,sizeof(gdi_pixels))!=PW_OK)
+        goto cleanup;
+    have_gdi=1;
+    runtime.heap=&heap;runtime.registry=&registry;runtime.user32=&user32;runtime.gdi=&gdi;
     if(pw_user32_init_classes(&user32,user_classes,128)!=PW_OK)goto cleanup;
     runtime.services=(PwWin32Services){.opaque=&trace_view,.clock_ns=host_clock,.process_id=1,.thread_id=2,
         .string_resource=host_string,.named_resource=host_named_resource,
@@ -184,9 +191,12 @@ int main(int argc,char **argv)
             continue;
         }
         if(dispatched!=PW_ERR_NOT_FOUND){
-            printf("kind=host-api-stop dll=%s name=%s status=%d\n",
+            uint32_t caller=0;
+            if(state.gpr[4]>=state.stack_low && state.gpr[4]<=state.stack_high-4)
+                memcpy(&caller,(const void *)(uintptr_t)state.gpr[4],sizeof(caller));
+            printf("kind=host-api-stop dll=%s name=%s status=%d caller=0x%08x\n",
                    runtime.last_dll?runtime.last_dll:"unknown",
-                   runtime.last_name?runtime.last_name:"unknown",dispatched);
+                   runtime.last_name?runtime.last_name:"unknown",dispatched,caller);
             stop=dispatched==PW_ERR_UNSUPPORTED?"unimplemented-api":"api-frame-error";break;
         }
         PwX86StepReport step;int status=pw_x86_engine_step(&engine,&state,&step);
@@ -215,9 +225,25 @@ int main(int argc,char **argv)
     for(uint32_t i=0;i<heap.count;i++)if(heap.blocks[i].used){live++;requested+=heap.blocks[i].requested;}
     printf("kind=host-heap-summary blocks=%u live=%u requested=%llu arena=%u valid=%d\n",
            heap.count,live,(unsigned long long)requested,heap.bytes,pw_guest_heap_validate(&heap)==PW_OK);
+    PwGdiCounts gdi_counts={0};int gdi_valid=pw_gdi_validate(&gdi)==PW_OK;
+    (void)pw_gdi_counts(&gdi,&gdi_counts);
+    printf("kind=host-gdi-summary dcs=%u window_dcs=%u memory_dcs=%u surfaces=%u "
+           "targets=%u bitmaps=%u pixels=%llu valid=%d\n",gdi_counts.dcs,
+           gdi_counts.window_dcs,gdi_counts.memory_dcs,gdi_counts.surfaces,
+           gdi_counts.target_surfaces,gdi_counts.bitmaps,
+           (unsigned long long)gdi_counts.pixel_bytes,gdi_valid);
     /* A classified stop is evidence, never a successful game startup. */
     result=2;
+    if(pw_gdi_reset(&gdi)!=PW_OK || pw_gdi_counts(&gdi,&gdi_counts)!=PW_OK ||
+       pw_gdi_validate(&gdi)!=PW_OK)result=1;
+    else {
+        have_gdi=0;
+        printf("kind=host-gdi-cleanup dcs=%u surfaces=%u bitmaps=%u pixels=%llu valid=1\n",
+               gdi_counts.dcs,gdi_counts.surfaces,gdi_counts.bitmaps,
+               (unsigned long long)gdi_counts.pixel_bytes);
+    }
 cleanup:
+    if(have_gdi && pw_gdi_reset(&gdi)!=PW_OK)result=1;
     if(have_engine && pw_x86_engine_destroy(&engine)!=PW_OK)result=1;
     if(have_heap && vm.release(NULL,&heap_region)!=PW_OK)result=1;
     if(have_crt && vm.release(NULL,&crt)!=PW_OK)result=1;

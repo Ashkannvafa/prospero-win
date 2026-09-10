@@ -32,6 +32,9 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
         assert f"steps={steps} stop={reason} " in result.stdout, result.stdout
         assert "kind=host-heap-summary blocks=1 live=0 requested=0 arena=8388608 valid=1" in result.stdout
         assert "kind=host-dbt-cache " in result.stdout
+        assert "kind=host-gdi-summary dcs=0 window_dcs=0 memory_dcs=0 surfaces=0 " \
+               "targets=0 bitmaps=0 pixels=0 valid=1" in result.stdout
+        assert "kind=host-gdi-cleanup dcs=0 surfaces=0 bitmaps=0 pixels=0 valid=1" in result.stdout
         if reason == "budget":
             limited = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), "8", "01001000"],
                                      capture_output=True, text=True, timeout=5)
@@ -63,4 +66,6 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
         assert "total=1 functions=1 data=0" in result.stdout
         if api=="GetModuleHandleA":
             assert "name=GetModuleHandleA result=0x01000000" in result.stdout
+        else:
+            assert "name=SetThreadPriority status=-5 caller=0x01001008" in result.stdout
 print("host entry tracer passed: synthetic execution and bounded classified stops")

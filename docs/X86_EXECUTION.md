@@ -147,11 +147,12 @@ kind=host-heap-summary blocks=3 live=2 requested=2041 arena=8388608 valid=1
 That historical trace stopped at `RegCreateKeyExA`. The current registry
 package completes create/query/close and create/set/close using real guest
 arguments. The current exact-binary trace reaches the verified `WinMain`
-address and retires 2,031 translated instructions before stopping at `GetDC`;
-two live allocations request 473 bytes at that point. It transactionally
-creates the splash HWND, executes the original WndProc's `WM_NCCREATE` and
-`WM_CREATE` callbacks, stores the splash state in four owned window-extra bytes
-and reads the explicitly configured virtual-desktop rectangle.
+address and retires 2,287 translated instructions before stopping at
+`MapVirtualKeyA`; two live allocations request 473 bytes at that point. It
+transactionally creates the splash HWND, executes the original WndProc's
+creation and paint callbacks, stores the splash state in four owned
+window-extra bytes, constructs/composes the splash bitmap and returns from
+`UpdateWindow` before entering keyboard scan-code discovery.
 Before it, malloc, string and resource calls construct the startup state. The CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
@@ -205,7 +206,8 @@ that field is not a CRT return value (the same applies to `_initterm` and
 GetSystemTimeAsFileTime and GetStartupInfoA). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: 38 distinct API cases and three original callbacks have completed,
+This is host evidence only: the current run completes 151 adapter calls across
+58 distinct DLL/API pairs and returns from the splash `UpdateWindow` callback;
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
@@ -218,8 +220,13 @@ host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
 base and the shared stdcall return service. Other API cases remain pending.
 
-Next coverage: owned DC/bitmap objects for the source-confirmed splash GDI path,
-TEB initialization and broader FS encodings, plus later wndproc integer/x87 forms.
+The current exact-binary trace retires 2,287 instructions and stops at
+`MapVirtualKeyA` in source-confirmed keyboard scan-code discovery after the
+owned splash GDI path has completed. Its cache totals are 522 dispatches, 298
+hits and 224 publications (72,464 bytes). The GDI live-state and post-reset
+cleanup records are described in [GDI.md](GDI.md). Next coverage is the coherent
+keyboard mapping package, main-window/message-loop initialization, TEB delivery
+and later wndproc integer/x87 forms.
 The diagnostic tracer uses the tested generation-scoped cache and reports its
 dispatch/publication metrics. Integer-only binary80 execution covers every
 startup x87 form without touching host FP state. Masked stack overflow and

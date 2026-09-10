@@ -15,10 +15,10 @@ typedef struct PwUser32Message {
 } PwUser32Message;
 typedef struct PwUser32Window {
     char class_name[PW_USER32_NAME_MAX+1],title[PW_USER32_NAME_MAX+1];
-    uint32_t handle,wndproc,ex_style,style,x,y,width,height,parent,menu,module,param;
+    uint32_t handle,wndproc,ex_style,style,x,y,width,height,parent,menu,module,param,paint_dc;
     uint32_t extra_bytes;
     uint8_t extra[PW_USER32_WINDOW_EXTRA_MAX];
-    unsigned creating,used;
+    unsigned creating,visible,needs_paint,painting,used;
 } PwUser32Window;
 typedef struct PwUser32Resource {
     char name[PW_USER32_NAME_MAX+1];
@@ -42,6 +42,7 @@ typedef struct PwUser32 {
     PwUser32Class *classes;
     uint32_t class_capacity,next_atom;
     uint32_t desktop_width,desktop_height;
+    uint32_t focus_window;
     unsigned desktop_configured;
 } PwUser32;
 
@@ -62,6 +63,18 @@ int pw_user32_begin_window(PwUser32 *,const PwUser32Window *,uint32_t *slot,
 int pw_user32_finish_window(PwUser32 *,uint32_t slot,unsigned commit);
 int pw_user32_set_window_long(PwUser32 *,uint32_t handle,int32_t index,
                               uint32_t value,uint32_t *previous);
+int pw_user32_get_window_long(const PwUser32 *,uint32_t handle,int32_t index,
+                              uint32_t *value);
 int pw_user32_configure_desktop(PwUser32 *,uint32_t width,uint32_t height);
 int pw_user32_get_window_rect(const PwUser32 *,uint32_t handle,PwUser32Rect *);
+int pw_user32_move_window(PwUser32 *,uint32_t handle,int32_t x,int32_t y,
+                          uint32_t width,uint32_t height);
+int pw_user32_show_window(PwUser32 *,uint32_t handle,uint32_t command,uint32_t *previous);
+int pw_user32_set_focus(PwUser32 *,uint32_t handle,uint32_t *previous);
+int pw_user32_paint_info(const PwUser32 *,uint32_t handle,uint32_t *wndproc,
+                         uint32_t *needed);
+int pw_user32_finish_paint(PwUser32 *,uint32_t handle);
+int pw_user32_begin_paint(PwUser32 *,uint32_t handle,uint32_t dc);
+int pw_user32_end_paint(PwUser32 *,uint32_t handle,uint32_t dc);
+int pw_user32_check_paint(const PwUser32 *,uint32_t handle,uint32_t dc);
 #endif

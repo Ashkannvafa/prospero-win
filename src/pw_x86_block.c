@@ -325,7 +325,8 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         else if (op == 0x68 || op == 0xe8 || op == 0xe9 || op==0xa1 || op==0xa3 ||
                  (op >= 0xb8 && op <= 0xbf)) length = 5;
         else if(op==0xc2)length=3;
-        else if (op == 0xc3 || op == 0xc9 || op == 0x90 || (op >= 0x50 && op <= 0x5f)) length = 1;
+        else if (op == 0x99 || op == 0xc3 || op == 0xc9 || op == 0x90 ||
+                 (op >= 0x50 && op <= 0x5f)) length = 1;
         else return PW_ERR_UNSUPPORTED;
         if (length > bytes-cursor) return PW_ERR_TRUNCATED;
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
@@ -394,6 +395,10 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                     save_arithmetic_flags(&e,(op==0x84 || op==0xf6)?0x8c5:0x8d5);
                 }
             }
+        } else if(op==0x99) {
+            load_eax(&e,offsetof(PwX86State,gpr[0]));
+            byte(&e,0x99); /* CDQ: sign-extend native EAX into native EDX. */
+            byte(&e,0x89);byte(&e,0x57);byte(&e,offsetof(PwX86State,gpr[2]));
         } else if(op==0xc9) {
             load_eax(&e,offsetof(PwX86State,gpr[5]));stack_bounds(&e);
             byte(&e,0x8b);byte(&e,0x08);

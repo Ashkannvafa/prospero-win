@@ -291,11 +291,129 @@ static int create_return(PwWin32 *r,PwX86State *s)
     if((status=pw_user32_finish_window(r->user32,create->slot,commit))!=PW_OK)return status;
     *s=after;memset(create,0,sizeof(*create));r->calls++;return PW_OK;
 }
+static int update_return(PwWin32 *r,PwX86State *s)
+{
+    PwWin32Update *update=&r->update;uint64_t ignored;
+    if(!update->active || update->callback.state!=s)return PW_ERR_STATE;
+    int status=pw_guest_callback_leave(&update->callback,32,&ignored);
+    if(status!=PW_OK)return status;
+    PwX86State after=*s;PwGuestCall checked=update->call;checked.state=&after;
+    if((status=pw_guest_call_finish(&checked,32,1))!=PW_OK)return status;
+    if((status=pw_user32_finish_paint(r->user32,update->handle))!=PW_OK)return status;
+    *s=after;memset(update,0,sizeof(*update));r->calls++;return PW_OK;
+}
+static int gdi_failure(int status,uint32_t *result,uint32_t *error)
+{
+    if(status==PW_ERR_LIMIT){*result=0;*error=8;return PW_OK;}
+    if(status==PW_ERR_NOT_FOUND){*result=0;*error=6;return PW_OK;}
+    if(status==PW_ERR_PRECONDITION){*result=0;*error=87;return PW_OK;}
+    if(status==PW_ERR_STATE){*result=0;return PW_OK;}
+    return status;
+}
+static int gdi_dispatch(PwWin32 *r,PwX86State *state)
+{
+    unsigned user=!strcmp(r->last_dll,"user32.dll");
+    unsigned gdi=!strcmp(r->last_dll,"gdi32.dll");
+    if((!user && !gdi) ||
+       (user && strcmp(r->last_name,"GetDC") && strcmp(r->last_name,"ReleaseDC")) ||
+       (gdi && strcmp(r->last_name,"CreateCompatibleDC") &&
+        strcmp(r->last_name,"CreateCompatibleBitmap") && strcmp(r->last_name,"SelectObject") &&
+        strcmp(r->last_name,"DeleteDC") && strcmp(r->last_name,"DeleteObject") &&
+        strcmp(r->last_name,"GetLayout") && strcmp(r->last_name,"SetLayout") &&
+        strcmp(r->last_name,"GetDeviceCaps") && strcmp(r->last_name,"GetObjectA") &&
+        strcmp(r->last_name,"SelectPalette") && strcmp(r->last_name,"RealizePalette") &&
+        strcmp(r->last_name,"BitBlt")))return PW_ERR_NOT_FOUND;
+    if(!r->gdi || !r->user32)return PW_ERR_STATE;
+    unsigned count=!strcmp(r->last_name,"BitBlt")?9:
+        (!strcmp(r->last_name,"CreateCompatibleBitmap") || !strcmp(r->last_name,"GetObjectA") ||
+         !strcmp(r->last_name,"SelectPalette"))?3:
+        (!strcmp(r->last_name,"ReleaseDC") || !strcmp(r->last_name,"SelectObject") ||
+         !strcmp(r->last_name,"SetLayout") || !strcmp(r->last_name,"GetDeviceCaps"))?2:1;
+    PwGuestCall call={0};uint32_t a[9]={0};
+    int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,count*4,0);
+    if(status!=PW_OK)return status;
+    for(unsigned i=0;i<count;i++)
+        if((status=pw_guest_call_u32(&call,i*4,&a[i]))!=PW_OK)return status;
+    if(gdi && !strcmp(r->last_name,"GetObjectA")) {
+        if(a[1]!=24)return PW_ERR_UNSUPPORTED;
+        if((status=range_access(state,a[2],24,PW_X86_WRITE))!=PW_OK)return status;
+        PwGdiBitmapInfo info;
+        status=pw_gdi_bitmap_info(r->gdi,a[0],&info);
+        uint32_t result=status==PW_OK?24:0,error=status==PW_ERR_NOT_FOUND?6:0;
+        if(status!=PW_OK && status!=PW_ERR_NOT_FOUND)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
+        if(result) {
+            uint8_t output[24]={0};
+            memcpy(output+4,&info.width,4);memcpy(output+8,&info.height,4);
+            memcpy(output+12,&info.stride,4);
+            uint16_t planes=(uint16_t)info.planes,bits=(uint16_t)info.bits_per_pixel;
+            memcpy(output+16,&planes,2);memcpy(output+18,&bits,2);
+            memcpy((void *)(uintptr_t)a[2],output,sizeof(output));
+        }
+        *state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+    }
+    PwUser32Rect rect={0};
+    if(user && !strcmp(r->last_name,"GetDC")) {
+        status=pw_user32_get_window_rect(r->user32,a[0],&rect);
+        if(status==PW_ERR_NOT_FOUND || status==PW_ERR_PRECONDITION) {
+            PwX86State after=*state;call.state=&after;
+            if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+            *state=after;r->last_error=1400;r->calls++;return PW_OK;
+        }
+        if(status!=PW_OK)return status;
+    }
+    /* Validate stdcall cleanup before any process-owned GDI mutation. */
+    PwX86State after=*state;call.state=&after;
+    if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+    uint32_t result=0,error=0;
+    if(user && !strcmp(r->last_name,"GetDC")) {
+        uint32_t width=(uint32_t)(rect.right-rect.left),height=(uint32_t)(rect.bottom-rect.top);
+        status=pw_gdi_get_dc(r->gdi,a[0],width,height,&result);
+    } else if(user) {
+        status=pw_gdi_release_dc(r->gdi,a[0],a[1]);result=status==PW_OK;
+    } else if(!strcmp(r->last_name,"CreateCompatibleDC")) {
+        status=pw_gdi_create_compatible_dc(r->gdi,a[0],&result);
+    } else if(!strcmp(r->last_name,"CreateCompatibleBitmap")) {
+        status=(int32_t)a[1]<=0 || (int32_t)a[2]<=0?PW_ERR_PRECONDITION:
+            pw_gdi_create_compatible_bitmap(r->gdi,a[0],a[1],a[2],&result);
+    } else if(!strcmp(r->last_name,"SelectObject")) {
+        status=pw_gdi_select_bitmap(r->gdi,a[0],a[1],&result);
+    } else if(!strcmp(r->last_name,"DeleteDC")) {
+        status=pw_gdi_delete_dc(r->gdi,a[0]);result=status==PW_OK;
+    } else if(!strcmp(r->last_name,"DeleteObject")) {
+        status=pw_gdi_delete_object(r->gdi,a[0]);result=status==PW_OK;
+    } else if(!strcmp(r->last_name,"GetLayout")) {
+        status=pw_gdi_get_layout(r->gdi,a[0],&result);
+        if(status==PW_ERR_NOT_FOUND){status=PW_OK;result=UINT32_MAX;error=6;}
+    } else if(!strcmp(r->last_name,"SetLayout")) {
+        status=pw_gdi_set_layout(r->gdi,a[0],a[1],&result);
+        if(status==PW_ERR_NOT_FOUND){status=PW_OK;result=UINT32_MAX;error=6;}
+    } else if(!strcmp(r->last_name,"GetDeviceCaps")) {
+        status=pw_gdi_get_device_caps(r->gdi,a[0],a[1],&result);
+    } else if(!strcmp(r->last_name,"SelectPalette")) {
+        status=pw_gdi_select_palette(r->gdi,a[0],a[1],a[2],&result);
+    } else if(!strcmp(r->last_name,"RealizePalette")) {
+        status=pw_gdi_realize_palette(r->gdi,a[0],&result);
+    } else {
+        status=(int32_t)a[3]<=0 || (int32_t)a[4]<=0?PW_ERR_PRECONDITION:
+            pw_gdi_bitblt(r->gdi,a[0],(int32_t)a[1],(int32_t)a[2],a[3],a[4],
+                          a[5],(int32_t)a[6],(int32_t)a[7],a[8]);
+        result=status==PW_OK;
+    }
+    if(status!=PW_OK)status=gdi_failure(status,&result,&error);
+    if(status!=PW_OK)return status;
+    after.gpr[0]=result;*state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+}
 int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
 {
     if(!r || !state)return PW_ERR_PRECONDITION;
     if(!r->main_base || !r->crt_data)return PW_ERR_STATE;
     r->callback_pending=0;
+    if(state->eip==PW_WIN32_UPDATE_CALLBACK) {
+        r->last_dll="user32.dll";r->last_name="UpdateWindow";
+        return update_return(r,state);
+    }
     if(state->eip==PW_WIN32_WINDOW_CALLBACK) {
         r->last_dll="user32.dll";r->last_name="CreateWindowExA";
         return create_return(r,state);
@@ -314,6 +432,8 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
     if(!strcmp(r->last_dll,"advapi32.dll"))return registry_dispatch(r,state);
+    int gdi_status=gdi_dispatch(r,state);
+    if(gdi_status!=PW_ERR_NOT_FOUND)return gdi_status;
     if(!strcmp(r->last_dll,"user32.dll") &&
        (!strcmp(r->last_name,"RegisterWindowMessageA") || !strcmp(r->last_name,"FindWindowA"))) {
         if(!r->user32)return PW_ERR_STATE;
@@ -387,6 +507,31 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         after.gpr[0]=handle;*state=after;
         if(error)r->last_error=error;
         r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"LoadBitmapA")) {
+        if(!r->gdi || !r->services.named_resource)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t module,resource;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,8,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&module))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&resource))!=PW_OK)return status;
+        if(module!=r->main_base || resource<0x10000u)return PW_ERR_UNSUPPORTED;
+        char name[PW_USER32_NAME_MAX+1];
+        if((status=guest_string(state,resource,name,sizeof(name),0))!=PW_OK)return status;
+        const uint8_t *bytes=NULL;size_t size=0;
+        status=r->services.named_resource(r->services.opaque,module,2,name,&bytes,&size);
+        if(status!=PW_OK && status!=PW_ERR_NOT_FOUND)return status;
+        if(status==PW_OK && (!bytes || !size || size>UINT32_MAX))return PW_ERR_STATE;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t handle=0,error=0;
+        if(!bytes)error=1814;
+        else {
+            status=pw_gdi_create_dib_bitmap(r->gdi,bytes,(uint32_t)size,&handle);
+            if(status==PW_ERR_LIMIT){status=PW_OK;error=8;}
+            if(status!=PW_OK)return status;
+        }
+        after.gpr[0]=handle;*state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
     }
     if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"RegisterClassA")) {
         if(!r->user32 || !r->user32->classes || !r->services.code_address)return PW_ERR_STATE;
@@ -508,6 +653,22 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         if(error)r->last_error=error;
         r->calls++;return PW_OK;
     }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"GetWindowLongA")) {
+        if(!r->user32)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t handle,index;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,8,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&handle))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&index))!=PW_OK)return status;
+        uint32_t result=0,error=0;
+        status=pw_user32_get_window_long(r->user32,handle,(int32_t)index,&result);
+        if(status==PW_ERR_NOT_FOUND){status=PW_OK;error=1400;}
+        else if(status==PW_ERR_PRECONDITION){status=PW_OK;error=1413;}
+        if(status!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
+        *state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+    }
     if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"GetDesktopWindow")) {
         if(!r->user32 || !r->user32->desktop_configured)return PW_ERR_STATE;
         PwGuestCall call={0};int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,0,0);
@@ -534,6 +695,117 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
         if(result)memcpy((void *)(uintptr_t)address,&rect,sizeof(rect));
         *state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"MoveWindow")) {
+        if(!r->user32 || !r->gdi)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t args[6];
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,24,0);
+        if(status!=PW_OK)return status;
+        for(unsigned i=0;i<6;i++)
+            if((status=pw_guest_call_u32(&call,i*4,&args[i]))!=PW_OK)return status;
+        if(args[5])return PW_ERR_UNSUPPORTED; /* source-confirmed splash path passes FALSE */
+        PwUser32Rect old;
+        status=pw_user32_get_window_rect(r->user32,args[0],&old);
+        if(status==PW_OK) {
+            int64_t right=(int64_t)(int32_t)args[1]+(int32_t)args[3];
+            int64_t bottom=(int64_t)(int32_t)args[2]+(int32_t)args[4];
+            if((int32_t)args[3]<=0 || (int32_t)args[4]<=0 || right<INT32_MIN ||
+               right>INT32_MAX || bottom<INT32_MIN || bottom>INT32_MAX)
+                status=PW_ERR_PRECONDITION;
+        }
+        uint32_t result=status==PW_OK,error=0;
+        if(status==PW_ERR_NOT_FOUND){status=PW_OK;error=1400;}
+        else if(status==PW_ERR_PRECONDITION || status==PW_ERR_LIMIT){status=PW_OK;error=87;}
+        if(status!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
+        if(result) {
+            status=pw_gdi_resize_target(r->gdi,args[0],args[3],args[4]);
+            if(status!=PW_OK)return status;
+            status=pw_user32_move_window(r->user32,args[0],(int32_t)args[1],(int32_t)args[2],
+                                         args[3],args[4]);
+            if(status!=PW_OK)return status;
+        }
+        *state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") &&
+       (!strcmp(r->last_name,"ShowWindow") || !strcmp(r->last_name,"SetFocus"))) {
+        if(!r->user32)return PW_ERR_STATE;
+        unsigned show=!strcmp(r->last_name,"ShowWindow");PwGuestCall call={0};uint32_t args[2]={0};
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,show?8:4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&args[0]))!=PW_OK ||
+           (show && (status=pw_guest_call_u32(&call,4,&args[1]))!=PW_OK))return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t result=0,error=0;
+        status=show?pw_user32_show_window(r->user32,args[0],args[1],&result):
+                    pw_user32_set_focus(r->user32,args[0],&result);
+        if(status==PW_ERR_NOT_FOUND){status=PW_OK;error=1400;result=0;}
+        if(status!=PW_OK)return status;
+        after.gpr[0]=result;*state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"UpdateWindow")) {
+        if(!r->user32 || r->update.active)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t handle;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&handle))!=PW_OK)return status;
+        uint32_t wndproc=0,needed=0;
+        status=pw_user32_paint_info(r->user32,handle,&wndproc,&needed);
+        if(status==PW_ERR_NOT_FOUND) {
+            PwX86State after=*state;call.state=&after;
+            if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+            *state=after;r->last_error=1400;r->calls++;return PW_OK;
+        }
+        if(status!=PW_OK)return status;
+        if(!needed) {
+            status=pw_guest_call_finish(&call,32,1);if(status==PW_OK)r->calls++;return status;
+        }
+        uint32_t args[]={handle,0x0f,0,0};
+        r->update=(PwWin32Update){.call=call,.handle=handle,.wndproc=wndproc,.active=1};
+        status=pw_guest_callback_enter(&r->update.callback,state,wndproc,
+                                       PW_WIN32_UPDATE_CALLBACK,args,4,PW_GUEST_STDCALL);
+        if(status!=PW_OK){memset(&r->update,0,sizeof(r->update));return status;}
+        r->callback_pending=1;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"BeginPaint")) {
+        if(!r->user32 || !r->gdi)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t handle,address;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,8,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&handle))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&address))!=PW_OK ||
+           (status=range_access(state,address,64,PW_X86_WRITE))!=PW_OK)return status;
+        PwUser32Rect rect;uint32_t wndproc,needed;
+        if((status=pw_user32_get_window_rect(r->user32,handle,&rect))!=PW_OK ||
+           (status=pw_user32_paint_info(r->user32,handle,&wndproc,&needed))!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t dc,width=(uint32_t)(rect.right-rect.left),height=(uint32_t)(rect.bottom-rect.top);
+        if((status=pw_gdi_get_dc(r->gdi,handle,width,height,&dc))!=PW_OK)return status;
+        status=pw_user32_begin_paint(r->user32,handle,dc);
+        if(status!=PW_OK){(void)pw_gdi_release_dc(r->gdi,handle,dc);return status;}
+        uint8_t output[64]={0};
+        memcpy(output,&dc,4);memcpy(output+16,&width,4);memcpy(output+20,&height,4);
+        memcpy((void *)(uintptr_t)address,output,sizeof(output));
+        after.gpr[0]=dc;*state=after;r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"EndPaint")) {
+        if(!r->user32 || !r->gdi)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t handle,address,dc;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,8,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&handle))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&address))!=PW_OK ||
+           (status=range_access(state,address,64,PW_X86_READ))!=PW_OK)return status;
+        memcpy(&dc,(const void *)(uintptr_t)address,4);
+        if((status=pw_user32_check_paint(r->user32,handle,dc))!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,1))!=PW_OK)return status;
+        if((status=pw_gdi_release_dc(r->gdi,handle,dc))!=PW_OK ||
+           (status=pw_user32_end_paint(r->user32,handle,dc))!=PW_OK)return status;
+        *state=after;r->calls++;return PW_OK;
     }
     if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"LoadStringA")) {
         if(!r->services.string_resource || r->services.ansi_codepage!=1252)return PW_ERR_UNSUPPORTED;

@@ -24,6 +24,7 @@ src/               the portable loader core
   pw_x86_engine source-span translation, cache dispatch and RW-to-RX publication
   pw_x87        integer-only binary80 execution over isolated guest FP state
   pw_user32     process-owned message/window namespace and common-control state
+  pw_gdi        process-owned DC/bitmap/surface namespace and software composition
   pw_crt_format allocation-free guest varargs formatting subset
   pw_guest_fp   isolated x87/SSE control and raw 80-bit stack state
   pw_vm_posix   anonymous-mapping backend (host and console)
