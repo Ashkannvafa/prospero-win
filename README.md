@@ -16,10 +16,11 @@ DRM, anti-cheat and kernel drivers are out of scope.
   mprotect RW-to-RX/RWX work in a title.
 - **Host progress:** the exact Pinball binary reaches its public-PDB-verified
   `WinMain` address through generation-scoped cached multi-instruction blocks:
-  1,944 instructions and 113 completed calls (33 distinct APIs). The measured
-  run records 437 dispatches, 279 cache hits and 158 published blocks. Named
-  icon lookup, cursor ownership and real class registration complete; the next
-  classified stop is `CreateWindowExA` at the splash-window boundary.
+  2,031 instructions and 120 completed calls (38 distinct APIs). The measured
+  run records 463 dispatches, 288 cache hits and 175 published blocks. Named
+  resources, class registration, synchronous splash WndProc creation, window
+  extra storage and virtual-desktop geometry complete; the next classified
+  stop is `GetDC` at the GDI boundary.
 - **Measured execution scope:** 25,092/25,538 reachable static instructions
   are accepted (98.25%). Integer-only binary80 helpers now translate 2,253 of
   2,300 x87 occurrences, including all 36 forms and all 384 occurrences in the
@@ -28,7 +29,7 @@ DRM, anti-cheat and kernel drivers are out of scope.
 - **Verified oracle:** the target SHA-1, public PDB identity and ten public
   symbol addresses match the pinned MIT source reconstruction. The generated
   manifest groups source-confirmed startup, graphics, input and audio APIs.
-- **Next:** implement window creation and its ordered guest WndProc callbacks,
+- **Next:** define the owned DC/bitmap package required by the splash renderer,
   then exercise x87 on newly reached exact-binary paths. Wine remains a contract
   and test reference, not a claim of implemented compatibility.
 - **Not yet implemented:** a complete execution engine, Win32 API surface

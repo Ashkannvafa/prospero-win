@@ -44,7 +44,7 @@ int pw_user32_find_window(const PwUser32 *user,const char *class_name,
         return PW_ERR_PRECONDITION;
     for(uint32_t i=0;i<user->window_capacity;i++) {
         const PwUser32Window *window=&user->windows[i];
-        if(window->used && (!class_name || !strcmp(class_name,window->class_name)) &&
+        if(window->used && !window->creating && (!class_name || !strcmp(class_name,window->class_name)) &&
            (!title || !strcmp(title,window->title))){*handle=window->handle;return PW_OK;}
     }
     *handle=0;return PW_OK;
@@ -99,6 +99,7 @@ int pw_user32_register_class(PwUser32 *user,const PwUser32Class *input,uint16_t 
     if(!user || !user->classes || !user->class_capacity || !input || !atom ||
        !valid_name(input->class_name) || (input->menu_name[0] && !valid_name(input->menu_name)) ||
        !input->wndproc || !input->module)return PW_ERR_PRECONDITION;
+    if(input->window_extra>PW_USER32_WINDOW_EXTRA_MAX)return PW_ERR_LIMIT;
     for(uint32_t i=0;i<user->class_capacity;i++)
         if(user->classes[i].used && !strcmp(user->classes[i].class_name,input->class_name))
             return PW_ERR_STATE;
@@ -108,4 +109,80 @@ int pw_user32_register_class(PwUser32 *user,const PwUser32Class *input,uint16_t 
         return PW_ERR_LIMIT;
     user->classes[slot]=*input;user->classes[slot].atom=(uint16_t)user->next_atom++;
     user->classes[slot].used=1;*atom=user->classes[slot].atom;return PW_OK;
+}
+int pw_user32_find_class(const PwUser32 *user,const char *name,uint32_t module,
+                         const PwUser32Class **result)
+{
+    if(!user || !user->classes || !valid_name(name) || !module || !result)
+        return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->class_capacity;i++)
+        if(user->classes[i].used && user->classes[i].module==module &&
+           !strcmp(user->classes[i].class_name,name)){*result=&user->classes[i];return PW_OK;}
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_begin_window(PwUser32 *user,const PwUser32Window *input,
+                           uint32_t *slot,uint32_t *handle)
+{
+    if(!user || !user->windows || !user->window_capacity || !input || !slot || !handle ||
+       !valid_name(input->class_name) || (input->title[0] && !valid_name(input->title)) || !input->wndproc ||
+       !input->module || input->extra_bytes>PW_USER32_WINDOW_EXTRA_MAX)return PW_ERR_PRECONDITION;
+    uint32_t free_slot=user->window_capacity;
+    for(uint32_t i=0;i<user->window_capacity;i++)if(!user->windows[i].used){free_slot=i;break;}
+    if(free_slot==user->window_capacity || user->next_object==UINT32_MAX)return PW_ERR_LIMIT;
+    user->windows[free_slot]=*input;user->windows[free_slot].handle=user->next_object++;
+    user->windows[free_slot].creating=1;user->windows[free_slot].used=1;
+    *slot=free_slot;*handle=user->windows[free_slot].handle;return PW_OK;
+}
+int pw_user32_finish_window(PwUser32 *user,uint32_t slot,unsigned commit)
+{
+    if(!user || !user->windows || slot>=user->window_capacity || commit>1 ||
+       !user->windows[slot].used || !user->windows[slot].creating)return PW_ERR_PRECONDITION;
+    if(commit)user->windows[slot].creating=0;
+    else {
+        if(user->windows[slot].handle+1==user->next_object)user->next_object--;
+        memset(&user->windows[slot],0,sizeof(user->windows[slot]));
+    }
+    return PW_OK;
+}
+int pw_user32_set_window_long(PwUser32 *user,uint32_t handle,int32_t index,
+                              uint32_t value,uint32_t *previous)
+{
+    if(!user || !user->windows || !handle || !previous)return PW_ERR_PRECONDITION;
+    PwUser32Window *window=NULL;
+    for(uint32_t i=0;i<user->window_capacity;i++)
+        if(user->windows[i].used && !user->windows[i].creating &&
+           user->windows[i].handle==handle){window=&user->windows[i];break;}
+    if(!window)return PW_ERR_NOT_FOUND;
+    if(index<0 || (uint32_t)index>window->extra_bytes ||
+       window->extra_bytes-(uint32_t)index<sizeof(uint32_t))return PW_ERR_PRECONDITION;
+    memcpy(previous,window->extra+(uint32_t)index,sizeof(*previous));
+    memcpy(window->extra+(uint32_t)index,&value,sizeof(value));
+    return PW_OK;
+}
+int pw_user32_configure_desktop(PwUser32 *user,uint32_t width,uint32_t height)
+{
+    if(!user || !user->windows || !width || !height || width>INT32_MAX || height>INT32_MAX)
+        return PW_ERR_PRECONDITION;
+    user->desktop_width=width;user->desktop_height=height;user->desktop_configured=1;
+    return PW_OK;
+}
+int pw_user32_get_window_rect(const PwUser32 *user,uint32_t handle,PwUser32Rect *rect)
+{
+    if(!user || !user->windows || !handle || !rect)return PW_ERR_PRECONDITION;
+    if(handle==PW_USER32_DESKTOP_HANDLE) {
+        if(!user->desktop_configured)return PW_ERR_STATE;
+        *rect=(PwUser32Rect){0,0,(int32_t)user->desktop_width,(int32_t)user->desktop_height};
+        return PW_OK;
+    }
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        const PwUser32Window *window=&user->windows[i];
+        if(!window->used || window->creating || window->handle!=handle)continue;
+        int64_t right=(int64_t)(int32_t)window->x+window->width;
+        int64_t bottom=(int64_t)(int32_t)window->y+window->height;
+        if(right<INT32_MIN || right>INT32_MAX || bottom<INT32_MIN || bottom>INT32_MAX)
+            return PW_ERR_LIMIT;
+        *rect=(PwUser32Rect){(int32_t)window->x,(int32_t)window->y,
+            (int32_t)right,(int32_t)bottom};return PW_OK;
+    }
+    return PW_ERR_NOT_FOUND;
 }

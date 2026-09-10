@@ -8,12 +8,19 @@
 #include "pw_registry.h"
 #include "pw_user32.h"
 enum { PW_WIN32_TOKEN_BASE=0xe0000000u, PW_WIN32_CALLBACK_BASE=0xe1000000u,
-       PW_WIN32_INIT_DEPTH=8, PW_WIN32_INIT_ENTRIES=1024 };
+       PW_WIN32_INIT_DEPTH=8, PW_WIN32_INIT_ENTRIES=1024,
+       PW_WIN32_WINDOW_CALLBACK=PW_WIN32_CALLBACK_BASE+PW_WIN32_INIT_DEPTH*16 };
 typedef struct PwWin32Init {
     PwGuestCall call;
     PwGuestCallback callback;
     uint32_t cursor,end;
 } PwWin32Init;
+typedef struct PwWin32Create {
+    PwGuestCall call;
+    PwGuestCallback callback;
+    uint32_t slot,handle,wndproc,create_struct,phase;
+    unsigned active;
+} PwWin32Create;
 typedef enum PwClockDomain { PW_CLOCK_UTC=1, PW_CLOCK_UPTIME=2, PW_CLOCK_COUNTER=3 } PwClockDomain;
 typedef struct PwWin32Services {
     void *opaque;
@@ -49,6 +56,7 @@ typedef struct PwWin32 {
     unsigned calls;
     unsigned callback_pending,init_depth;
     PwWin32Init init[PW_WIN32_INIT_DEPTH];
+    PwWin32Create create;
 } PwWin32;
 /* Caller supplies a live RW, identity-mapped CRT region of at least 4096
  * bytes. Tokens occupy [TOKEN_BASE,TOKEN_BASE+catalog_count*16); the owner

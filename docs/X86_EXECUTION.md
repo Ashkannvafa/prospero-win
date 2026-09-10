@@ -147,16 +147,19 @@ kind=host-heap-summary blocks=3 live=2 requested=2041 arena=8388608 valid=1
 That historical trace stopped at `RegCreateKeyExA`. The current registry
 package completes create/query/close and create/set/close using real guest
 arguments. The current exact-binary trace reaches the verified `WinMain`
-address and retires 1,944 translated instructions before stopping at
-`CreateWindowExA`; two live allocations request 473 bytes at that point.
+address and retires 2,031 translated instructions before stopping at `GetDC`;
+two live allocations request 473 bytes at that point. It transactionally
+creates the splash HWND, executes the original WndProc's `WM_NCCREATE` and
+`WM_CREATE` callbacks, stores the splash state in four owned window-extra bytes
+and reads the explicitly configured virtual-desktop rectangle.
 Before it, malloc, string and resource calls construct the startup state. The CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
 guest ABI bridge. Clock values (and derived flags) vary across live runs;
 the transcript above is one observed run, not a fixed-value invariant.
-Synthetic tests separately exercise nested callbacks. `_controlfp` now
-updates guest control state without modifying host FP controls; arithmetic
-execution remains pending. Absolute MOV tests exercise independent read/write permissions,
+Synthetic tests separately exercise nested callbacks. `_controlfp` and the
+startup x87 arithmetic families update isolated guest FP state without modifying
+host FP controls. Absolute MOV tests exercise independent read/write permissions,
 last-valid and crossing-boundary addresses, unchanged flags and fault atomicity.
 Operand PUSH tests cover old-ESP addressing, source and destination faults,
 flag preservation and continuation into the next instruction. PUSH checks
@@ -190,8 +193,8 @@ Counts are masked to five bits; zero preserves every guest flag, AF is retained,
 and OF is updated only for count one. Tests cover ECX/CL aliasing, continuation
 and rejected crossing-boundary accesses, including a zero-count memory operand.
 Rotates and 8/16-bit shifts are not yet implemented.
-The 495-instruction trace with a 4096-event limit reproduces under ASan/UBSan;
-the translator compiles for PS5. Native guest execution is still not integrated.
+The tracer and its synthetic contracts reproduce under ASan/UBSan; the
+translator compiles for PS5. Native guest execution is still not integrated.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses
@@ -202,7 +205,7 @@ that field is not a CRT return value (the same applies to `_initterm` and
 GetSystemTimeAsFileTime and GetStartupInfoA). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: 33 distinct API cases and one original callback have completed,
+This is host evidence only: 38 distinct API cases and three original callbacks have completed,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
@@ -215,8 +218,8 @@ host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
 base and the shared stdcall return service. Other API cases remain pending.
 
-Next coverage: owned window creation and ordered WndProc entry from `CreateWindowExA`, TEB
-initialization and broader FS encodings, plus later wndproc integer/x87 forms.
+Next coverage: owned DC/bitmap objects for the source-confirmed splash GDI path,
+TEB initialization and broader FS encodings, plus later wndproc integer/x87 forms.
 The diagnostic tracer uses the tested generation-scoped cache and reports its
 dispatch/publication metrics. Integer-only binary80 execution covers every
 startup x87 form without touching host FP state. Unmasked x87 exceptions now

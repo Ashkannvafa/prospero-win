@@ -140,6 +140,8 @@ int main(int argc,char **argv)
     if(pw_registry_init(&registry,registry_keys,32,registry_values,128)!=PW_OK)goto cleanup;
     if(pw_user32_init(&user32,user_messages,128,user_windows,128)!=PW_OK)goto cleanup;
     if(pw_user32_init_resources(&user32,user_resources,128)!=PW_OK)goto cleanup;
+    /* Deterministic virtual display profile for host-only startup tracing. */
+    if(pw_user32_configure_desktop(&user32,1920,1080)!=PW_OK)goto cleanup;
     runtime.heap=&heap;runtime.registry=&registry;runtime.user32=&user32;
     if(pw_user32_init_classes(&user32,user_classes,128)!=PW_OK)goto cleanup;
     runtime.services=(PwWin32Services){.opaque=&trace_view,.clock_ns=host_clock,.process_id=1,.thread_id=2,

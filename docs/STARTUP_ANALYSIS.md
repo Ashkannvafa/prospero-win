@@ -184,12 +184,14 @@ Do not infer function-level execution order from unordered graph edges.
 
 The source-confirmed registry package now implements all seven imported Advapi
 entry points over fixed owner-supplied storage. A bounded exact-binary host run
-reaches the public-PDB-verified `WinMain` address and then retires 1,944
-instructions while completing 113 calls across 33 distinct APIs. It records
-437 DBT dispatches, 279 cache hits, 158 misses/publications and 50,704 emitted
+reaches the public-PDB-verified `WinMain` address and then retires 2,031
+instructions while completing 120 calls across 38 distinct APIs. It records
+463 DBT dispatches, 288 cache hits, 175 misses/publications and 55,088 emitted
 code bytes for generation 1. Named `RT_GROUP_ICON` lookup, deduplicated icon
-and system-cursor objects, and the source-confirmed splash `WNDCLASSA` now have
-real ownership records. The classified stop is `CreateWindowExA`: window
-creation must allocate an owned HWND and synchronously enter the registered
-WndProc, not fabricate a successful return. This is host integration evidence,
-not a visible window, gameplay or translated PS5 execution claim.
+and system-cursor objects, and the source-confirmed splash `WNDCLASSA` have
+real ownership records. `CreateWindowExA` allocates a provisional HWND, builds
+the PE32 `CREATESTRUCTA`, enters the guest WndProc for `WM_NCCREATE` and
+`WM_CREATE`, and commits or rolls back from the callback result. The path then
+stores the splash pointer in four owned extra bytes, queries an explicitly
+configured 1920x1080 virtual desktop and stops at `GetDC`. This is a precise GDI
+boundary, not a visible window, gameplay or translated PS5 execution claim.
