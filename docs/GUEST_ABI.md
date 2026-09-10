@@ -26,8 +26,8 @@ evidence must account for subsequent deliberate IAT modifications.
 
 Synthetic tests cover named/ordinal imports, function/data classification,
 late resolver failure without partial writes, invalid targets, overlapping
-IATs and refusal after final protections. The service compiles for PS5 but
-is now integrated into the host original-game trace, but not the console runner.
+IATs and refusal after final protections. The service is integrated into both
+the host original-game tracer and the PS5 console runner.
 
 ## Guest calls into an adapter
 
@@ -74,7 +74,8 @@ guest FP-state services, not a claim of generic cdecl compatibility.
   returns 42 using RET 8, exercising stdcall argument cleanup and caller-state
   restoration through the real generated-code boundary.
 - Host tests pass under ASan/UBSan. The shared C service compiles with the
-  PS5 target toolchain. No hardware callback evidence is claimed yet.
+  PS5 target toolchain. Nested original WndProc and WaveMix callbacks now have
+  PS5 execution evidence; arbitrary callback ABI coverage is not implied.
 
 ## Initial runtime integration
 
@@ -104,14 +105,15 @@ cdecl stack cleanup, void return, persistent pointer identity, defaults and
 failure atomicity when the argument is outside the guest stack.
 
 Translated indirect calls push a guest return PC and yield to the dispatcher.
-The original Pinball trace binds 207 imports (205 function/2 data), invokes
+At the historical host checkpoint, the original Pinball trace bound 207
+imports (205 function/2 data), invoked
 GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
 and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA, malloc,
 lstrcpyA and lstrcatA. The registry package then completes the source-confirmed
 read-default and write-default sequences; the exact-binary trace reaches
-`WinMain`, completes splash, keyboard discovery, main-window creation and the
-nested WaveMix helper window, then stops at `waveOutGetNumDevs` after 37,925
+`WinMain`, completed splash, keyboard discovery, main-window creation and the
+nested WaveMix helper window, then stopped at `waveOutGetNumDevs` after 37,925
 instructions and 241 completed adapter calls. One initializer callback and the
 synchronous window-creation callbacks
 have returned through the shared guest ABI machinery. The adapter constructs a
@@ -119,9 +121,9 @@ have returned through the shared guest ABI machinery. The adapter constructs a
 and `WM_CREATE`, and commits or rolls it back from their documented results.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
-Synthetic PE tests cover binding,
-dispatch and return, plus a
-named stop for a pending API. No PS5 execution of this integration is claimed.
+Synthetic PE tests cover binding, dispatch and return, plus a named stop for a
+pending API. The same binding/dispatch path now runs continuously on PS5
+through the game message loop; see HARDWARE_VALIDATION.md.
 
 ## Guest heap core
 

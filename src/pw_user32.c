@@ -139,10 +139,81 @@ int pw_user32_finish_window(PwUser32 *user,uint32_t slot,unsigned commit)
        !user->windows[slot].used || !user->windows[slot].creating)return PW_ERR_PRECONDITION;
     if(commit)user->windows[slot].creating=0;
     else {
+        if(user->windows[slot].owns_menu &&
+           user->windows[slot].menu+1==user->next_object)user->next_object--;
         if(user->windows[slot].handle+1==user->next_object)user->next_object--;
         memset(&user->windows[slot],0,sizeof(user->windows[slot]));
     }
     return PW_OK;
+}
+int pw_user32_unregister_class(PwUser32 *user,const char *name,uint32_t module)
+{
+    if(!user || !user->classes || !valid_name(name) || !module)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->class_capacity;i++) {
+        PwUser32Class *record=&user->classes[i];
+        if(!record->used || record->module!=module || strcmp(record->class_name,name))continue;
+        for(uint32_t window=0;window<user->window_capacity;window++)
+            if(user->windows[window].used &&
+               !strcmp(user->windows[window].class_name,name))return PW_ERR_STATE;
+        memset(record,0,sizeof(*record));return PW_OK;
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_attach_menu(PwUser32 *user,uint32_t slot,uint32_t *handle)
+{
+    if(!user || !user->windows || !handle || slot>=user->window_capacity ||
+       !user->windows[slot].used || !user->windows[slot].creating ||
+       user->windows[slot].menu)return PW_ERR_PRECONDITION;
+    if(user->next_object==UINT32_MAX)return PW_ERR_LIMIT;
+    user->windows[slot].menu=user->next_object++;
+    user->windows[slot].owns_menu=1;*handle=user->windows[slot].menu;return PW_OK;
+}
+int pw_user32_get_menu(const PwUser32 *user,uint32_t handle,uint32_t *menu)
+{
+    if(!user || !user->windows || !handle || !menu)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        const PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            *menu=window->menu;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_menu_item(PwUser32 *user,uint32_t menu,uint32_t item,uint32_t mask,
+                        uint32_t state,uint32_t *previous)
+{
+    if(!user || !user->windows || !menu || !mask || (state&~mask) || !previous)
+        return PW_ERR_PRECONDITION;
+    unsigned valid=0;
+    for(uint32_t i=0;i<user->window_capacity;i++)
+        if(user->windows[i].used && user->windows[i].menu==menu){valid=1;break;}
+    if(!valid)return PW_ERR_NOT_FOUND;
+    PwUser32MenuItem *slot=NULL;
+    for(unsigned i=0;i<sizeof(user->menu_items)/sizeof(user->menu_items[0]);i++) {
+        PwUser32MenuItem *entry=&user->menu_items[i];
+        if(entry->used && entry->menu==menu && entry->item==item){slot=entry;break;}
+        if(!entry->used && !slot)slot=entry;
+    }
+    if(!slot)return PW_ERR_LIMIT;
+    if(!slot->used){slot->menu=menu;slot->item=item;slot->used=1;}
+    *previous=slot->state&mask;slot->state=(slot->state&~mask)|state;return PW_OK;
+}
+int pw_user32_delete_menu(PwUser32 *user,uint32_t menu,uint32_t item)
+{
+    uint32_t previous;
+    return pw_user32_menu_item(user,menu,item,UINT32_C(0x80000000),
+                               UINT32_C(0x80000000),&previous);
+}
+int pw_user32_draw_menu_bar(PwUser32 *user,uint32_t handle)
+{
+    if(!user || !user->windows || !handle)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(window->used && !window->creating && window->handle==handle) {
+            window->needs_paint=1;return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
 }
 int pw_user32_set_window_long(PwUser32 *user,uint32_t handle,int32_t index,
                               uint32_t value,uint32_t *previous)
@@ -219,14 +290,81 @@ int pw_user32_move_window(PwUser32 *user,uint32_t handle,int32_t x,int32_t y,
 int pw_user32_show_window(PwUser32 *user,uint32_t handle,uint32_t command,uint32_t *previous)
 {
     if(!user || !user->windows || !handle || !previous)return PW_ERR_PRECONDITION;
-    if(command!=8)return PW_ERR_UNSUPPORTED; /* SW_SHOWNA: exact splash path */
+    /* Win32 defines SW_HIDE..SW_FORCEMINIMIZE as the contiguous range 0..11.
+       Window placement/activation policy is deliberately outside this headless
+       model, but accepting every valid command preserves visibility semantics
+       for ordinary applications instead of specializing the API to Pinball. */
+    if(command>11)return PW_ERR_UNSUPPORTED;
     for(uint32_t i=0;i<user->window_capacity;i++) {
         PwUser32Window *window=&user->windows[i];
         if(window->used && !window->creating && window->handle==handle) {
-            *previous=window->visible;window->visible=1;window->needs_paint=1;return PW_OK;
+            *previous=window->visible;
+            if(command && !window->visible) {
+                PwUser32QueueEntry activation={.window=handle,.message=0x1c,.wparam=1};
+                int status=pw_user32_post_message(user,&activation);if(status!=PW_OK)return status;
+            }
+            window->visible=command!=0;
+            if(window->visible)window->needs_paint=1;
+            return PW_OK;
         }
     }
     return PW_ERR_NOT_FOUND;
+}
+int pw_user32_destroy_window(PwUser32 *user,uint32_t handle)
+{
+    if(!user || !user->windows || !handle)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++) {
+        PwUser32Window *window=&user->windows[i];
+        if(!window->used || window->creating || window->handle!=handle)continue;
+        if(window->painting)return PW_ERR_STATE;
+        if(window->owns_menu)
+            for(unsigned item=0;item<sizeof(user->menu_items)/sizeof(user->menu_items[0]);item++)
+                if(user->menu_items[item].used && user->menu_items[item].menu==window->menu)
+                    memset(&user->menu_items[item],0,sizeof(user->menu_items[item]));
+        if(user->focus_window==handle)user->focus_window=0;
+        for(uint32_t message=0;message<user->queue_count;)
+            if(user->queue[message].window==handle) {
+                memmove(&user->queue[message],&user->queue[message+1],
+                        (user->queue_count-message-1)*sizeof(user->queue[0]));
+                user->queue_count--;
+            } else message++;
+        memset(window,0,sizeof(*window));return PW_OK;
+    }
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_window_proc(const PwUser32 *user,uint32_t handle,uint32_t *wndproc)
+{
+    if(!user || !user->windows || !handle || !wndproc)return PW_ERR_PRECONDITION;
+    for(uint32_t i=0;i<user->window_capacity;i++)
+        if(user->windows[i].used && !user->windows[i].creating &&
+           user->windows[i].handle==handle){*wndproc=user->windows[i].wndproc;return PW_OK;}
+    return PW_ERR_NOT_FOUND;
+}
+int pw_user32_post_message(PwUser32 *user,const PwUser32QueueEntry *message)
+{
+    if(!user || !message || !message->window || !message->message)return PW_ERR_PRECONDITION;
+    uint32_t ignored;if(pw_user32_window_proc(user,message->window,&ignored)!=PW_OK)return PW_ERR_NOT_FOUND;
+    if(user->queue_count==PW_USER32_QUEUE_CAPACITY)return PW_ERR_LIMIT;
+    user->queue[user->queue_count++]=*message;return PW_OK;
+}
+int pw_user32_peek_message(PwUser32 *user,uint32_t window,uint32_t minimum,uint32_t maximum,
+                           unsigned remove,PwUser32QueueEntry *message,uint32_t *found)
+{
+    if(!user || !message || !found || remove>1 || minimum>maximum)return PW_ERR_PRECONDITION;
+    if(window) { uint32_t ignored;int status=pw_user32_window_proc(user,window,&ignored);
+        if(status!=PW_OK)return status; }
+    for(uint32_t i=0;i<user->queue_count;i++) {
+        PwUser32QueueEntry *candidate=&user->queue[i];
+        if(window && candidate->window!=window)continue;
+        if((minimum || maximum) && (candidate->message<minimum || candidate->message>maximum))continue;
+        *message=*candidate;*found=1;
+        if(remove) {
+            memmove(candidate,candidate+1,(user->queue_count-i-1)*sizeof(*candidate));
+            user->queue_count--;
+        }
+        return PW_OK;
+    }
+    memset(message,0,sizeof(*message));*found=0;return PW_OK;
 }
 int pw_user32_set_focus(PwUser32 *user,uint32_t handle,uint32_t *previous)
 {

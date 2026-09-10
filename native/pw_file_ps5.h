@@ -35,6 +35,7 @@ typedef struct PwFilePs5 {
     uint32_t failures;
     uint64_t bytes_read;
     PwFilePs5Mapping mappings[PW_FILE_PS5_MAX_OPEN];
+    int streams[8];
 } PwFilePs5;
 
 /* Result of the boot-time filesystem smoke test. */
@@ -62,5 +63,12 @@ int pw_file_ps5_provider(PwFilePs5 *state, PwFileProvider *provider);
  */
 int pw_file_ps5_smoke(PwFilePs5 *state, const char *name,
                       PwFilePs5Smoke *out);
+
+/* Confined CRT-stream adapter for PwWin32Services. Guest paths are reduced
+ * to a basename and lowercased to match build_native.sh staging. */
+int pw_file_ps5_stream_open(void *,const char *,const char *,uint32_t *);
+int pw_file_ps5_stream_close(void *,uint32_t);
+int pw_file_ps5_stream_read(void *,uint32_t,void *,uint32_t,uint32_t *);
+int pw_file_ps5_stream_seek(void *,uint32_t,int32_t,uint32_t,uint32_t *);
 
 #endif

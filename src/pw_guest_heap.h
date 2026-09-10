@@ -19,4 +19,5 @@ int pw_guest_heap_alloc(PwGuestHeap *,uint32_t bytes,uint32_t *address);
 int pw_guest_heap_calloc(PwGuestHeap *,uint32_t count,uint32_t bytes,uint32_t *address);
 int pw_guest_heap_free(PwGuestHeap *,uint32_t address);
 int pw_guest_heap_realloc(PwGuestHeap *,uint32_t address,uint32_t bytes,uint32_t *result);
+int pw_guest_heap_query(const PwGuestHeap *,uint32_t address,uint32_t *requested);
 #endif

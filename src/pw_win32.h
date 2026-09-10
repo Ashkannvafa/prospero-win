@@ -13,7 +13,8 @@ enum { PW_WIN32_TOKEN_BASE=0xe0000000u, PW_WIN32_CALLBACK_BASE=0xe1000000u,
        PW_WIN32_CREATE_DEPTH=8,
        PW_WIN32_CREATE_CALLBACK_BASE=PW_WIN32_CALLBACK_BASE+PW_WIN32_INIT_DEPTH*16,
        PW_WIN32_WINDOW_CALLBACK=PW_WIN32_CREATE_CALLBACK_BASE,
-       PW_WIN32_UPDATE_CALLBACK=PW_WIN32_CREATE_CALLBACK_BASE+PW_WIN32_CREATE_DEPTH*16 };
+       PW_WIN32_UPDATE_CALLBACK=PW_WIN32_CREATE_CALLBACK_BASE+PW_WIN32_CREATE_DEPTH*16,
+       PW_WIN32_DISPATCH_CALLBACK=PW_WIN32_UPDATE_CALLBACK+16 };
 typedef struct PwWin32Init {
     PwGuestCall call;
     PwGuestCallback callback;
@@ -31,7 +32,30 @@ typedef struct PwWin32Update {
     uint32_t handle,wndproc;
     unsigned active;
 } PwWin32Update;
+typedef struct PwWin32MessageDispatch {
+    PwGuestCall call;
+    PwGuestCallback callback;
+    uint32_t handle,wndproc;
+    unsigned active;
+} PwWin32MessageDispatch;
+typedef struct PwWaveOut {
+    uint32_t handle,callback,callback_instance,callback_flags;
+    uint32_t samples_per_second,average_bytes_per_second;
+    uint16_t channels,block_align,bits_per_sample;
+    unsigned open,paused;
+    uint64_t bytes_submitted;
+    uint32_t headers[32];
+    unsigned header_count;
+} PwWaveOut;
+typedef struct PwResourceRef {
+    uint32_t handle,size;unsigned used;
+} PwResourceRef;
+typedef struct PwMmio {
+    uint32_t handle,file;unsigned open;
+} PwMmio;
 typedef enum PwClockDomain { PW_CLOCK_UTC=1, PW_CLOCK_UPTIME=2, PW_CLOCK_COUNTER=3 } PwClockDomain;
+typedef enum PwAudioControl { PW_AUDIO_PAUSE=1,PW_AUDIO_RESTART=2,PW_AUDIO_RESET=3,
+                              PW_AUDIO_CLOSE=4 } PwAudioControl;
 typedef struct PwWin32Services {
     void *opaque;
     /* UTC: nanoseconds since Unix epoch (nonnegative); uptime: ns since boot
@@ -45,6 +69,7 @@ typedef struct PwWin32Services {
     /* Borrowed bytes for an exact named PE resource. The provider validates
      * the module and owns language selection and byte lifetime. */
     int (*named_resource)(void *,uint32_t,uint32_t,const char *,const uint8_t **,size_t *);
+    int (*integer_resource)(void *,uint32_t,uint32_t,uint32_t,const uint8_t **,size_t *);
     /* Confirms that a guest callback begins in executable image memory. */
     int (*code_address)(void *,uint32_t);
     unsigned ansi_codepage; /* currently exact CP1252 conversion only */
@@ -54,19 +79,34 @@ typedef struct PwWin32Services {
      * guest DOS paths; providers must confine translation to the title root. */
     int (*file_open)(void *,const char *,const char *,uint32_t *);
     int (*file_close)(void *,uint32_t);
+    int (*file_read)(void *,uint32_t,void *,uint32_t,uint32_t *);
+    int (*file_seek)(void *,uint32_t,int32_t,uint32_t,uint32_t *);
     /* Provider-confined INI lookup used by GetPrivateProfileIntA. The
      * provider owns DOS-path translation and returns the default for a
      * missing file, section, key, or nonnumeric value. */
     int (*profile_int)(void *,const char *,const char *,uint32_t,const char *,uint32_t *);
+    /* Blocking GetMessage adapter. The core checks the returned window and
+     * serializes the provider-neutral Win32 MSG itself. */
+    int (*message_wait)(void *,uint32_t filter_window,PwUser32QueueEntry *);
+    /* Host scheduling adapter for kernel32 Sleep. */
+    int (*sleep_ms)(void *,uint32_t milliseconds);
+    int (*audio_open)(void *,uint32_t rate,uint16_t channels,uint16_t bits_per_sample);
+    int (*audio_submit)(void *,const void *pcm,uint32_t bytes);
+    int (*audio_control)(void *,PwAudioControl);
 } PwWin32Services;
 typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
     PwGuestArgs args;
     uint32_t new_mode;
+    int32_t thread_priority; /* logical Win32 priority for the single guest thread */
+    uint32_t rand_state; /* MSVCRT-compatible per-process generator state */
     PwGuestHeap *heap; /* owner-supplied arena, registered RW in guest memory */
     PwRegistry *registry; /* owner-supplied fixed-capacity Win32 registry */
     PwUser32 *user32; /* owner-supplied registered-message/window namespace */
     PwGdi *gdi; /* owner-supplied fixed-capacity GDI object/display namespace */
+    PwWaveOut wave_out; /* guest-thread-owned WinMM PCM state */
+    PwResourceRef resources[128]; /* process-lifetime copies in the guest heap */
+    PwMmio mmio[8];
     uint32_t crt_errno; /* logical per-guest-thread errno; pointer export pending */
     uint32_t last_error; /* Win32 per-guest-thread error, distinct from CRT errno */
     uint16_t startup_show; /* explicit GUI launch profile: SW_SHOWNORMAL by default */
@@ -78,6 +118,7 @@ typedef struct PwWin32 {
     PwWin32Create create[PW_WIN32_CREATE_DEPTH];
     unsigned create_depth;
     PwWin32Update update;
+    PwWin32MessageDispatch message_dispatch;
 } PwWin32;
 /* Caller supplies a live RW, identity-mapped CRT region of at least 4096
  * bytes. Tokens occupy [TOKEN_BASE,TOKEN_BASE+catalog_count*16); the owner

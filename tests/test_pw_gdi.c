@@ -58,6 +58,12 @@ int main(void)
         if(surfaces[i].used && surfaces[i].target==0x10000)screen_surface=&surfaces[i];
     }
     assert(bitmap_surface && screen_surface);
+    PwGdiTargetView target_view;
+    assert(pw_gdi_target_view(&gdi,0x10000,&target_view)==PW_OK &&
+           target_view.pixels==pixels+screen_surface->offset &&
+           target_view.width==8 && target_view.height==8 &&
+           target_view.stride==32 && target_view.bytes==256);
+    assert(pw_gdi_target_view(&gdi,0x10001,&target_view)==PW_ERR_NOT_FOUND);
     uint32_t bitmap_offset=bitmap_surface->offset;
     for(unsigned i=0;i<bitmap_surface->bytes;i++)pixels[bitmap_surface->offset+i]=(uint8_t)(i+1);
     assert(pw_gdi_bitblt(&gdi,screen,2,1,4,4,memory,0,0,PW_GDI_ROP_SRCCOPY)==PW_OK);

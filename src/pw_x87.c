@@ -182,27 +182,37 @@ static int stack_fault(PwGuestFp *fp,PwX87Action action,uintptr_t operand,unsign
     case PW_X87_FSTP_F32: {
         uint32_t value=0xffc00000u;memcpy((void *)operand,&value,4);force_pop(fp);break;
     }
+    case PW_X87_FST_F64: {
+        uint64_t value=UINT64_C(0xfff8000000000000);
+        memcpy((void *)operand,&value,8);break;
+    }
     case PW_X87_FSTP_F64: {
         uint64_t value=UINT64_C(0xfff8000000000000);
         memcpy((void *)operand,&value,8);force_pop(fp);break;
     }
     case PW_X87_FSTP_ST:
         write_logical(fp,(unsigned)operand,indefinite);force_pop(fp);break;
-    case PW_X87_FCOMP_F32:case PW_X87_FCOMP_F64:
+    case PW_X87_FCOMP_F32:case PW_X87_FCOMP_F64:case PW_X87_FCOMP_ST:
         fp->x87_status=(uint16_t)((fp->x87_status&~0x4500u)|0x4500u);force_pop(fp);break;
-    case PW_X87_FUCOMPP:
+    case PW_X87_FCOMPP:case PW_X87_FUCOMPP:
         fp->x87_status=(uint16_t)((fp->x87_status&~0x4500u)|0x4500u);
         force_pop(fp);force_pop(fp);break;
     case PW_X87_FCOM_F32:case PW_X87_FCOM_F64:case PW_X87_FCOM_ST:
         fp->x87_status=(uint16_t)((fp->x87_status&~0x4500u)|0x4500u);break;
-    case PW_X87_FADDP_ST:case PW_X87_FDIVP_ST:
+    case PW_X87_FADDP_ST:case PW_X87_FMULP_ST:case PW_X87_FSUBP_ST:
+    case PW_X87_FDIVP_ST:case PW_X87_FDIVRP_ST:
         write_logical(fp,(unsigned)operand,indefinite);force_pop(fp);break;
-    case PW_X87_FABS:case PW_X87_FSQRT:
+    case PW_X87_FADD_TO_ST:case PW_X87_FMUL_TO_ST:case PW_X87_FSUB_TO_ST:
+    case PW_X87_FSUBR_TO_ST:case PW_X87_FDIV_TO_ST:case PW_X87_FDIVR_TO_ST:
+        write_logical(fp,(unsigned)operand,indefinite);break;
+    case PW_X87_FABS:case PW_X87_FCHS:case PW_X87_FSQRT:case PW_X87_FSIN:case PW_X87_FCOS:
+    case PW_X87_FACOS:
     case PW_X87_FADD_F32:case PW_X87_FADD_F64:
     case PW_X87_FMUL_F32:case PW_X87_FMUL_F64:
-    case PW_X87_FSUB_F32:case PW_X87_FSUBR_F32:
-    case PW_X87_FDIV_F32:case PW_X87_FDIVR_F64:
-    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FDIV_ST:
+    case PW_X87_FSUB_F32:case PW_X87_FSUB_F64:case PW_X87_FSUBR_F32:case PW_X87_FSUBR_F64:
+    case PW_X87_FDIV_F32:case PW_X87_FDIV_F64:case PW_X87_FDIVR_F32:case PW_X87_FDIVR_F64:
+    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FSUBR_ST:
+    case PW_X87_FDIV_ST:
         write_logical(fp,0,indefinite);break;
     case PW_X87_FNSTSW_AX:return PW_ERR_STATE;
     }
@@ -225,10 +235,15 @@ static int stack_preflight(PwGuestFp *fp,PwX87Action action,uintptr_t operand)
     if(action==PW_X87_FNSTSW_AX)return PW_OK;
     unsigned logical=0;
     switch(action) {
-    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FDIV_ST:
-    case PW_X87_FADDP_ST:case PW_X87_FDIVP_ST:case PW_X87_FCOM_ST:
+    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FSUBR_ST:
+    case PW_X87_FDIV_ST:
+    case PW_X87_FADD_TO_ST:case PW_X87_FMUL_TO_ST:case PW_X87_FSUB_TO_ST:
+    case PW_X87_FSUBR_TO_ST:case PW_X87_FDIV_TO_ST:case PW_X87_FDIVR_TO_ST:
+    case PW_X87_FADDP_ST:case PW_X87_FMULP_ST:case PW_X87_FSUBP_ST:
+    case PW_X87_FDIVP_ST:case PW_X87_FDIVRP_ST:
+    case PW_X87_FCOM_ST:case PW_X87_FCOMP_ST:
         logical=(unsigned)operand;break;
-    case PW_X87_FUCOMPP:logical=1;break;
+    case PW_X87_FCOMPP:case PW_X87_FUCOMPP:logical=1;break;
     default:break;
     }
     if(tag(fp,top(fp))==3 || (logical && tag(fp,(top(fp)+logical)&7)==3)) {
@@ -417,6 +432,137 @@ static int replace_st(PwGuestFp *fp,unsigned logical,const uint8_t value[10])
     memcpy(fp->x87_st[slot],value,10);set_tag(fp,slot,unpack80(value).kind==SOFT_ZERO?1:
         unpack80(value).kind==SOFT_FINITE?0:2);return PW_OK;
 }
+enum { TRIG_Q=60 };
+static const int64_t trig_pi=INT64_C(3622009729038561280);
+static const int64_t trig_two_pi=INT64_C(7244019458077122560);
+static const int64_t trig_half_pi=INT64_C(1811004864519280640);
+static const int64_t trig_gain=INT64_C(700114967507363200);
+static const int64_t trig_atan[61]={
+    INT64_C(905502432259640320),INT64_C(534549298976576448),
+    INT64_C(282441168888798112),INT64_C(143371547418228448),
+    INT64_C(71963988336308048),INT64_C(36017075762092180),
+    INT64_C(18012932708689206),INT64_C(9007016009513623),
+    INT64_C(4503576721087964),INT64_C(2251796950380271),
+    INT64_C(1125899548928888),INT64_C(562949908682076),
+    INT64_C(281474971118251),INT64_C(140737487656277),
+    INT64_C(70368744090283),INT64_C(35184372077909),
+    INT64_C(17592186043051),INT64_C(8796093022037),
+    INT64_C(4398046511083),INT64_C(2199023255549),
+    INT64_C(1099511627776),INT64_C(549755813888),INT64_C(274877906944),
+    INT64_C(137438953472),INT64_C(68719476736),INT64_C(34359738368),
+    INT64_C(17179869184),INT64_C(8589934592),INT64_C(4294967296),
+    INT64_C(2147483648),INT64_C(1073741824),INT64_C(536870912),
+    INT64_C(268435456),INT64_C(134217728),INT64_C(67108864),
+    INT64_C(33554432),INT64_C(16777216),INT64_C(8388608),INT64_C(4194304),
+    INT64_C(2097152),INT64_C(1048576),INT64_C(524288),INT64_C(262144),
+    INT64_C(131072),INT64_C(65536),INT64_C(32768),INT64_C(16384),
+    INT64_C(8192),INT64_C(4096),INT64_C(2048),INT64_C(1024),INT64_C(512),
+    INT64_C(256),INT64_C(128),INT64_C(64),INT64_C(32),INT64_C(16),
+    INT64_C(8),INT64_C(4),INT64_C(2),INT64_C(1)
+};
+static int64_t trig_sar(int64_t value,unsigned shift)
+{
+    if(!shift)return value;
+    if(value>=0)return value>>shift;
+    uint64_t magnitude=(uint64_t)(-(value+1))+1;
+    return -(int64_t)((magnitude+((UINT64_C(1)<<shift)-1))>>shift);
+}
+static int trig_phase(Soft80 source,int64_t *phase)
+{
+    if(source.kind==SOFT_ZERO){*phase=0;return PW_OK;}
+    if(source.kind!=SOFT_FINITE || source.exp>=63)return PW_ERR_LIMIT;
+    __uint128_t scaled;
+    if(source.exp>=3)scaled=(__uint128_t)source.sig<<(unsigned)(source.exp-3);
+    else {
+        unsigned shift=(unsigned)(3-source.exp);
+        scaled=shift>=128?0:(__uint128_t)source.sig>>shift;
+    }
+    int64_t value=(int64_t)(uint64_t)(scaled%(uint64_t)trig_two_pi);
+    if(source.sign)value=-value;
+    if(value>trig_pi)value-=trig_two_pi;
+    else if(value<-trig_pi)value+=trig_two_pi;
+    *phase=value;return PW_OK;
+}
+static void trig_rotate(int64_t phase,int64_t *cosine,int64_t *sine)
+{
+    if(!phase){*cosine=INT64_C(1)<<TRIG_Q;*sine=0;return;}
+    if(phase==trig_half_pi || phase==-trig_half_pi) {
+        *cosine=0;*sine=phase<0?-(INT64_C(1)<<TRIG_Q):INT64_C(1)<<TRIG_Q;return;
+    }
+    unsigned negate_cosine=0;
+    if(phase>trig_half_pi){phase=trig_pi-phase;negate_cosine=1;}
+    else if(phase<-trig_half_pi){phase=-trig_pi-phase;negate_cosine=1;}
+    int64_t x=trig_gain,y=0,z=phase;
+    for(unsigned i=0;i<61;i++) {
+        int64_t xs=trig_sar(x,i),ys=trig_sar(y,i),next_x,next_y;
+        if(z>=0){next_x=x-ys;next_y=y+xs;z-=trig_atan[i];}
+        else {next_x=x+ys;next_y=y-xs;z+=trig_atan[i];}
+        x=next_x;y=next_y;
+    }
+    *cosine=negate_cosine?-x:x;*sine=y;
+}
+static void trig_pack(int64_t fixed,uint8_t out[10])
+{
+    if(!fixed){put80(out,0,0);return;}
+    unsigned sign=fixed<0;
+    uint64_t magnitude=sign?(uint64_t)(-(fixed+1))+1:(uint64_t)fixed;
+    unsigned high=highest64(magnitude);
+    put80(out,magnitude<<(63-high),(uint16_t)((sign<<15)|(high-TRIG_Q+16383)));
+}
+static int transcendental(PwGuestFp *fp,unsigned cosine)
+{
+    uint8_t raw[10],result[10];int status=peek(fp,0,raw);if(status!=PW_OK)return status;
+    Soft80 source=unpack80(raw);PwGuestFp after=*fp;
+    if(source.kind==SOFT_NAN)return PW_OK;
+    if(source.kind==SOFT_INFINITY) {
+        status=invalid_result(&after,result);
+        if(status!=PW_OK){if(status==PW_ERR_X87_TRAP)*fp=after;return status;}
+    } else {
+        int64_t phase,cosine_value,sine_value;
+        if(trig_phase(source,&phase)!=PW_OK) {
+            fp->x87_status=(uint16_t)(fp->x87_status|0x0400u);return PW_OK;
+        }
+        trig_rotate(phase,&cosine_value,&sine_value);
+        trig_pack(cosine?cosine_value:sine_value,result);
+    }
+    if((status=replace_st(&after,0,result))!=PW_OK)return status;
+    after.x87_status=(uint16_t)(after.x87_status&~0x0400u);
+    *fp=after;return PW_OK;
+}
+static int inverse_cosine(PwGuestFp *fp)
+{
+    uint8_t raw[10],result[10];int status=peek(fp,0,raw);if(status!=PW_OK)return status;
+    Soft80 source=unpack80(raw);PwGuestFp after=*fp;
+    uint64_t one=UINT64_C(1)<<TRIG_Q,magnitude;
+    if(source.kind==SOFT_ZERO)magnitude=0;
+    else if(source.kind!=SOFT_FINITE || source.exp>0 ||
+            (source.exp==0 && source.sig>UINT64_C(0x8000000000000000))) {
+        status=invalid_result(&after,result);
+        if(status!=PW_OK){if(status==PW_ERR_X87_TRAP)*fp=after;return status;}
+        if((status=replace_st(&after,0,result))!=PW_OK)return status;
+        *fp=after;return PW_OK;
+    } else {
+        unsigned shift=(unsigned)(3-source.exp);
+        magnitude=shift>=64?0:source.sig>>shift;
+    }
+    int64_t target=source.sign?-(int64_t)magnitude:(int64_t)magnitude;
+    int64_t angle;
+    if(target==(int64_t)one)angle=0;
+    else if(target==-(int64_t)one)angle=trig_pi;
+    else if(!target)angle=trig_half_pi;
+    else {
+        int64_t low=0,high=trig_pi;
+        for(unsigned i=0;i<61;i++) {
+            int64_t middle=low+(high-low)/2,cosine_value,sine_value;
+            trig_rotate(middle,&cosine_value,&sine_value);
+            if(cosine_value>target)low=middle;else high=middle;
+        }
+        angle=low+(high-low)/2;
+    }
+    trig_pack(angle,result);
+    if((status=replace_st(&after,0,result))!=PW_OK)return status;
+    *fp=after;return PW_OK;
+}
 static int binary(PwGuestFp *fp,Soft80 rhs,unsigned operation,unsigned reverse,
                   unsigned destination,unsigned pop)
 {
@@ -468,8 +614,11 @@ int pw_x87_execute(PwGuestFp *fp,PwX87Action action,uintptr_t operand,uint16_t *
     if((unsigned)action>PW_X87_FUCOMPP)return PW_ERR_UNSUPPORTED;
     switch(action) {
     case PW_X87_FLD_ST:case PW_X87_FSTP_ST:
-    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FDIV_ST:
-    case PW_X87_FADDP_ST:case PW_X87_FDIVP_ST:case PW_X87_FCOM_ST:
+    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FSUBR_ST:
+    case PW_X87_FDIV_ST:
+    case PW_X87_FADDP_ST:case PW_X87_FMULP_ST:case PW_X87_FSUBP_ST:
+    case PW_X87_FDIVP_ST:case PW_X87_FDIVRP_ST:
+    case PW_X87_FCOM_ST:case PW_X87_FCOMP_ST:
         if(operand>=8)return PW_ERR_PRECONDITION;
         break;
     default:break;
@@ -496,6 +645,7 @@ int pw_x87_execute(PwGuestFp *fp,PwX87Action action,uintptr_t operand,uint16_t *
         memset(value,0,10);return load(fp,value);
     case PW_X87_FST_F32:return store_memory(fp,operand,32,0);
     case PW_X87_FSTP_F32:return store_memory(fp,operand,32,1);
+    case PW_X87_FST_F64:return store_memory(fp,operand,64,0);
     case PW_X87_FSTP_F64:return store_memory(fp,operand,64,1);
     case PW_X87_FSTP_ST: {
         unsigned logical=(unsigned)operand;if(logical>=8)return PW_ERR_PRECONDITION;
@@ -513,6 +663,11 @@ int pw_x87_execute(PwGuestFp *fp,PwX87Action action,uintptr_t operand,uint16_t *
         value[9]&=0x7f;
         return replace_st(fp,0,value);
     }
+    case PW_X87_FCHS: {
+        if((status=peek(fp,0,value))!=PW_OK)return status;
+        value[9]^=0x80;
+        return replace_st(fp,0,value);
+    }
     case PW_X87_FSQRT: {
         if((status=peek(fp,0,value))!=PW_OK)return status;
         PwGuestFp after=*fp;uint8_t result[10];
@@ -520,26 +675,50 @@ int pw_x87_execute(PwGuestFp *fp,PwX87Action action,uintptr_t operand,uint16_t *
         if((status=replace_st(&after,0,result))!=PW_OK)return status;
         *fp=after;return PW_OK;
     }
+    case PW_X87_FSIN:return transcendental(fp,0);
+    case PW_X87_FCOS:return transcendental(fp,1);
+    case PW_X87_FACOS:return inverse_cosine(fp);
     case PW_X87_FADD_F32:case PW_X87_FADD_F64:
     case PW_X87_FMUL_F32:case PW_X87_FMUL_F64:
-    case PW_X87_FSUB_F32:case PW_X87_FSUBR_F32:
-    case PW_X87_FDIV_F32:case PW_X87_FDIVR_F64: {
+    case PW_X87_FSUB_F32:case PW_X87_FSUB_F64:case PW_X87_FSUBR_F32:case PW_X87_FSUBR_F64:
+    case PW_X87_FDIV_F32:case PW_X87_FDIV_F64:case PW_X87_FDIVR_F32:case PW_X87_FDIVR_F64: {
         Soft80 rhs;unsigned bits=action==PW_X87_FADD_F64 || action==PW_X87_FMUL_F64 ||
-            action==PW_X87_FDIVR_F64?64:32;
+            action==PW_X87_FSUB_F64 || action==PW_X87_FSUBR_F64 ||
+            action==PW_X87_FDIV_F64 || action==PW_X87_FDIVR_F64?64:32;
         if((status=memory_operand(fp,operand,bits,&rhs))!=PW_OK)return status;
         unsigned op=action==PW_X87_FMUL_F32 || action==PW_X87_FMUL_F64?1:
-            action==PW_X87_FSUB_F32 || action==PW_X87_FSUBR_F32?2:
-            action==PW_X87_FDIV_F32 || action==PW_X87_FDIVR_F64?3:0;
-        return binary(fp,rhs,op,action==PW_X87_FSUBR_F32 || action==PW_X87_FDIVR_F64,0,0);
+            action==PW_X87_FSUB_F32 || action==PW_X87_FSUB_F64 ||
+            action==PW_X87_FSUBR_F32 || action==PW_X87_FSUBR_F64?2:
+            action==PW_X87_FDIV_F32 || action==PW_X87_FDIV_F64 ||
+            action==PW_X87_FDIVR_F32 || action==PW_X87_FDIVR_F64?3:0;
+        return binary(fp,rhs,op,action==PW_X87_FSUBR_F32 || action==PW_X87_FSUBR_F64 ||
+                      action==PW_X87_FDIVR_F32 ||
+                      action==PW_X87_FDIVR_F64,0,0);
     }
-    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FDIV_ST:
-    case PW_X87_FADDP_ST:case PW_X87_FDIVP_ST: {
+    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FSUBR_ST:
+    case PW_X87_FDIV_ST:
+    case PW_X87_FADDP_ST:case PW_X87_FMULP_ST:case PW_X87_FSUBP_ST:
+    case PW_X87_FDIVP_ST:case PW_X87_FDIVRP_ST: {
         if((status=peek(fp,(unsigned)operand,value))!=PW_OK)return status;
-        unsigned op=action==PW_X87_FMUL_ST?1:action==PW_X87_FSUB_ST?2:
-            action==PW_X87_FDIV_ST || action==PW_X87_FDIVP_ST?3:0;
-        unsigned pop=action==PW_X87_FADDP_ST || action==PW_X87_FDIVP_ST;
-        return binary(fp,unpack80(value),op,action==PW_X87_FDIVP_ST,
+        unsigned op=action==PW_X87_FMUL_ST || action==PW_X87_FMULP_ST?1:
+            action==PW_X87_FSUB_ST || action==PW_X87_FSUBR_ST || action==PW_X87_FSUBP_ST?2:
+            action==PW_X87_FDIV_ST || action==PW_X87_FDIVP_ST ||
+            action==PW_X87_FDIVRP_ST?3:0;
+        unsigned pop=action==PW_X87_FADDP_ST || action==PW_X87_FMULP_ST ||
+            action==PW_X87_FSUBP_ST || action==PW_X87_FDIVP_ST ||
+            action==PW_X87_FDIVRP_ST;
+        return binary(fp,unpack80(value),op,action==PW_X87_FSUBR_ST ||
+                      action==PW_X87_FSUBP_ST || action==PW_X87_FDIVP_ST,
                       pop?(unsigned)operand:0,pop);
+    }
+    case PW_X87_FADD_TO_ST:case PW_X87_FMUL_TO_ST:case PW_X87_FSUB_TO_ST:
+    case PW_X87_FSUBR_TO_ST:case PW_X87_FDIV_TO_ST:case PW_X87_FDIVR_TO_ST: {
+        if((status=peek(fp,(unsigned)operand,value))!=PW_OK)return status;
+        unsigned op=action==PW_X87_FMUL_TO_ST?1:
+            action==PW_X87_FSUB_TO_ST || action==PW_X87_FSUBR_TO_ST?2:
+            action==PW_X87_FDIV_TO_ST || action==PW_X87_FDIVR_TO_ST?3:0;
+        unsigned reverse=action==PW_X87_FSUB_TO_ST || action==PW_X87_FDIV_TO_ST;
+        return binary(fp,unpack80(value),op,reverse,(unsigned)operand,0);
     }
     case PW_X87_FCOM_F32:case PW_X87_FCOM_F64:
     case PW_X87_FCOMP_F32:case PW_X87_FCOMP_F64: {
@@ -550,7 +729,10 @@ int pw_x87_execute(PwGuestFp *fp,PwX87Action action,uintptr_t operand,uint16_t *
     case PW_X87_FCOM_ST:
         if((status=peek(fp,(unsigned)operand,value))!=PW_OK)return status;
         return compare(fp,unpack80(value),0);
-    case PW_X87_FUCOMPP:
+    case PW_X87_FCOMP_ST:
+        if((status=peek(fp,(unsigned)operand,value))!=PW_OK)return status;
+        return compare(fp,unpack80(value),1);
+    case PW_X87_FCOMPP:case PW_X87_FUCOMPP:
         if((status=peek(fp,1,value))!=PW_OK)return status;
         return compare(fp,unpack80(value),2);
     }

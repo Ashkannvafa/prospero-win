@@ -1,5 +1,30 @@
 # Telemetry contract
 
+The current native game runner uses `ps5log/1` over TCP exclusively. It does
+not write logs to console storage or USB. Its continuous-runtime records are:
+
+| Record | Carries |
+| --- | --- |
+| `PW_RUNTIME_BEGIN` | schema, title, private root basename and telemetry init status |
+| `PW_RUNTIME_READY` | bound import count, guest entry and mapped image bytes |
+| `PW_VIDEO_FRAME` | changing frame hash, dimensions, flip/submit totals, `agc-dma` backend and completed fence state |
+| `PW_AUDIO_OPEN` | requested guest PCM format and native-open result |
+| `PW_AUDIO_PCM` | cumulative input bytes, output frames, complete SceAudioOut blocks and input hash |
+| `PW_RUNTIME_HEARTBEAT` | events, retired instructions, adapter calls, window/GDI ownership, AGC flips and complete audio counters |
+| `PW_RUNTIME_ABORT` | classified stage and status before fail-closed exit |
+| `PW_RUNTIME_SIGNAL` | signal, fault address and native register context before exit |
+
+The runner has no normal self-exit: it continues until operator closure.
+Absence of `PW_RUNTIME_ABORT`/`PW_RUNTIME_SIGNAL`, rising heartbeats and an
+external BigApp status are required to classify it as live. Audio acceptance
+requires nonzero bytes, frames, blocks and hash; a successful open alone is
+insufficient. Capture acceptance separately requires both a video and audio
+stream, while renderer/audio ownership remains grounded in telemetry. See
+HARDWARE_VALIDATION.md.
+
+The records below belong to the earlier finite PE mapping gate, which remains
+available as a separate synthetic validation path.
+
 ## Synthetic Win64 call probe
 
 Before loading the staged PE, the native adapter logs call6-begin and runs

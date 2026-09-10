@@ -14,7 +14,33 @@ int main(void)
     assert(pw_guest_x87_peek(&fp,0,got)==PW_OK && !memcmp(got,ext_one,10));
     assert(pw_x87_execute(&fp,PW_X87_FST_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==one);
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==one);
+
+    /* D9 FE/D9 FF replace ST(0), preserve depth and complete argument reduction. */
+    uint64_t half_pi=UINT64_C(0x3ff921fb54442d18),trig_result=0;
+    pw_guest_fp_init(&fp);fp.x87_status=(uint16_t)(fp.x87_status|0x0400u);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F64,(uintptr_t)&half_pi,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSIN,0,NULL)==PW_OK && !(fp.x87_status&0x0400u));
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F64,(uintptr_t)&trig_result,NULL)==PW_OK &&
+           trig_result==UINT64_C(0x3ff0000000000000));
+    pw_guest_fp_init(&fp);
+    assert(pw_x87_execute(&fp,PW_X87_FLDZ,0,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FACOS,0,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F64,(uintptr_t)&trig_result,NULL)==PW_OK &&
+           trig_result==half_pi);
+    pw_guest_fp_init(&fp);
+    assert(pw_x87_execute(&fp,PW_X87_FLD1,0,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FACOS,0,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F64,(uintptr_t)&trig_result,NULL)==PW_OK &&
+           trig_result==0);
+    pw_guest_fp_init(&fp);fp.x87_status=(uint16_t)(fp.x87_status|0x0400u);
+    assert(pw_x87_execute(&fp,PW_X87_FLDZ,0,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FCOS,0,NULL)==PW_OK && !(fp.x87_status&0x0400u));
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F64,(uintptr_t)&trig_result,NULL)==PW_OK &&
+           trig_result==UINT64_C(0x3ff0000000000000));
     assert(pw_x87_execute(&fp,PW_X87_FLD_F64,(uintptr_t)&pi,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FST_F64,(uintptr_t)&stored64,NULL)==PW_OK && stored64==pi);
+    uint8_t retained[10];assert(pw_guest_x87_peek(&fp,0,retained)==PW_OK);
+    stored64=0;
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F64,(uintptr_t)&stored64,NULL)==PW_OK && stored64==pi);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&negative,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FLD_ST,0,NULL)==PW_OK);
@@ -94,15 +120,29 @@ int main(void)
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&one,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FADDP_ST,1,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==three);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&one,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FADD_TO_ST,1,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==one);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==three);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&three,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FMUL_ST,1,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==six);
     assert(pw_guest_x87_pop(&fp,got)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&three,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FMULP_ST,1,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==six);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&three,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FSUB_ST,1,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==one);
+    assert(pw_guest_x87_pop(&fp,got)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&six,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSUBR_ST,1,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==four);
     assert(pw_guest_x87_pop(&fp,got)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&six,NULL)==PW_OK);
@@ -113,18 +153,42 @@ int main(void)
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FDIVP_ST,1,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==three);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&six,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FDIVRP_ST,1,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK);
+    assert(stored==0x3eaaaaab); /* 2 / 6, rounded to binary32. */
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&six,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSUBP_ST,1,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==four);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F64,(uintptr_t)&two64,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FDIVR_F64,(uintptr_t)&six64,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FCOM_F64,(uintptr_t)&three64,NULL)==PW_OK && (fp.x87_status&0x4500)==0x4000);
     assert(pw_x87_execute(&fp,PW_X87_FCOMP_F64,(uintptr_t)&three64,NULL)==PW_OK && (fp.x87_status&0x4500)==0x4000);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FDIVR_F32,(uintptr_t)&six,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==three);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&three,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FCOM_ST,1,NULL)==PW_OK && (fp.x87_status&0x4500)==0x0100);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_ST,0,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FCOMP_ST,2,NULL)==PW_OK &&
+           (fp.x87_status&0x4500)==0x0100);
     assert(pw_x87_execute(&fp,PW_X87_FUCOMPP,0,NULL)==PW_OK);
     assert(pw_guest_x87_peek(&fp,0,got)==PW_ERR_NOT_FOUND);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&three,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&two,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FCOMPP,0,NULL)==PW_OK &&
+           (fp.x87_status&0x4500)==0x0100 &&
+           pw_guest_x87_peek(&fp,0,got)==PW_ERR_NOT_FOUND);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&negative_half,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FABS,0,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==half32);
+    assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&one,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FCHS,0,NULL)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK &&
+           stored==UINT32_C(0xbf800000));
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&zero32,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FADD_F32,(uintptr_t)&one,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FCOM_F32,(uintptr_t)&zero32,NULL)==PW_OK && !(fp.x87_status&0x4500));

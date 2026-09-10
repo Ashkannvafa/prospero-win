@@ -1,85 +1,68 @@
 # prospero-win
 
-An experimental Windows compatibility runtime for the PlayStation 5 GPU
-and CPU. PE64 execution is planned natively with Win64 ABI bridges;
-PE32 execution requires an x86 translation engine.
+An experimental Windows compatibility runtime for PlayStation 5. It maps
+Windows PE images, translates 32-bit x86 code to x86-64, supplies reviewed
+Win32/CRT services and connects guest graphics and audio to native PS5
+backends.
 
-The first game target is the original Windows Space Cadet **PINBALL.EXE**,
-without recompilation, with DualSense input and AGC-backed presentation.
-DRM, anti-cheat and kernel drivers are out of scope.
+The first target is the owner's original Windows XP Space Cadet
+`PINBALL.EXE`, executed without recompilation. DRM, anti-cheat and kernel
+drivers are out of scope.
 
-## Current status
+## Current milestone
 
-- **Validated on FW 12.02:** synthetic PE parsing, mapping, relocation,
-  protection, dependency classification, verification and release.
-- **Measured:** the tested LDT route is refused; low allocations and
-  mprotect RW-to-RX/RWX work in a title.
-- **Host progress:** the exact Pinball binary reaches its public-PDB-verified
-  `WinMain` address, completes the splash path and enters WaveMix setup:
-  37,925 translated instructions and 241 completed adapter calls across 67
-  distinct DLL/API pairs. The measured run records 3,807 DBT dispatches, 3,469
-  cache hits and 338 published blocks. Keyboard scan-code discovery, main and
-  nested helper-window creation, logical palettes, INI lookup and the complete
-  splash blits now execute. The next classified stop is
-  `winmm!waveOutGetNumDevs`, the first audio-device query.
-- **Measured execution scope:** 25,092/25,538 reachable static instructions
-  are accepted (98.25%). Integer-only binary80 helpers now translate 2,253 of
-  2,300 x87 occurrences, including all 36 forms and all 384 occurrences in the
-  startup graph. The remaining 47 x87 occurrences are later wndproc/gameplay
-  forms; 399 rejected instructions are non-x87.
-- **Verified oracle:** the target SHA-1, public PDB identity and ten public
-  symbol addresses match the pinned MIT source reconstruction. The generated
-  manifest groups source-confirmed startup, graphics, input and audio APIs.
-- **Reusable PS5 baseline:** `ps5-xash3d` now runs Half-Life 1 gameplay on the
-  same owned FW 12.02 console with native AGC rendering, DualSense input and
-  live game audio. Its public Phase 7 still tracks fidelity, performance,
-  longer soaks and release polish; prospero-win treats the proven platform
-  components as reusable foundations rather than pending research.
-- **Next:** implement the source-confirmed reusable WaveOut state machine and
-  advance through audio initialization toward the message loop. Wine remains a contract
-  and test reference, not a claim of implemented compatibility.
-- **Not yet implemented:** a complete execution engine, Win32 API surface
-  or a running Windows game.
+The visible-and-audible milestone is validated on an owned PS5 running FW
+12.02:
 
-Mapping evidence is documented in
-[PE_MAPPING_PHASE0.md](docs/PE_MAPPING_PHASE0.md). Full application
-compatibility is not established by mapping or by executable permissions.
+- the original PE32 image executes continuously through the x86 DBT;
+- its main window and animated table are composed by the GDI compatibility
+  layer and presented at 1920×1080 through AGC DMA and VideoOut;
+- its MMIO/WaveMix/WinMM path submits original game PCM to SceAudioOut;
+- `ps5log/1` records artifact identity, instruction/API progress, AGC flips,
+  PCM bytes/frames/hash and any classified abort;
+- Remote Play evidence contains 1080p60 H.264 video and captured AAC audio;
+- close and relaunch work without rebooting the console.
+
+The validated fSELF SHA-256 is
+`b755b0bd5ded13e944b7fd2262c5b7e5004a7af9af102454d43603b4bc26a824`.
+See [HARDWARE_VALIDATION.md](docs/HARDWARE_VALIDATION.md) for the correlated
+run and its limitations.
+
+This is not yet playable: DualSense input is deliberately deferred. GDI
+fidelity also has known composition defects, and MIDI/MCI, broad Win32
+compatibility and a general D3D backend remain future work.
 
 ## Build and inspect
 
 ```sh
-make all          # host contracts and publication audit
-make sanitize     # clean rebuild with Clang ASan, UBSan and leak detection
+make all          # host contracts plus publication audit
+make sanitize     # clean ASan/UBSan rebuild
 make inspect-only PE_INPUT=/private/path/PINBALL.EXE
-make inspect PE_INPUT=/private/path/game.exe PE_DIR=/private/path
+
+# Native package; private game files are staged into ignored dist/ only.
+PW_FOUNDATION_READY=1 \
+PW_STAGE_INPUT=/private/path/pinball_xp \
+PW_ROOT_MODULE=pinball.exe \
+tools/build_native.sh
 ```
 
-The inspector lists sections and static import names/ordinals.
-`inspect-only` requires no dependencies and does not map or execute code.
-Host/local classification is provisional until resolver policy is expanded.
+No Windows executable, resource, vendor SDK blob, telemetry transcript or
+capture belongs in this repository. Tests generate synthetic PE fixtures,
+and the fail-closed publication audit enforces that boundary.
 
-Build the existing synthetic console mapping gate:
+## Documentation
 
-```sh
-make native PS5LOG_DEV_CONF=/private/path/dev.conf
-```
-
-## Development
-
-[Roadmap](docs/ROADMAP.md) · [Pinball target](docs/PINBALL_TARGET.md) ·
-[Architecture](docs/ARCHITECTURE.md) ·
-[Execution model](docs/EXECUTION_MODEL.md) ·
-[GDI contracts](docs/GDI.md) ·
-[Source oracle](docs/PINBALL_SOURCE_ORACLE.json) ·
-[x86 coverage](docs/PINBALL_X86_COVERAGE.json) ·
-[Import plan](docs/IMPORT_PLAN.md) · [Wine reuse audit](docs/WINE_REUSE_AUDIT.md) ·
-[Development workflow](docs/DEVELOPMENT.md) ·
-[Telemetry](docs/TELEMETRY.md)
-
-Windows binaries and game resources are private inputs kept outside the
-public source tree. Tests generate synthetic images. The publication audit
-rejects executable content, vendor DLLs and staged game directories.
+[Roadmap](docs/ROADMAP.md) ·
+[hardware validation](docs/HARDWARE_VALIDATION.md) ·
+[architecture](docs/ARCHITECTURE.md) ·
+[Pinball target](docs/PINBALL_TARGET.md) ·
+[x86 execution](docs/X86_EXECUTION.md) ·
+[guest ABI](docs/GUEST_ABI.md) ·
+[GDI](docs/GDI.md) ·
+[telemetry](docs/TELEMETRY.md) ·
+[development](docs/DEVELOPMENT.md) ·
+[Wine reuse audit](docs/WINE_REUSE_AUDIT.md)
 
 Licensed LGPL-2.1-or-later. See [LICENSING.md](LICENSING.md) and
-[NOTICE.md](NOTICE.md) for provenance and component obligations.
-PPSA99995 is a local development identifier, not an official Sony assignment.
+[NOTICE.md](NOTICE.md). `PPSA99995` is a local development identifier, not an
+official Sony assignment.

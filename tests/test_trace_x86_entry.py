@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
                                 capture_output=True, text=True, timeout=5)
         assert result.returncode == 2, result.stderr
         assert f"steps={steps} stop={reason} " in result.stdout, result.stdout
-        assert "kind=host-heap-summary blocks=1 live=0 requested=0 arena=8388608 valid=1" in result.stdout
+        assert "kind=host-heap-summary blocks=1 live=0 requested=0 arena=67108864 valid=1" in result.stdout
         assert "kind=host-dbt-cache " in result.stdout
         assert "kind=host-gdi-summary dcs=0 window_dcs=0 memory_dcs=0 surfaces=0 " \
                "targets=0 bitmaps=0 pixels=0 valid=1" in result.stdout
@@ -41,13 +41,13 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
             assert limited.returncode == 2 and "steps=8 stop=budget " in limited.stdout
             assert "dispatches=8 hits=7 misses=1 publishes=1 retired=8 " in limited.stdout
             assert "kind=host-pc-milestone pc=0x01001000" in limited.stdout
-            assert "kind=host-pc-milestone-summary pc=0x01001000 seen=1" in limited.stdout
-            for invalid in ("0", "65537", "no", "12bad", "-1", ""):
+            assert "kind=host-pc-milestone-summary pc=0x01001000 seen=8" in limited.stdout
+            for invalid in ("0", "10000001", "no", "12bad", "-1", ""):
                 rejected = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), invalid],
                                           capture_output=True, text=True, timeout=5)
                 assert rejected.returncode == 1 and not rejected.stdout
     # Full synthetic PE -> IAT binding -> translated call -> Win32 return.
-    for api, reason in [("GetModuleHandleA", "unsupported"), ("SetThreadPriority", "unimplemented-api")]:
+    for api, reason in [("GetModuleHandleA", "unsupported"), ("Sleep", "unsupported")]:
         code=bytearray.fromhex("6a00 ff1500000000 cc")
         spec=Spec(name="synthetic.exe",pe32plus=False,image_base=0x01000000,
                   relocate_data_pointer=False,
@@ -67,5 +67,5 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
         if api=="GetModuleHandleA":
             assert "name=GetModuleHandleA result=0x01000000" in result.stdout
         else:
-            assert "name=SetThreadPriority status=-5 caller=0x01001008" in result.stdout
+            assert "name=Sleep result=0x00000000" in result.stdout
 print("host entry tracer passed: synthetic execution and bounded classified stops")

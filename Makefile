@@ -1,6 +1,7 @@
 CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Werror
 BUILD := build/host
+HEADERS := $(wildcard include/*.h src/*.h native/*.h)
 
 .PHONY: all test sanitize audit inspect inspect-only sample native native-release clean
 
@@ -10,8 +11,8 @@ $(BUILD):
 	mkdir -p $@
 
 define test_rule
-$(BUILD)/$(1): $(2) | $(BUILD)
-	$(CC) $(CFLAGS) $$^ $(3) -o $$@
+$(BUILD)/$(1): $(2) $(HEADERS) | $(BUILD)
+	$(CC) $(CFLAGS) $$(filter %.c %.S,$$^) $(3) -o $$@
 endef
 
 CORE := src/pe_image.c src/pe_layout.c src/pe_reloc.c src/pe_import.c \
@@ -23,7 +24,7 @@ $(eval $(call test_rule,test_pe_resource,tests/test_pe_resource.c src/pe_resourc
 $(eval $(call test_rule,test_pw_guest_heap,tests/test_pw_guest_heap.c src/pw_guest_heap.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_registry,tests/test_pw_registry.c src/pw_registry.c,))
 $(eval $(call test_rule,test_pw_gdi,tests/test_pw_gdi.c src/pw_gdi.c,))
-$(eval $(call test_rule,test_pw_gdi_abi,tests/test_pw_gdi_abi.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
+$(eval $(call test_rule,test_pw_gdi_abi,tests/test_pw_gdi_abi.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_crt_format,tests/test_pw_crt_format.c src/pw_crt_format.c,))
 $(eval $(call test_rule,test_pw_user32,tests/test_pw_user32.c src/pw_user32.c,))
 $(eval $(call test_rule,test_pe_layout,tests/test_pe_layout.c src/pe_image.c src/pe_layout.c src/pw_result.c,))
@@ -41,11 +42,12 @@ $(eval $(call test_rule,test_pw_x86_cache,tests/test_pw_x86_cache.c src/pw_x86_c
 $(eval $(call test_rule,test_pw_x86_engine,tests/test_pw_x86_engine.c src/pw_x86_engine.c src/pw_x86_cache.c src/pw_x86_block.c src/pw_x87.c src/pw_guest_fp.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_guest_call,tests/test_pw_guest_call.c src/pw_guest_call.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_import_bind,tests/test_pw_import_bind.c src/pw_import_bind.c $(CORE),))
-$(eval $(call test_rule,test_pw_win32,tests/test_pw_win32.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
+$(eval $(call test_rule,test_pw_win32,tests/test_pw_win32.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_guest_args,tests/test_pw_guest_args.c src/pw_guest_args.c,))
-$(eval $(call test_rule,test_pw_time,tests/test_pw_time.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
+$(eval $(call test_rule,test_pw_time,tests/test_pw_time.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_guest_fp,tests/test_pw_guest_fp.c src/pw_guest_fp.c,))
 $(eval $(call test_rule,test_pw_x87,tests/test_pw_x87.c src/pw_x87.c src/pw_guest_fp.c,))
+$(eval $(call test_rule,test_pw_audio_ps5,tests/test_pw_audio_ps5.c native/pw_audio_ps5.c,-DPW_AUDIO_PS5_HOST_TEST))
 $(eval $(call test_rule,test_pw_initterm,tests/test_pw_initterm.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x86_block.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_window,tests/test_pw_window.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x86_block.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,trace_x86_entry,tools/trace_x86_entry.c src/pe_resource.c src/pw_x86_engine.c src/pw_x86_cache.c src/pw_x86_block.c src/pw_x87.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_import_bind.c $(CORE),))
@@ -55,7 +57,7 @@ $(eval $(call test_rule,inspect_pe,tools/inspect_pe.c $(CORE) src/pw_file_posix.
 
 TESTS := test_pw_guest_heap test_pw_registry test_pw_gdi test_pw_gdi_abi test_pw_crt_format test_pw_user32 test_pe_resource test_pw_time test_pw_guest_args test_pw_initterm test_pw_window test_pw_guest_fp test_pe_image test_pe_layout test_pe_reloc test_pe_import \
 	test_pw_module_name test_pw_vm test_pw_map test_pw_loader \
-	test_pw_segment test_pw_compat32 test_pw_gate test_pw_win64 test_pw_x86_block test_pw_x86_cache test_pw_x86_engine test_pw_guest_call test_pw_import_bind test_pw_win32 test_pw_x87
+	test_pw_segment test_pw_compat32 test_pw_gate test_pw_win64 test_pw_x86_block test_pw_x86_cache test_pw_x86_engine test_pw_guest_call test_pw_import_bind test_pw_win32 test_pw_x87 test_pw_audio_ps5
 
 # The Python suites drive the built binaries: the evidence validator is
 # tested against a transcript the real gate produced, and the Python PE

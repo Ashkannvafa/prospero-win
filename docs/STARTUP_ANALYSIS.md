@@ -196,7 +196,10 @@ bitmap and 16,872,960 pixel bytes; explicit reset then validates zero owned
 objects and zero live pixel bytes.
 
 The keyboard scan-code discovery and nested WaveMix helper-window creation now
-complete. The next classified stop is `winmm!waveOutGetNumDevs`, called from
-the source-confirmed audio initialization path after the first `wavemix.inf`
-lookup. This is a precise host audio boundary, not a visible window, gameplay
-or translated PS5 execution claim. See [GDI.md](GDI.md).
+complete. The historical `waveOutGetNumDevs` stop has been retired: the
+runtime implements the observed MMIO/WaveMix/WinMM state machine, reaches the
+message loop and submits original PCM through SceAudioOut on PS5. The key audio
+failure was an incorrect three-argument model for the two-argument stdcall
+`mmioClose`; its extra stack pop consumed saved ESI. Exact stack-balance and
+audio-path regressions now preserve that fix. See
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md).

@@ -4,7 +4,7 @@ Target: execute the owner's original x86 PINBALL.EXE through prospero-win
 without recompilation, display through the PS5 GPU, accept DualSense input
 and support operator-controlled closure.
 
-Status: owner's executable inspected on 2026-09-08. SHA-256:
+Input identity: owner's executable inspected on 2026-09-08. SHA-256:
 `2bbc8234685fe2f6324040af6ea20123cf00c4a56882ce0d9074f0beefac67bc`.
 PE32/i386, 281088 file bytes, 307200 image bytes, required base 0x01000000,
 no base relocations. Static imports: 207 symbols across eight DLLs.
@@ -12,6 +12,13 @@ GDI32 supplies BitBlt/StretchDIBits and palettes; WINMM supplies waveOut,
 MMIO and MCI. No static DirectDraw/Direct3D imports were found. LoadLibraryA
 and GetProcAddress require further dynamic dependency analysis. Runtime
 working set remains unverified.
+
+Current status: P4.5 is validated on FW 12.02. This exact executable now runs
+continuously through the native x86 DBT, displays changing board frames through
+AGC DMA/VideoOut and sends its original WaveMix effects through SceAudioOut.
+The accepted fSELF hash, telemetry and private audiovisual evidence are in
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). DualSense input, pixel-perfect
+GDI composition, MIDI/MCI, persistence and long-soak closure remain open.
 
 The file's SHA-1 is
 `2a5b525e0f631bb6107639e2a69df15986fb0d05`, exactly the Windows XP target
@@ -104,11 +111,12 @@ inspector does not enumerate those yet. Imports are not a full runtime trace.
 
 ## Acceptance and reference
 
-Follow P0–P6 in ROADMAP.md. First output must come from the original
-executable. Playability means launching a ball, both flippers, scoring and
-restart with correct timing. Completion adds audio, persistence, stable
-sessions and structured lifecycle evidence. Video alone does not prove
-artifact identity, renderer completion or cleanup.
+Follow P0–P8 in ROADMAP.md. First output comes from the original executable.
+P4.5 means simultaneous changing graphics and original PCM; it does not mean
+playability. Playability means operator control of ball launch, both flippers,
+scoring and restart with correct timing. Completion additionally requires
+persistence, stable sessions and structured lifecycle evidence. Video alone
+does not prove artifact identity, renderer completion, audio or cleanup.
 
 [SpaceCadetPinball](https://github.com/k4zmu2a/SpaceCadetPinball) provides
 MIT-licensed reconstructed source, the public PDB dump and a modern SDL

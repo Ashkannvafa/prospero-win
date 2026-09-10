@@ -34,6 +34,13 @@ static int profile_fixture(void *opaque,const char *section,const char *key,
        strcmp(filename,"C:\\game\\wavemix.inf") || fallback!=3)return PW_ERR_MALFORMED;
     *value=5;return PW_OK;
 }
+static int null_message_fixture(void *opaque,uint32_t window,PwUser32QueueEntry *message)
+{
+    (void)opaque;
+    if(window!=0x10001 || !message)return PW_ERR_MALFORMED;
+    *message=(PwUser32QueueEntry){.window=window,.message=0}; /* WM_NULL */
+    return PW_OK;
+}
 static void profile_tests(PwWin32 *r,PwX86State *s)
 {
     PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"GetPrivateProfileIntA");
@@ -53,6 +60,80 @@ static void profile_tests(PwWin32 *r,PwX86State *s)
     s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-20;frame[1]=0;
     memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));before=*s;calls=r->calls;
     assert(pw_win32_dispatch(r,s)==PW_ERR_VM && !memcmp(s,&before,sizeof(before)) && r->calls==calls);
+}
+static void waveout_tests(PwWin32 *r,PwX86State *s)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;uint32_t ret=0x01001234;
+    strcpy(symbol.name,"waveOutGetNumDevs");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-4;s->eflags=0xad7;
+    memcpy((void *)(uintptr_t)s->gpr[4],&ret,4);
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==1 && s->gpr[4]==s->stack_high && s->eflags==0xad7);
+
+    uint32_t data=s->stack_low+512;memset((void *)(uintptr_t)data,0xcc,128);
+    strcpy(symbol.name,"waveOutGetDevCapsA");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-16;
+    uint32_t caps[]={ret,0,data,52};memcpy((void *)(uintptr_t)s->gpr[4],caps,sizeof(caps));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] && !strcmp((char *)(uintptr_t)(data+8),"Prospero PCM"));
+    assert(*(uint16_t *)(uintptr_t)(data+44)==2 && *(uint8_t *)(uintptr_t)(data+52)==0xcc);
+
+    uint8_t format[18]={1,0,1,0,0x11,0x2b,0,0,0x11,0x2b,0,0,1,0,8,0,0,0};
+    memcpy((void *)(uintptr_t)(data+64),format,sizeof(format));
+    strcpy(symbol.name,"waveOutOpen");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    uint32_t open[]={ret,data+96,UINT32_MAX,data+64,0x10005,0,0x10000};
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-28;
+    memcpy((void *)(uintptr_t)s->gpr[4],open,sizeof(open));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] &&
+           *(uint32_t *)(uintptr_t)(data+96)==0x0e000001 && r->wave_out.open &&
+           r->wave_out.samples_per_second==11025 && r->wave_out.bits_per_sample==8);
+    uint32_t header=data+104;memset((void *)(uintptr_t)header,0,32);
+    *(uint32_t *)(uintptr_t)header=data;*(uint32_t *)(uintptr_t)(header+4)=64;
+    strcpy(symbol.name,"waveOutPrepareHeader");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    uint32_t prepare[]={ret,0x0e000001,header,32};
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-16;
+    memcpy((void *)(uintptr_t)s->gpr[4],prepare,sizeof(prepare));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] &&
+           *(uint32_t *)(uintptr_t)(header+16)==2 && r->wave_out.header_count==1);
+    uint32_t position=data+160;memset((void *)(uintptr_t)position,0xcc,12);
+    *(uint32_t *)(uintptr_t)position=4;r->wave_out.bytes_submitted=12345;
+    strcpy(symbol.name,"waveOutGetPosition");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    uint32_t get_position[]={ret,0x0e000001,position,12};
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-16;
+    memcpy((void *)(uintptr_t)s->gpr[4],get_position,sizeof(get_position));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] &&
+           *(uint32_t *)(uintptr_t)position==4 && *(uint32_t *)(uintptr_t)(position+4)==12345 &&
+           *(uint32_t *)(uintptr_t)(position+8)==0);
+    r->wave_out.bytes_submitted=0;
+    PwWaveOut before=r->wave_out;open[6]=1;open[1]=data+100;
+    strcpy(symbol.name,"waveOutOpen");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-28;
+    memcpy((void *)(uintptr_t)s->gpr[4],open,sizeof(open));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] &&
+           !memcmp(&before,&r->wave_out,sizeof(before)) && *(uint32_t *)(uintptr_t)(data+100)==0xcccccccc);
+
+    strcpy(symbol.name,"mciSendCommandA");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    uint32_t mci[]={ret,0,0x803,0x2000,0};
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-20;s->eflags=0xad7;
+    memcpy((void *)(uintptr_t)s->gpr[4],mci,sizeof(mci));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==0x107 &&
+           s->eip==ret && s->gpr[4]==s->stack_high && s->eflags==0xad7);
+
+    /* mmioClose has exactly two stdcall arguments.  An earlier three-argument
+     * model silently consumed the caller's saved ESI and nulled every loaded
+     * WavePtr when the original WaveMix routine returned. */
+    strcpy(symbol.name,"mmioClose");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    uint32_t close_missing[]={ret,0x0f00ffff,0};
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-sizeof(close_missing);
+    s->eflags=0xad7;memcpy((void *)(uintptr_t)s->gpr[4],close_missing,sizeof(close_missing));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==UINT32_MAX &&
+           s->eip==ret && s->gpr[4]==s->stack_high && s->eflags==0xad7);
 }
 static void resource_tests(PwWin32 *r,PwX86State *s)
 {
@@ -138,6 +219,29 @@ static void string_tests(PwWin32 *r,PwX86State *s)
     r->services.ansi_codepage=65001;
     assert(pw_win32_dispatch(r,s)==PW_ERR_UNSUPPORTED);
 }
+static void itoa_tests(PwWin32 *r,PwX86State *s)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"_itoa");
+    assert(pw_win32_resolve(r,"msvcrt.dll",&symbol,&target)==PW_OK);
+    uint32_t output=s->stack_low+400;
+    const struct {uint32_t value,radix;const char *expected;} cases[]={
+        {0,10,"0"},{(uint32_t)-123,10,"-123"},{UINT32_MAX,16,"ffffffff"},
+        {35,36,"z"},{UINT32_MAX,2,"11111111111111111111111111111111"}
+    };
+    for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++) {
+        memset((void *)(uintptr_t)output,0xcc,40);
+        uint32_t frame[]={0x01001234,cases[i].value,output,cases[i].radix};
+        s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-sizeof(frame);s->eflags=0xad7;
+        memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));
+        assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==output &&
+               s->eip==frame[0] && s->gpr[4]==s->stack_high-12 && s->eflags==0xad7 &&
+               !strcmp((char *)(uintptr_t)output,cases[i].expected));
+    }
+    uint32_t bad[]={0x01001234,1,output,1};
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-sizeof(bad);
+    memcpy((void *)(uintptr_t)s->gpr[4],bad,sizeof(bad));PwX86State before=*s;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_UNSUPPORTED && !memcmp(s,&before,sizeof(before)));
+}
 static uint32_t heap_call(PwWin32 *r,PwX86State *s,const char *name,uint32_t a,uint32_t b,int expected)
 {
     PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,name);
@@ -149,8 +253,20 @@ static uint32_t heap_call(PwWin32 *r,PwX86State *s,const char *name,uint32_t a,u
     if(expected==PW_OK) {
         assert(s->gpr[4]==before.gpr[4]+4 && s->eip==frame[0] && s->eflags==0xad7 && r->calls==calls+1);
         for(unsigned i=1;i<8;i++)if(i!=4)assert(s->gpr[i]==before.gpr[i]);
-        if(!strcmp(name,"free"))assert(s->gpr[0]==0xaabbccdd);
+        if(!strcmp(name,"free") || !strcmp(name,"??3@YAXPAX@Z"))
+            assert(s->gpr[0]==0xaabbccdd);
     } else assert(!memcmp(s,&before,sizeof(before)) && r->calls==calls);
+    return s->gpr[0];
+}
+static uint32_t kernel_heap_call(PwWin32 *r,PwX86State *s,const char *name,
+                                 uint32_t first,uint32_t second,unsigned arguments)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,name);
+    assert(pw_win32_resolve(r,"kernel32.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-(arguments+1)*4;s->eflags=0xad7;
+    uint32_t frame[]={0x01001234,first,second};
+    memcpy((void *)(uintptr_t)s->gpr[4],frame,(arguments+1)*4);
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->eip==frame[0] && s->gpr[4]==s->stack_high && s->eflags==0xad7);
     return s->gpr[0];
 }
 static void heap_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
@@ -161,6 +277,14 @@ static void heap_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
     assert(pw_guest_heap_init(&heap,0x03400000,65536,blocks,32)==PW_OK);
     r->heap=&heap;r->crt_errno=77;
     s->memory_count=1;s->memory[0]=(PwX86Memory){0x03400000,0x03410000,PW_X86_READ|PW_X86_WRITE};
+    uint32_t local=kernel_heap_call(r,s,"LocalAlloc",0x40,32,2);assert(local);
+    for(unsigned i=0;i<32;i++)assert(!*(uint8_t *)(uintptr_t)(local+i));
+    assert(kernel_heap_call(r,s,"GlobalHandle",local,0,1)==local);
+    assert(kernel_heap_call(r,s,"GlobalLock",local,0,1)==local);
+    assert(!kernel_heap_call(r,s,"GlobalUnlock",local,0,1));
+    assert(!kernel_heap_call(r,s,"LocalFree",local,0,1));
+    uint32_t global=kernel_heap_call(r,s,"GlobalAlloc",0x2000,48,2);assert(global);
+    assert(!kernel_heap_call(r,s,"GlobalFree",global,0,1));
     uint32_t a=heap_call(r,s,"malloc",36,0,PW_OK);assert(a==0x03400000 && r->crt_errno==77);
     memset((void *)(uintptr_t)a,0x5a,36);
     uint32_t b=heap_call(r,s,"calloc",9,4,PW_OK);assert(b && b!=a);
@@ -168,7 +292,7 @@ static void heap_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
     uint32_t c=heap_call(r,s,"realloc",a,128,PW_OK);assert(c && c!=a);
     for(unsigned i=0;i<36;i++)assert(*(uint8_t *)(uintptr_t)(c+i)==0x5a);
     heap_call(r,s,"free",c+4,0,PW_ERR_PRECONDITION);assert(r->crt_errno==77);
-    heap_call(r,s,"free",b,0,PW_OK);heap_call(r,s,"free",0,0,PW_OK);
+    heap_call(r,s,"??3@YAXPAX@Z",b,0,PW_OK);heap_call(r,s,"free",0,0,PW_OK);
     for(unsigned mode=0;mode<2;mode++) {
         r->new_mode=mode;r->crt_errno=77;
         assert(heap_call(r,s,"realloc",c,UINT32_MAX,PW_OK)==0 && r->crt_errno==12);
@@ -234,6 +358,14 @@ static int copy_call(PwWin32 *r,PwX86State *s,const char *name,uint32_t dst,
 }
 static void copy_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
 {
+    PeImportSymbol move_symbol={0};PwImportTarget move_target;strcpy(move_symbol.name,"memmove");
+    assert(pw_win32_resolve(r,"msvcrt.dll",&move_symbol,&move_target)==PW_OK);
+    uint32_t move_base=s->stack_low+700;memcpy((void *)(uintptr_t)move_base,"abcdef",7);
+    s->eip=(uint32_t)move_target.address;s->gpr[4]=s->stack_high-16;s->eflags=0xad7;
+    uint32_t move_frame[]={0x01001234,move_base+1,move_base,6};
+    memcpy((void *)(uintptr_t)s->gpr[4],move_frame,sizeof(move_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==move_base+1 &&
+           !memcmp((void *)(uintptr_t)move_base,"aabcdef",7) && s->gpr[4]==s->stack_high-12);
     PwVmRegion text;
     assert(vm->reserve_at(NULL,0x03400000,8192,4096,&text)==PW_OK);
     assert(vm->commit(NULL,&text,0,8192,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
@@ -334,6 +466,27 @@ static void search_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
     assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==UINT32_MAX);
     assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
 }
+static void ctype_tests(PwWin32 *r,PwX86State *s)
+{
+    const char *names[]={"isalnum","isdigit","isspace"};
+    const uint32_t values[]={'A','7',' ','!'};
+    const uint8_t expected[][4]={{1,1,0,0},{0,1,0,0},{0,0,1,0}};
+    for(unsigned api=0;api<3;api++)for(unsigned i=0;i<4;i++) {
+        PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,names[api]);
+        assert(pw_win32_resolve(r,"msvcrt.dll",&symbol,&target)==PW_OK);
+        s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-8;s->eflags=0xad7;
+        uint32_t frame[]={0x01001234,values[i]};memcpy((void *)(uintptr_t)s->gpr[4],frame,8);
+        assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==expected[api][i] &&
+               s->gpr[4]==s->stack_high-4 && s->eip==frame[0] && s->eflags==0xad7);
+    }
+    uint32_t text=s->stack_low+720;strcpy((char *)(uintptr_t)text,"  -123px");
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"atoi");
+    assert(pw_win32_resolve(r,"msvcrt.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-8;s->eflags=0xad7;
+    uint32_t frame[]={0x01001234,text};memcpy((void *)(uintptr_t)s->gpr[4],frame,8);
+    assert(pw_win32_dispatch(r,s)==PW_OK && (int32_t)s->gpr[0]==-123 &&
+           s->gpr[4]==s->stack_high-4 && s->eip==frame[0] && s->eflags==0xad7);
+}
 static void user32_tests(PwWin32 *r,PwX86State *s)
 {
     uint32_t name=s->stack_low+256,title=s->stack_low+320;
@@ -359,6 +512,31 @@ static void user32_tests(PwWin32 *r,PwX86State *s)
     find_frame[2]=title;s->gpr[4]=s->stack_high-12;s->eip=(uint32_t)target.address;
     memcpy((void *)(uintptr_t)s->gpr[4],find_frame,sizeof(find_frame));
     assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==0x10001);
+    r->user32->windows[0].wndproc=0x01002000;
+    strcpy(symbol.name,"PostMessageA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    uint32_t post_frame[]={0x01001234,0x10001,0x400,0x55,0x03400100};
+    s->gpr[4]=s->stack_high-sizeof(post_frame);s->eip=(uint32_t)target.address;s->eflags=0xad7;
+    memcpy((void *)(uintptr_t)s->gpr[4],post_frame,sizeof(post_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==1 &&
+           s->gpr[4]==s->stack_high && s->eip==post_frame[0] && s->eflags==0xad7);
+    assert(r->user32->queue_count==1 && r->user32->queue[0].window==0x10001 &&
+           r->user32->queue[0].message==0x400 && r->user32->queue[0].wparam==0x55 &&
+           r->user32->queue[0].lparam==0x03400100);
+    r->user32->queue_count=0;
+    r->services.message_wait=null_message_fixture;
+    strcpy(symbol.name,"GetMessageA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    uint32_t message_output=s->stack_low+384;
+    memset((void *)(uintptr_t)message_output,0xcc,sizeof(PwUser32QueueEntry));
+    uint32_t get_frame[]={0x01001234,message_output,0x10001,0,0};
+    s->gpr[4]=s->stack_high-20;s->eip=(uint32_t)target.address;
+    memcpy((void *)(uintptr_t)s->gpr[4],get_frame,sizeof(get_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==1 &&
+           s->gpr[4]==s->stack_high && s->eip==get_frame[0]);
+    PwUser32QueueEntry received;memcpy(&received,(void *)(uintptr_t)message_output,sizeof(received));
+    assert(received.window==0x10001 && received.message==0);
+    r->services.message_wait=NULL;
     r->user32->windows[0]=(PwUser32Window){0};
 
     strcpy(symbol.name,"MapVirtualKeyA");
@@ -603,10 +781,13 @@ int main(void)
     symbol.by_ordinal=1;symbol.ordinal=42;
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
     string_tests(&runtime,&state);
+    itoa_tests(&runtime,&state);
     profile_tests(&runtime,&state);
+    waveout_tests(&runtime,&state);
     length_tests(&runtime,&state,&vm);
     copy_tests(&runtime,&state,&vm);
     search_tests(&runtime,&state,&vm);
+    ctype_tests(&runtime,&state);
     user32_tests(&runtime,&state);
     registry_tests(&runtime,&state);
     heap_tests(&runtime,&state,&vm);

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Build the prospero-win PE mapping gate as a native PS5 title.
+# Build the prospero-win native PS5 title. Runtime is the default; the
+# historical non-executing mapping gate remains available explicitly.
 #
 # Phase 0 gate 1 needs no shaders and no GPU: it maps Windows images and
 # reports the graph through ps5log/1. The staged Windows binaries are read
@@ -20,6 +21,7 @@
 #                          and verifies its artifacts instead of rebuilding
 #                          its dependencies, which would mutate a tree the
 #                          laboratory's other projects share (default 0)
+#   PW_NATIVE_MODE         runtime (default) or gate
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -31,11 +33,14 @@ stage_input=${PW_STAGE_INPUT:-}
 root_module=${PW_ROOT_MODULE:-sample.exe}
 use_sample=${PW_SAMPLE:-0}
 compat32_transfer=${PW_COMPAT32_TRANSFER:-0}
+native_mode=${PW_NATIVE_MODE:-runtime}
 
 [[ $use_sample == 0 || $use_sample == 1 ]] || {
     echo "PW_SAMPLE must be 0 or 1" >&2; exit 2; }
 [[ $compat32_transfer == 0 || $compat32_transfer == 1 ]] || {
     echo "PW_COMPAT32_TRANSFER must be 0 or 1" >&2; exit 2; }
+[[ $native_mode == runtime || $native_mode == gate ]] || {
+    echo "PW_NATIVE_MODE must be runtime or gate" >&2; exit 2; }
 [[ $root_module =~ ^[A-Za-z0-9_.-]+$ ]] || {
     echo "PW_ROOT_MODULE must be a bare file name" >&2; exit 2; }
 if [[ $use_sample == 0 && -z $stage_input ]]; then
@@ -101,7 +106,7 @@ title_id=PPSA99995
 build="$root/build/native"
 dist="$root/dist/$title_id"
 rm -rf -- "$build" "$dist"
-mkdir -p "$build/obj" "$dist/sce_sys" "$dist/sce_module" "$dist/win"
+mkdir -p "$build/obj" "$build/import-stubs" "$dist/sce_sys" "$dist/sce_module" "$dist/win"
 
 cc=(env PS5_PAYLOAD_SDK="$sdk" sh "$foundation/tooling/prospero-clang18")
 common=(-O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections
@@ -111,8 +116,10 @@ common=(-O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections
         -DPW_ROOT_MODULE="\"$root_module\""
         -DPW_COMPAT32_TRANSFER="$compat32_transfer")
 
+entry=native/runtime_main.c
+[[ $native_mode == gate ]] && entry=native/main.c
 sources=(
-    native/main.c native/pw_file_ps5.c native/pw_compat32_ps5.c
+    "$entry" native/pw_file_ps5.c native/pw_audio_ps5.c native/pw_agc_ps5.c native/pw_videoout_ps5.c native/pw_compat32_ps5.c
     native/pw_lowmem_ps5.c
     src/pe_image.c src/pe_import.c src/pe_layout.c src/pe_reloc.c src/pw_guest_heap.c
     src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
@@ -138,11 +145,23 @@ objects+=("$build/obj/pw_win64_call.o")
     -o "$build/obj/app_crt.o"
 objects+=("$build/obj/ps5log.o" "$build/obj/ps5log_ps5_net.o")
 
+"${cc[@]}" -std=c11 -O2 -fPIC -c "$root/native/stubs/libSceAgc.c" \
+    -o "$build/obj/agc-import.o"
+"$sdk/bin/prospero-lld" --shared -soname libSceAgc.prx \
+    -o "$build/import-stubs/libSceAgc.so" "$build/obj/agc-import.o"
+"${cc[@]}" -std=c11 -O2 -fPIC -c "$root/native/stubs/libSceAgcDriver.c" \
+    -o "$build/obj/agc-driver-import.o"
+"$sdk/bin/prospero-lld" --shared -soname libSceAgcDriver.prx \
+    -o "$build/import-stubs/libSceAgcDriver.so" "$build/obj/agc-driver-import.o"
+
 "$sdk/bin/prospero-lld" -T "$native/ps5-pie.ld" --eh-frame-hdr -e _start \
     -o "$build/llvm-pie.elf" "$build/obj/app_crt.o" "${objects[@]}" \
-    --as-needed "$sdk"/target/lib/*.so
+    --as-needed "$sdk"/target/lib/*.so "$build/import-stubs/libSceAgc.so" \
+    "$build/import-stubs/libSceAgcDriver.so"
 "$tool" link --in "$build/llvm-pie.elf" --out "$build/eboot.elf" \
     --stub-dir "$sdk/target/lib" --module-sdk 0x02000009 \
+    --stub "$build/import-stubs/libSceAgc.so" \
+    --stub "$build/import-stubs/libSceAgcDriver.so" \
     --companion-sdk 0x08050001 --file-name eboot.elf
 "$tool" self --sign --in "$build/eboot.elf" --out "$dist/eboot.bin" \
     --magic 0x1D3D154F

@@ -14,9 +14,13 @@
 #include <time.h>
 #include <limits.h>
 #include <ctype.h>
+#include <dirent.h>
 
 static PwImportBindWorkspace binding_work;
-static PwHeapBlock heap_blocks[4096];
+/* Pinball's DAT loader retains thousands of small C++ objects.  Metadata is
+ * host-owned and cheap; size it independently from the 8 MiB guest arena so
+ * a healthy heap cannot fail merely because its block table was undersized. */
+static PwHeapBlock heap_blocks[131072];
 static PwRegistryKey registry_keys[32];
 static PwRegistryValue registry_values[128];
 static PwUser32Message user_messages[128];
@@ -29,7 +33,12 @@ static uint8_t gdi_pixels[32*1024*1024];
 static PwX86CacheEntry cache_entries[8192];
 typedef struct TraceSource {
     const PeImage *image;const PeLayout *layout;
+    PwUser32 *user32;
     char directory[PATH_MAX];FILE *files[8];
+    unsigned injected_messages;
+    unsigned audio_opens,audio_submits,audio_controls;
+    uint64_t audio_bytes;
+    uint32_t audio_hash;
 } TraceSource;
 static int trace_source(void *opaque,uint32_t pc,const uint8_t **source,size_t *bytes)
 {
@@ -61,6 +70,15 @@ static int host_named_resource(void *opaque,uint32_t module,uint32_t type,const 
     if(status==PW_OK){*bytes=resource.bytes;*size=resource.size;}
     return status;
 }
+static int host_integer_resource(void *opaque,uint32_t module,uint32_t type,uint32_t name,
+                                 const uint8_t **bytes,size_t *size)
+{
+    const TraceSource *view=opaque;const PeImage *im=view->image;PeResource resource;
+    if(module!=im->image_base)return PW_ERR_UNSUPPORTED;
+    int status=pe_resource_find(im,type,name,0x409,&resource);
+    if(status==PW_OK){*bytes=resource.bytes;*size=resource.size;}
+    return status;
+}
 static int host_code_address(void *opaque,uint32_t address)
 {
     const TraceSource *view=opaque;const uint8_t *source;size_t bytes;
@@ -80,6 +98,81 @@ static int host_clock(void *opaque,PwClockDomain domain,uint64_t *ns)
     if((uint64_t)value.tv_sec>(UINT64_MAX-(uint64_t)value.tv_nsec)/1000000000)return PW_ERR_LIMIT;
     *ns=(uint64_t)value.tv_sec*1000000000+(uint64_t)value.tv_nsec;return PW_OK;
 }
+static uintptr_t trace_memory_pointer(const PwX86State *state,uint32_t address,size_t bytes)
+{
+    uint64_t end=(uint64_t)address+bytes;
+    if(!state || !address || !bytes || end>0x100000000ull)return 0;
+    if(address>=state->stack_low && end<=state->stack_high)return address;
+    for(unsigned i=0;i<state->memory_count;i++) {
+        const PwX86Memory *memory=&state->memory[i];
+        if(address>=memory->low && end<=memory->high &&
+           (memory->permissions&PW_X86_READ))return address;
+    }
+    return 0;
+}
+static int host_message_wait(void *opaque,uint32_t window,PwUser32QueueEntry *message)
+{
+    TraceSource *view=opaque;
+    if(!view || !window || !message)return PW_ERR_PRECONDITION;
+    unsigned phase=view->injected_messages++;
+    *message=(PwUser32QueueEntry){.window=window};
+    if(phase==0) {
+        message->message=0x0007; /* WM_SETFOCUS */
+        PwUser32QueueEntry demo={.window=window,.message=0x0111,.wparam=404};
+        PwUser32QueueEntry new_game={.window=window,.message=0x0111,.wparam=101};
+        PwUser32QueueEntry launch_ball={.window=window,.message=0x0111,.wparam=401};
+        PwUser32QueueEntry plunger_down={.window=window,.message=0x0100,.wparam=0x20};
+        PwUser32QueueEntry plunger_up={.window=window,.message=0x0101,.wparam=0x20};
+        PwUser32QueueEntry left_down={.window=window,.message=0x0100,.wparam=0x5a};
+        PwUser32QueueEntry left_up={.window=window,.message=0x0101,.wparam=0x5a};
+        PwUser32QueueEntry right_down={.window=window,.message=0x0100,.wparam=0xbf};
+        PwUser32QueueEntry right_up={.window=window,.message=0x0101,.wparam=0xbf};
+        int status=pw_user32_post_message(view->user32,&demo);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&new_game);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&launch_ball);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&left_down);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&left_up);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&right_down);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&right_up);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&plunger_down);
+        if(status==PW_OK)status=pw_user32_post_message(view->user32,&plunger_up);
+        if(status!=PW_OK)return status;
+    }
+    if(phase<8)printf("kind=host-message-stimulus phase=%u window=0x%08x message=0x%04x "
+                      "wparam=0x%08x\n",phase,window,message->message,message->wparam);
+    /* WM_NULL is a legitimate wake-up after deterministic menu stimuli. */
+    return PW_OK;
+}
+static int host_audio_open(void *opaque,uint32_t rate,uint16_t channels,uint16_t bits)
+{
+    TraceSource *view=opaque;if(!view || !rate || !channels || !bits)return PW_ERR_PRECONDITION;
+    view->audio_opens++;
+    printf("kind=host-audio-open rate=%u channels=%u bits=%u\n",rate,channels,bits);
+    return PW_OK;
+}
+static int host_sleep_ms(void *opaque,uint32_t milliseconds)
+{
+    (void)opaque;(void)milliseconds;return PW_OK;
+}
+static int host_audio_submit(void *opaque,const void *pcm,uint32_t bytes)
+{
+    TraceSource *view=opaque;const uint8_t *input=pcm;
+    if(!view || !input || !bytes)return PW_ERR_PRECONDITION;
+    uint32_t hash=view->audio_hash?view->audio_hash:2166136261u;
+    for(uint32_t i=0;i<bytes;i++){hash^=input[i];hash*=16777619u;}
+    view->audio_hash=hash;view->audio_submits++;view->audio_bytes+=bytes;
+    if(view->audio_submits<=16)
+        printf("kind=host-audio-submit sequence=%u bytes=%u total=%llu hash=0x%08x\n",
+               view->audio_submits,bytes,(unsigned long long)view->audio_bytes,hash);
+    return PW_OK;
+}
+static int host_audio_control(void *opaque,PwAudioControl operation)
+{
+    TraceSource *view=opaque;if(!view)return PW_ERR_PRECONDITION;
+    view->audio_controls++;
+    printf("kind=host-audio-control operation=%u\n",(unsigned)operation);return PW_OK;
+}
+static int ascii_equal(const char *,const char *);
 static int host_file_open(void *opaque,const char *path,const char *mode,uint32_t *handle)
 {
     TraceSource *view=opaque;
@@ -92,8 +185,30 @@ static int host_file_open(void *opaque,const char *path,const char *mode,uint32_
     if(slot==8)return PW_ERR_LIMIT;
     char translated[PATH_MAX];int length=snprintf(translated,sizeof(translated),"%s/%s",view->directory,base);
     if(length<0 || (size_t)length>=sizeof(translated))return PW_ERR_LIMIT;
-    FILE *file=fopen(translated,mode);if(!file)return PW_ERR_NOT_FOUND;
-    view->files[slot]=file;*handle=0x0d000001u+slot;return PW_OK;
+    FILE *file=fopen(translated,mode);
+    if(!file) {
+        /* Win32 title paths are case-insensitive; retain basename confinement
+         * while resolving assets on a case-sensitive development host. */
+        DIR *directory=opendir(view->directory);if(!directory) {
+            printf("kind=host-file-open path=%s status=not-found\n",base);
+            return PW_ERR_NOT_FOUND;
+        }
+        struct dirent *entry;translated[0]=0;
+        while((entry=readdir(directory)))if(ascii_equal(entry->d_name,base)) {
+            length=snprintf(translated,sizeof(translated),"%s/%s",view->directory,entry->d_name);break;
+        }
+        closedir(directory);
+        if(!translated[0] || length<0 || (size_t)length>=sizeof(translated)) {
+            printf("kind=host-file-open path=%s status=not-found\n",base);
+            return PW_ERR_NOT_FOUND;
+        }
+        file=fopen(translated,mode);if(!file) {
+            printf("kind=host-file-open path=%s status=not-found\n",base);
+            return PW_ERR_NOT_FOUND;
+        }
+    }
+    view->files[slot]=file;*handle=0x0d000001u+slot;
+    return PW_OK;
 }
 static int host_file_close(void *opaque,uint32_t handle)
 {
@@ -102,6 +217,27 @@ static int host_file_close(void *opaque,uint32_t handle)
     unsigned slot=handle-0x0d000001u;if(!view->files[slot])return PW_ERR_NOT_FOUND;
     int result=fclose(view->files[slot]);view->files[slot]=NULL;
     return result?PW_ERR_STATE:PW_OK;
+}
+static int host_file_read(void *opaque,uint32_t handle,void *output,uint32_t requested,uint32_t *read_bytes)
+{
+    TraceSource *view=opaque;
+    if(!view || !output || !read_bytes || handle<0x0d000001u || handle>=0x0d000009u)
+        return PW_ERR_PRECONDITION;
+    FILE *file=view->files[handle-0x0d000001u];if(!file)return PW_ERR_NOT_FOUND;
+    size_t count=fread(output,1,requested,file);
+    if(count<requested && ferror(file))return PW_ERR_STATE;
+    *read_bytes=(uint32_t)count;return PW_OK;
+}
+static int host_file_seek(void *opaque,uint32_t handle,int32_t offset,uint32_t origin,uint32_t *position)
+{
+    TraceSource *view=opaque;
+    if(!view || !position || handle<0x0d000001u || handle>=0x0d000009u || origin>2)
+        return PW_ERR_PRECONDITION;
+    FILE *file=view->files[handle-0x0d000001u];if(!file)return PW_ERR_NOT_FOUND;
+    static const int whence[]={SEEK_SET,SEEK_CUR,SEEK_END};
+    if(fseek(file,offset,whence[origin]))return PW_ERR_STATE;
+    long value=ftell(file);if(value<0 || (unsigned long)value>UINT32_MAX)return PW_ERR_LIMIT;
+    *position=(uint32_t)value;return PW_OK;
 }
 static int ascii_equal(const char *a,const char *b)
 {
@@ -149,18 +285,24 @@ static int host_profile_int(void *opaque,const char *section,const char *key,
 
 int main(int argc,char **argv)
 {
-    if(argc<2 || argc>4) {fprintf(stderr,"usage: trace_x86_entry private.exe [max-events:1..65536] [milestone-pc-hex]\n");return 1;}
+    if(argc<2 || argc>5) {fprintf(stderr,"usage: trace_x86_entry private.exe [max-events:1..10000000] [milestone-pc-hex] [inspect-address-hex]\n");return 1;}
     unsigned max_events=256;
     if(argc>=3) {
         char *end;unsigned long parsed=strtoul(argv[2],&end,10);
-        if(!*argv[2] || *end || parsed<1 || parsed>65536)return 1;
+        if(!*argv[2] || *end || parsed<1 || parsed>10000000)return 1;
         max_events=(unsigned)parsed;
     }
     uint32_t milestone=0;unsigned milestone_seen=0;
-    if(argc==4) {
+    if(argc>=4) {
         char *end;unsigned long parsed=strtoul(argv[3],&end,16);
         if(!*argv[3] || *end || !parsed || parsed>UINT32_MAX)return 1;
         milestone=(uint32_t)parsed;
+    }
+    uint32_t inspect_address=0;
+    if(argc==5) {
+        char *end;unsigned long parsed=strtoul(argv[4],&end,16);
+        if(!*argv[4] || *end || !parsed || parsed>UINT32_MAX)return 1;
+        inspect_address=(uint32_t)parsed;
     }
     int result=1;
     FILE *file=fopen(argv[1],"rb");
@@ -194,10 +336,10 @@ int main(int argc,char **argv)
     have_thread=1;
     if(vm.reserve_at(NULL,0x03300000,4096,4096,&crt)!=PW_OK)goto cleanup;
     have_crt=1;
-    if(vm.reserve_at(NULL,0x03400000,0x800000,4096,&heap_region)!=PW_OK)goto cleanup;
+    if(vm.reserve_at(NULL,0x03400000,0x4000000,4096,&heap_region)!=PW_OK)goto cleanup;
     have_heap=1;
     if(vm.commit(NULL,&heap_region,0,heap_region.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK ||
-       pw_guest_heap_init(&heap,0x03400000,0x800000,heap_blocks,4096)!=PW_OK)goto cleanup;
+       pw_guest_heap_init(&heap,0x03400000,0x4000000,heap_blocks,131072)!=PW_OK)goto cleanup;
     if(vm.commit(NULL,&crt,0,4096,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
     if(vm.commit(NULL,&stack,0,stack.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK ||
        vm.commit(NULL,&thread,0,thread.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
@@ -228,10 +370,15 @@ int main(int argc,char **argv)
     have_gdi=1;
     runtime.heap=&heap;runtime.registry=&registry;runtime.user32=&user32;runtime.gdi=&gdi;
     if(pw_user32_init_classes(&user32,user_classes,128)!=PW_OK)goto cleanup;
+    trace_view.user32=&user32;
     runtime.services=(PwWin32Services){.opaque=&trace_view,.clock_ns=host_clock,.process_id=1,.thread_id=2,
         .string_resource=host_string,.named_resource=host_named_resource,
+        .integer_resource=host_integer_resource,
         .code_address=host_code_address,.ansi_codepage=1252,.main_module_filename=commandline+1,
-        .file_open=host_file_open,.file_close=host_file_close,.profile_int=host_profile_int};
+        .file_open=host_file_open,.file_close=host_file_close,
+        .file_read=host_file_read,.file_seek=host_file_seek,.profile_int=host_profile_int,
+        .message_wait=host_message_wait,.sleep_ms=host_sleep_ms,.audio_open=host_audio_open,
+        .audio_submit=host_audio_submit,.audio_control=host_audio_control};
     commandline[command_bytes-1]=0; /* service path excludes command-line quotes */
     PwImportBindReport binding;
     if(pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,&binding_work,&binding)!=PW_OK)goto cleanup;
@@ -247,7 +394,7 @@ int main(int argc,char **argv)
             ((s->protection&PW_PROT_WRITE)?PW_X86_WRITE:0)};
     }
     state.memory[state.memory_count++]=(PwX86Memory){0x03300000,0x03301000,PW_X86_READ|PW_X86_WRITE};
-    state.memory[state.memory_count++]=(PwX86Memory){0x03400000,0x03c00000,PW_X86_READ|PW_X86_WRITE};
+    state.memory[state.memory_count++]=(PwX86Memory){0x03400000,0x07400000,PW_X86_READ|PW_X86_WRITE};
     state.stack_low=0x03000000;state.stack_high=0x03100000;
     state.gpr[4]=state.stack_high-4;state.fs_base=0x03200000;state.fs_bytes=4096;
     state.eflags=0x202;state.eip=(uint32_t)image.image_base+image.entry_point;
@@ -256,10 +403,38 @@ int main(int argc,char **argv)
                           trace_source,&trace_view)!=PW_OK)goto cleanup;
     have_engine=1;
     unsigned steps=0,events=0;
+    uint32_t inspected_word=0;unsigned inspect_ready=0,inspect_changes=0;
     const char *stop="budget";
     for(;events<max_events;events++) {
-        if(milestone && !milestone_seen && state.eip==milestone) {
-            milestone_seen=1;printf("kind=host-pc-milestone pc=0x%08x\n",milestone);
+        if(inspect_address) {
+            uintptr_t inspected=trace_memory_pointer(&state,inspect_address,sizeof(inspected_word));
+            if(inspected) {
+                uint32_t current;memcpy(&current,(const void *)inspected,sizeof(current));
+                if(!inspect_ready) {
+                    inspected_word=current;inspect_ready=1;
+                } else if(inspected_word!=current) {
+                    if(inspect_changes<256) {
+                        printf("kind=host-memory-change address=0x%08x pc=0x%08x "
+                               "old=0x%08x new=0x%08x\n",inspect_address,state.eip,
+                               inspected_word,current);
+                    }
+                    inspect_changes++;inspected_word=current;
+                }
+            }
+        }
+        if(milestone && state.eip==milestone) {
+            milestone_seen++;printf("kind=host-pc-milestone pc=0x%08x occurrence=%u eax=0x%08x "
+                "ecx=0x%08x edx=0x%08x ebx=0x%08x esp=0x%08x ebp=0x%08x "
+                "esi=0x%08x edi=0x%08x",milestone,milestone_seen,state.gpr[0],state.gpr[1],
+                state.gpr[2],state.gpr[3],state.gpr[4],state.gpr[5],state.gpr[6],
+                state.gpr[7]);
+            for(unsigned i=0;i<8;i++) {
+                uint32_t address=state.gpr[4]+i*4,value=0;
+                if(address>=state.stack_low && address<=state.stack_high-4)
+                    memcpy(&value,(const void *)(uintptr_t)address,sizeof(value));
+                printf(" s%u=0x%08x",i,value);
+            }
+            putchar('\n');
         }
         int dispatched=pw_win32_dispatch(&runtime,&state);
         if(dispatched==PW_OK) {
@@ -275,6 +450,14 @@ int main(int argc,char **argv)
             printf("kind=host-api-stop dll=%s name=%s status=%d caller=0x%08x\n",
                    runtime.last_dll?runtime.last_dll:"unknown",
                    runtime.last_name?runtime.last_name:"unknown",dispatched,caller);
+            printf("kind=host-api-frame");
+            for(unsigned argument=0;argument<13;argument++) {
+                uint32_t value=0,address=state.gpr[4]+4+argument*4;
+                if(address>=state.stack_low && address<=state.stack_high-4)
+                    memcpy(&value,(const void *)(uintptr_t)address,sizeof(value));
+                printf(" a%u=0x%08x",argument,value);
+            }
+            putchar('\n');
             stop=dispatched==PW_ERR_UNSUPPORTED?"unimplemented-api":"api-frame-error";break;
         }
         PwX86StepReport step;int status=pw_x86_engine_step(&engine,&state,&step);
@@ -288,9 +471,11 @@ int main(int argc,char **argv)
             break;
         }
     }
-    printf("kind=host-entry-trace steps=%u stop=%s eip=0x%08x esp=0x%08x "
-           "ebp=0x%08x fs0=0x%08x flags=0x%08x\n",steps,stop,state.eip,
-           state.gpr[4],state.gpr[5],*(uint32_t *)thread.write_base,state.eflags);
+    printf("kind=host-entry-trace steps=%u stop=%s eip=0x%08x eax=0x%08x "
+           "ecx=0x%08x edx=0x%08x ebx=0x%08x esp=0x%08x ebp=0x%08x "
+           "esi=0x%08x edi=0x%08x fs0=0x%08x flags=0x%08x\n",steps,stop,state.eip,
+           state.gpr[0],state.gpr[1],state.gpr[2],state.gpr[3],state.gpr[4],state.gpr[5],
+           state.gpr[6],state.gpr[7],*(uint32_t *)thread.write_base,state.eflags);
     printf("kind=host-dbt-cache dispatches=%llu hits=%llu misses=%llu publishes=%llu "
            "retired=%llu code_bytes=%zu generation=%u\n",
            (unsigned long long)engine.dispatches,(unsigned long long)engine.cache.hits,
@@ -299,6 +484,16 @@ int main(int argc,char **argv)
            engine.cache.generation);
     if(milestone)printf("kind=host-pc-milestone-summary pc=0x%08x seen=%u\n",
                         milestone,milestone_seen);
+    if(inspect_address) {
+        uintptr_t inspected=trace_memory_pointer(&state,inspect_address,16u*sizeof(uint32_t));
+        printf("kind=host-memory-inspect address=0x%08x valid=%u changes=%u",inspect_address,
+               inspected!=0,inspect_changes);
+        if(inspected)for(unsigned i=0;i<16;i++) {
+            uint32_t value;memcpy(&value,(const void *)(inspected+i*4),sizeof(value));
+            printf(" w%u=0x%08x",i,value);
+        }
+        putchar('\n');
+    }
     unsigned live=0;uint64_t requested=0;
     for(uint32_t i=0;i<heap.count;i++)if(heap.blocks[i].used){live++;requested+=heap.blocks[i].requested;}
     printf("kind=host-heap-summary blocks=%u live=%u requested=%llu arena=%u valid=%d\n",
@@ -310,6 +505,9 @@ int main(int argc,char **argv)
            gdi_counts.window_dcs,gdi_counts.memory_dcs,gdi_counts.surfaces,
            gdi_counts.target_surfaces,gdi_counts.bitmaps,
            (unsigned long long)gdi_counts.pixel_bytes,gdi_valid);
+    printf("kind=host-audio-summary opens=%u submits=%u controls=%u bytes=%llu hash=0x%08x\n",
+           trace_view.audio_opens,trace_view.audio_submits,trace_view.audio_controls,
+           (unsigned long long)trace_view.audio_bytes,trace_view.audio_hash);
     /* A classified stop is evidence, never a successful game startup. */
     result=2;
     if(pw_gdi_reset(&gdi)!=PW_OK || pw_gdi_counts(&gdi,&gdi_counts)!=PW_OK ||

@@ -39,6 +39,7 @@ typedef struct PwGdi {
     PwGdiSurface *surfaces;
     uint8_t *pixels;
     uint32_t dc_capacity,surface_capacity,pixel_capacity,next_handle;
+    uint32_t system_palette_use;
     PwGdiPalette palettes[PW_GDI_PALETTE_CAPACITY];
 } PwGdi;
 typedef struct PwGdiCounts {
@@ -48,6 +49,10 @@ typedef struct PwGdiCounts {
 typedef struct PwGdiBitmapInfo {
     uint32_t width,height,stride,planes,bits_per_pixel;
 } PwGdiBitmapInfo;
+typedef struct PwGdiTargetView {
+    const uint8_t *pixels;
+    uint32_t width,height,stride,bytes;
+} PwGdiTargetView;
 
 int pw_gdi_init(PwGdi *,PwGdiDc *,uint32_t,PwGdiSurface *,uint32_t,
                 uint8_t *,uint32_t);
@@ -63,6 +68,7 @@ int pw_gdi_create_palette(PwGdi *,uint16_t version,uint16_t count,
                           const uint8_t entries[][4],uint32_t *palette);
 int pw_gdi_set_palette_entries(PwGdi *,uint32_t palette,uint32_t start,
                                uint32_t count,const uint8_t entries[][4],uint32_t *written);
+int pw_gdi_resize_palette(PwGdi *,uint32_t palette,uint32_t count);
 int pw_gdi_stock_object(uint32_t index,uint32_t *object);
 int pw_gdi_select_bitmap(PwGdi *,uint32_t dc,uint32_t bitmap,uint32_t *previous);
 int pw_gdi_delete_dc(PwGdi *,uint32_t dc);
@@ -72,12 +78,24 @@ int pw_gdi_set_layout(PwGdi *,uint32_t dc,uint32_t layout,uint32_t *previous);
 int pw_gdi_get_device_caps(PwGdi *,uint32_t dc,uint32_t index,uint32_t *value);
 int pw_gdi_bitmap_info(PwGdi *,uint32_t bitmap,PwGdiBitmapInfo *);
 int pw_gdi_resize_target(PwGdi *,uint32_t owner_window,uint32_t width,uint32_t height);
+int pw_gdi_destroy_target(PwGdi *,uint32_t owner_window);
+int pw_gdi_target_view(const PwGdi *,uint32_t owner_window,PwGdiTargetView *);
 int pw_gdi_select_palette(PwGdi *,uint32_t dc,uint32_t palette,uint32_t background,
                           uint32_t *previous);
 int pw_gdi_realize_palette(PwGdi *,uint32_t dc,uint32_t *changed);
+int pw_gdi_set_system_palette_use(PwGdi *,uint32_t dc,uint32_t use,uint32_t *previous);
+int pw_gdi_get_system_palette_entries(PwGdi *,uint32_t dc,uint32_t start,uint32_t count,
+                                      uint8_t entries[][4],uint32_t *copied);
 int pw_gdi_bitblt(PwGdi *,uint32_t destination_dc,int32_t x,int32_t y,
                   uint32_t width,uint32_t height,uint32_t source_dc,
                   int32_t source_x,int32_t source_y,uint32_t rop);
+int pw_gdi_stretch_dibits(PwGdi *,uint32_t destination_dc,
+                          int32_t x,int32_t y,int32_t width,int32_t height,
+                          int32_t source_x,int32_t source_y,
+                          int32_t source_width,int32_t source_height,
+                          const uint8_t *bits,uint32_t bits_bytes,
+                          const uint8_t *info,uint32_t info_bytes,
+                          uint32_t usage,uint32_t rop,int32_t *scan_lines);
 int pw_gdi_counts(const PwGdi *,PwGdiCounts *);
 int pw_gdi_validate(const PwGdi *);
 int pw_gdi_reset(PwGdi *);

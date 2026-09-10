@@ -200,10 +200,24 @@ def test_builder_compiles_every_core_source() -> None:
     # The host-only provider depends on dirent and stdio, both unusable on
     # the console image; linking it in would only fail on target.
     assert "pw_file_posix.c" not in sources
-    assert "native/main.c" in sources
+    assert 'entry=native/runtime_main.c' in builder
+    assert '[[ $native_mode == gate ]] && entry=native/main.c' in builder
+    assert '"$entry"' in sources
     assert "native/pw_file_ps5.c" in sources
+    assert "native/pw_audio_ps5.c" in sources
     # The banned import is rejected by the build, not merely documented.
     assert "strcasestr" in builder
+
+
+def test_runtime_entry_owns_execution_services() -> None:
+    text = read("native/runtime_main.c")
+    for symbol in ("pw_x86_engine_step", "pw_win32_dispatch",
+                   "pw_gdi_target_view", "pw_audio_ps5_submit"):
+        assert symbol in text, symbol
+    assert "PW_RUNTIME_READY" in text
+    assert "PW_RUNTIME_HEARTBEAT" in text
+    assert "for(;;events++)" in text
+    assert "ps5log_close(\"runtime-signal\")" in text
 
 
 def test_gate_records_stay_within_the_transport_budget() -> None:

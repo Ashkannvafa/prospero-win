@@ -1,10 +1,14 @@
 # Initial GDI and splash contracts
 
-The first GDI package is a portable, owner-supplied model for the exact splash
-path reached by the Pinball host tracer. It is not a general GDI implementation
-and it does not present pixels on PS5. `PwGdi` owns fixed-capacity DC and surface
+The GDI package is a portable model for the observed Pinball paths. It is not a
+general GDI implementation. `PwGdi` owns fixed-capacity DC and surface
 tables plus a caller-provided pixel arena; no core operation allocates host
 memory or stores a host pointer in a guest handle.
+
+On PS5, the native runner now selects an owned target surface, composes it on
+CPU, converts it to the measured GFX1013 scanout tiling, and uses AGC DMA plus
+VideoOut for the final copy/flip. This is hardware-accelerated presentation,
+not a claim that GDI drawing or tiling is GPU-accelerated.
 
 ## Implemented surface
 
@@ -66,9 +70,11 @@ the public-PDB-verified application entry and then:
   16,872,960 owned pixel bytes;
 - resets to zero DCs, surfaces, bitmaps and pixel bytes with validation intact.
 
-Keyboard discovery, main-window setup, logical palette creation and the nested
-WaveMix helper-window callback now also complete. The next classified stop is
-`winmm!waveOutGetNumDevs`. This is host integration
-evidence only: it is not a visible-window, gameplay, PS5 execution or hardware
-presentation claim. Private binaries, resource bytes, decompiler output and raw
-captures remain outside the repository.
+The historical bounded trace above was the splash-era host checkpoint. The
+current runtime proceeds through main-window setup, WaveMix, the message loop
+and changing game frames. FW 12.02 evidence records 101+ AGC DMA flips and an
+independent 1080p60 Remote Play observation of the board. Known fidelity work
+remains: presentation target selection is currently size-based and some
+auxiliary-panel regions can be duplicated or stale. See
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). Private binaries, resource
+bytes, decompiler output and raw captures remain outside the repository.

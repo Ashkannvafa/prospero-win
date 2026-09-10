@@ -27,6 +27,11 @@ static int run(const uint8_t *source, size_t bytes, uint32_t pc)
 }
 static void addressing_tests(void)
 {
+    memset(state.gpr,0,sizeof(state.gpr));
+    const uint8_t sound_index_address[]={0xba,1,0,0,0,0x0f,0xbf,0xfa,
+        0x8d,0x34,0xbf,0xc1,0xe6,2};
+    assert(run(sound_index_address,sizeof(sound_index_address),0x5f0)==PW_OK);
+    assert(state.gpr[2]==1 && state.gpr[7]==1 && state.gpr[6]==20);
     /* Exercise every 32-bit SIB encoding in all memory displacement modes.
      * Expected arithmetic is C uint32_t, independent from emitted code. */
     for(unsigned mod=0;mod<3;mod++)for(unsigned rm=0;rm<8;rm++)
@@ -60,6 +65,13 @@ static void addressing_tests(void)
     assert(run(save,sizeof(save),0x700)==0);
     assert(run(load,sizeof(load),0x704)==0);
     assert(state.gpr[5]==0x12345678);
+    /* Pinball's sprite registry uses MOV [ECX+EAX*4],EBX.  Cover the
+     * indexed write itself, not only LEA's effective-address arithmetic. */
+    state.gpr[0]=3;state.gpr[1]=state.stack_low+0x300;
+    state.gpr[3]=0xdecafbad;
+    const uint8_t indexed_store[]={0x89,0x1c,0x81};
+    assert(run(indexed_store,sizeof(indexed_store),0x708)==PW_OK);
+    assert(*(uint32_t *)(uintptr_t)(state.stack_low+0x30c)==0xdecafbad);
     /* Absolute disp32 is guest absolute, not host RIP-relative. */
     const uint8_t absolute[]={0x8b,0x15,0xbc,0x0f,0x00,0x03};
     assert(run(absolute,sizeof(absolute),0x710)==0);
@@ -84,6 +96,11 @@ static void string_tests(void)
     state.gpr[0]=0xaabbccdd;state.gpr[7]=destination+16;
     assert(run(stosw,sizeof(stosw),0xc010)==0);
     assert(*(uint16_t *)(memory+0x210)==0xccdd && state.gpr[7]==destination+18);
+    const uint8_t repeat_stosw[]={0x66,0xf3,0xab};
+    state.gpr[0]=0x1122beef;state.gpr[1]=3;state.gpr[7]=destination+18;
+    assert(run(repeat_stosw,sizeof(repeat_stosw),0xc013)==0);
+    for(unsigned i=0;i<3;i++)assert(*(uint16_t *)(memory+0x212+i*2)==0xbeef);
+    assert(!state.gpr[1] && state.gpr[7]==destination+24);
 
     for(unsigned i=0;i<24;i++)memory[0x100+i]=(uint8_t)(0x40+i);
     memset(memory+0x200,0,24);state.gpr[1]=3;state.gpr[6]=source;
@@ -106,6 +123,20 @@ static void string_tests(void)
     state.gpr[1]=0;state.gpr[6]=0;state.gpr[7]=0;state.eflags=0x202;
     assert(run(repeat_movsd,sizeof(repeat_movsd),0xc040)==0);
     assert(!memcmp(before,memory+0x200,sizeof(before)) && state.gpr[1]==0);
+
+    uint32_t compare_left[]={1,2,3,4},compare_right[]={1,2,9,4};
+    memcpy(memory+0x100,compare_left,sizeof(compare_left));
+    memcpy(memory+0x200,compare_right,sizeof(compare_right));
+    state.gpr[1]=4;state.gpr[6]=source;state.gpr[7]=destination;state.eflags=0x202;
+    const uint8_t repeat_cmpsd[]={0xf3,0xa7};
+    assert(run(repeat_cmpsd,sizeof(repeat_cmpsd),0xc045)==PW_OK);
+    assert(state.gpr[1]==1 && state.gpr[6]==source+12 && state.gpr[7]==destination+12);
+    assert(state.eflags==((0x202u&~0x8d5u)|0x95u));
+    state.gpr[1]=0;state.gpr[6]=source;state.gpr[7]=destination;state.eflags=0xad7;
+    assert(run(repeat_cmpsd,sizeof(repeat_cmpsd),0xc047)==PW_OK);
+    assert(!state.gpr[1] && state.gpr[6]==source && state.gpr[7]==destination &&
+           state.eflags==0xad7);
+
     state.gpr[0]=0xfeedface;state.gpr[1]=2;state.gpr[7]=state.stack_high-4;
     assert(run(repeat_stosd,sizeof(repeat_stosd),0xc050)==PW_ERR_VM);
     assert(state.gpr[1]==2 && state.gpr[7]==state.stack_high-4);
@@ -115,9 +146,23 @@ static void string_tests(void)
     assert(pw_x86_translate(prefix,sizeof(prefix),0,output,sizeof(output),&block)==PW_ERR_TRUNCATED);
     const uint8_t word_prefix[]={0x66,0x89};
     assert(pw_x86_translate(word_prefix,sizeof(word_prefix),0,output,sizeof(output),&block)==PW_ERR_TRUNCATED);
+    const uint8_t repeat_word_prefix[]={0x66,0xf3};
+    assert(pw_x86_translate(repeat_word_prefix,sizeof(repeat_word_prefix),0,output,sizeof(output),&block)==PW_ERR_TRUNCATED);
 }
 static void muldiv_tests(void)
 {
+    state.gpr[0]=0x40000000;state.gpr[2]=3;state.eflags=0x256;
+    const uint8_t imul_eax_edx[]={0x0f,0xaf,0xc2};
+    assert(run(imul_eax_edx,sizeof(imul_eax_edx),0xc0d0)==PW_OK &&
+           state.gpr[0]==0xc0000000 && (state.eflags&0x801)==0x801);
+    state.gpr[0]=0;state.gpr[1]=0x40000000;state.eflags=0x256;
+    const uint8_t imul_ecx_imm32[]={0x69,0xc1,0x11,0x2b,0,0};
+    assert(run(imul_ecx_imm32,sizeof(imul_ecx_imm32),0xc0e0)==PW_OK &&
+           state.gpr[0]==0x40000000 && (state.eflags&0x801)==0x801 && (state.eflags&~0x801)==0x256);
+    state.gpr[1]=(uint32_t)-7;state.eflags=0xad7;
+    const uint8_t imul_ecx_imm8[]={0x6b,0xc1,0xfb};
+    assert(run(imul_ecx_imm8,sizeof(imul_ecx_imm8),0xc0f0)==PW_OK &&
+           state.gpr[0]==35 && !(state.eflags&0x801) && (state.eflags&~0x801)==(0xad7&~0x801));
     const uint8_t mul_ebx[]={0xf7,0xe3},imul_ebx[]={0xf7,0xeb};
     const uint8_t div_ebx[]={0xf7,0xf3},idiv_ebx[]={0xf7,0xfb};
     state.gpr[0]=0xffffffffu;state.gpr[2]=0x11223344;state.gpr[3]=2;state.eflags=0x246;
@@ -154,6 +199,21 @@ static void x87_transfer_tests(void)
     assert(bits==0x3f800000 && pw_guest_x87_peek(&state.fp,0,(uint8_t[10]){0})==PW_ERR_NOT_FOUND);
     assert(state.eflags==0xad7 && state.eip==0xd400+sizeof(load_store));
 
+    uint64_t double_bits=UINT64_C(0x400921fb54442d18),double_stored=0;
+    memcpy((void *)(uintptr_t)address,&double_bits,8);
+    uint8_t load_store64[]={0xdd,0x05,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24),
+        0xdd,0x15,(uint8_t)(address+8),(uint8_t)((address+8)>>8),
+        (uint8_t)((address+8)>>16),(uint8_t)((address+8)>>24),
+        0xdd,0x1d,(uint8_t)(address+16),(uint8_t)((address+16)>>8),
+        (uint8_t)((address+16)>>16),(uint8_t)((address+16)>>24)};
+    assert(run(load_store64,sizeof(load_store64),0xd410)==PW_OK);
+    memcpy(&double_stored,(void *)(uintptr_t)(address+8),8);
+    assert(double_stored==double_bits);
+    memcpy(&double_stored,(void *)(uintptr_t)(address+16),8);
+    assert(double_stored==double_bits &&
+           pw_guest_x87_peek(&state.fp,0,(uint8_t[10]){0})==PW_ERR_NOT_FOUND);
+
     int32_t integer=-17;memcpy((void *)(uintptr_t)address,&integer,4);
     uint8_t fild[]={0xdb,0x05,(uint8_t)address,(uint8_t)(address>>8),
         (uint8_t)(address>>16),(uint8_t)(address>>24)};
@@ -163,11 +223,35 @@ static void x87_transfer_tests(void)
     assert((state.gpr[0]&0xffff)==state.fp.x87_status);
     uint8_t discarded[10];assert(pw_guest_x87_pop(&state.fp,discarded)==PW_OK);
 
+    uint32_t two=0x40000000u,six=0x40c00000u,third=0;
+    memcpy((void *)(uintptr_t)address,&six,4);
+    memcpy((void *)(uintptr_t)(address+4),&two,4);
+    uint8_t reverse_divide_pop[]={
+        0xd9,0x05,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24),
+        0xd9,0x05,(uint8_t)(address+4),(uint8_t)((address+4)>>8),
+        (uint8_t)((address+4)>>16),(uint8_t)((address+4)>>24),
+        0xde,0xf1,
+        0xd9,0x1d,(uint8_t)(address+8),(uint8_t)((address+8)>>8),
+        (uint8_t)((address+8)>>16),(uint8_t)((address+8)>>24)};
+    assert(run(reverse_divide_pop,sizeof(reverse_divide_pop),0xd438)==PW_OK);
+    memcpy(&third,(void *)(uintptr_t)(address+8),4);
+    assert(third==0x3eaaaaabu);
+
     const uint8_t constants[]={0xd9,0xe8,0xd9,0xee};
     assert(run(constants,sizeof(constants),0xd440)==0);
     uint8_t zero[10];assert(pw_guest_x87_pop(&state.fp,zero)==PW_OK);
     assert(!memcmp(zero,(uint8_t[10]){0},10));
     assert(pw_guest_x87_pop(&state.fp,discarded)==PW_OK);
+
+    bits=0x3f800000;memcpy((void *)(uintptr_t)address,&bits,4);
+    uint8_t sign_and_trig[]={0xd9,0x05,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24),0xd9,0xe0,0xd9,0xfe,
+        0xd9,0xff,0xd9,0x1d,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24)};
+    assert(run(sign_and_trig,sizeof(sign_and_trig),0xd448)==PW_OK);
+    memcpy(&bits,(void *)(uintptr_t)address,4);
+    assert((bits&0x7fffffffu)<=0x3f800000u);
 
     /* An eight-byte load that crosses the live boundary faults atomically. */
     state.gpr[1]=state.stack_high-7;PwGuestFp before=state.fp;
@@ -279,6 +363,16 @@ static void extension_tests(void)
         state.gpr[1]++;uint32_t before=state.gpr[0];
         assert(run(op,3,0xd020)==-1 && state.gpr[0]==before && state.eflags==0xad7);
     }
+    for(unsigned sign=0;sign<2;sign++) {
+        state.gpr[1]=0xaabbcc80;state.gpr[2]=0x11223344;state.eflags=0xad7;
+        const uint8_t op[]={0x66,0x0f,(uint8_t)(sign?0xbe:0xb6),0xd1};
+        assert(run(op,sizeof(op),0xd030)==0 && state.gpr[2]==(sign?0x1122ff80:0x11220080) &&
+               state.eflags==0xad7);
+    }
+    {
+        const uint8_t partial[]={0x66,0x0f};uint8_t output[128];PwX86Block block;
+        assert(pw_x86_translate(partial,sizeof(partial),0xd040,output,sizeof(output),&block)==PW_ERR_TRUNCATED);
+    }
 }
 static void ret_cleanup_tests(void)
 {
@@ -351,6 +445,10 @@ static void byte_tests(void)
     state.gpr[0]=0x11223380;state.eflags=0xad7;
     const uint8_t test_al[]={0xa8,0xff};
     assert(run(test_al,2,0xb022)==0 && state.gpr[0]==0x11223380 && state.eflags==0x292);
+    state.gpr[0]=0x112233f1;state.eflags=0xad7;
+    const uint8_t and_al[]={0x24,0x7f};
+    assert(run(and_al,2,0xb024)==0 && state.gpr[0]==0x11223371 &&
+           (state.eflags&0x8c5)==4);
     state.gpr[1]=state.stack_high-1;state.gpr[0]=0x11228044;state.eflags=0xad7;
     const uint8_t store[]={0x88,0x21},load[]={0x8a,0x01}; /* AH -> [ECX], [ECX] -> AL */
     assert(run(store,2,0xb030)==0 && *((uint8_t *)stack.write_base+stack.bytes-1)==0x80);
@@ -362,6 +460,24 @@ static void byte_tests(void)
     assert(run(cmp_mem,3,0xb050)==0 && state.eflags==0xa12); /* -128 - 127 overflows */
     const uint8_t immediate_store[]={0xc6,0x01,0x7f};
     assert(run(immediate_store,3,0xb060)==0 && *((uint8_t *)stack.write_base+stack.bytes-1)==0x7f);
+    const uint8_t immediate_add[]={0x80,0x01,0xd0};state.eflags=0x202;
+    assert(run(immediate_add,3,0xb065)==0 &&
+           *((uint8_t *)stack.write_base+stack.bytes-1)==0x4f && (state.eflags&0x8d5)==1);
+    uint8_t immediate_or_absolute[]={0x80,0x0d,0,0,0,0,0x80};
+    uint32_t absolute=(uint32_t)state.gpr[1];memcpy(immediate_or_absolute+2,&absolute,4);
+    *((uint8_t *)stack.write_base+stack.bytes-1)=1;state.eflags=0xad7;
+    assert(run(immediate_or_absolute,sizeof(immediate_or_absolute),0xb067)==PW_OK &&
+           *((uint8_t *)stack.write_base+stack.bytes-1)==0x81 && (state.eflags&0x8c5)==0x84);
+    const uint8_t immediate_and[]={0x80,0x21,0x0f};
+    assert(run(immediate_and,sizeof(immediate_and),0xb06e)==PW_OK &&
+           *((uint8_t *)stack.write_base+stack.bytes-1)==1);
+    const uint8_t immediate_sub[]={0x80,0x29,2};
+    assert(run(immediate_sub,sizeof(immediate_sub),0xb071)==PW_OK &&
+           *((uint8_t *)stack.write_base+stack.bytes-1)==0xff);
+    const uint8_t immediate_xor[]={0x80,0x31,0x0f};
+    assert(run(immediate_xor,sizeof(immediate_xor),0xb074)==PW_OK &&
+           *((uint8_t *)stack.write_base+stack.bytes-1)==0xf0);
+    *((uint8_t *)stack.write_base+stack.bytes-1)=0x4f;
     const uint8_t reverse[]={0x3a,0x01};
     assert(run(reverse,2,0xb070)==0 && state.eflags==0xa12);
     const uint8_t direct[]={0x38,0x01};
@@ -490,6 +606,14 @@ static void absolute_tests(void)
 }
 static void immediate_tests(void)
 {
+    state.gpr[2]=0xaabbccdd;state.eflags=0xad7;
+    const uint8_t mov_dx_word[]={0x66,0xc7,0xc2,0x32,0x54};
+    assert(run(mov_dx_word,sizeof(mov_dx_word),0x7ef)==PW_OK &&
+           state.gpr[2]==0xaabb5432 && state.eflags==0xad7);
+    state.gpr[2]=state.stack_low+24;*(uint32_t *)((uint8_t *)stack.write_base+24)=0xaabbccdd;
+    const uint8_t mov_memory_word[]={0x66,0xc7,0x02,0x34,0x12};
+    assert(run(mov_memory_word,sizeof(mov_memory_word),0x7f4)==PW_OK &&
+           *(uint32_t *)((uint8_t *)stack.write_base+24)==0xaabb1234);
     const uint32_t inputs[]={0,1,5,0x7fff,0x8000,0x7fffffff,0x80000000,0xffffffff};
     for(unsigned width=0;width<2;width++)for(unsigned op=0;op<8;op++)
     for(unsigned cf=0;cf<2;cf++)for(unsigned sample=0;sample<8;sample++)

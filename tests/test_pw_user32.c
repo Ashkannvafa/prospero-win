@@ -62,8 +62,12 @@ int main(void)
     uint32_t slot,handle;
     assert(pw_user32_begin_window(&user,&window,&slot,&handle)==PW_OK && slot==1 &&
            handle==0x10002 && windows[1].creating);
+    uint32_t menu=0;
+    assert(pw_user32_attach_menu(&user,slot,&menu)==PW_OK && menu==0x10003 &&
+           windows[1].owns_menu);
     assert(pw_user32_find_window(&user,"Pinball","Splash",&value)==PW_OK && !value);
     assert(pw_user32_finish_window(&user,slot,1)==PW_OK);
+    assert(pw_user32_get_menu(&user,handle,&value)==PW_OK && value==menu);
     assert(pw_user32_find_window(&user,"Pinball","Splash",&value)==PW_OK && value==handle);
     assert(pw_user32_get_window_rect(&user,handle,&rect)==PW_OK && rect.left==-10 &&
            rect.top==-10 && rect.right==-9 && rect.bottom==-9);
@@ -74,7 +78,13 @@ int main(void)
     assert(pw_user32_show_window(&user,handle,8,&previous)==PW_OK && !previous &&
            windows[1].visible && windows[1].needs_paint);
     assert(pw_user32_show_window(&user,handle,8,&previous)==PW_OK && previous==1);
-    assert(pw_user32_show_window(&user,handle,5,&previous)==PW_ERR_UNSUPPORTED);
+    assert(pw_user32_show_window(&user,handle,0,&previous)==PW_OK && previous==1 &&
+           !windows[1].visible);
+    assert(pw_user32_show_window(&user,handle,1,&previous)==PW_OK && !previous &&
+           windows[1].visible && windows[1].needs_paint);
+    assert(pw_user32_show_window(&user,handle,5,&previous)==PW_OK && previous==1);
+    assert(pw_user32_show_window(&user,handle,11,&previous)==PW_OK && previous==1);
+    assert(pw_user32_show_window(&user,handle,12,&previous)==PW_ERR_UNSUPPORTED);
     assert(pw_user32_set_focus(&user,handle,&previous)==PW_OK && !previous &&
            user.focus_window==handle);
     uint32_t wndproc,needed;

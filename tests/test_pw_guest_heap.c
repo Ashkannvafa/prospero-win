@@ -19,6 +19,8 @@ int main(void)
     assert(pw_guest_heap_free(&h,b+1)==PW_ERR_PRECONDITION);
     assert(pw_guest_heap_free(&h,b)==PW_OK && h.count==1);
     assert(pw_guest_heap_alloc(&h,36,&a)==PW_OK);
+    assert(pw_guest_heap_query(&h,a,&d)==PW_OK && d==36);
+    assert(pw_guest_heap_query(&h,a+1,&d)==PW_ERR_PRECONDITION);
     assert(pw_guest_heap_alloc(&h,48,&b)==PW_OK);
     memset((void *)(uintptr_t)a,0x5a,36);
     assert(pw_guest_heap_realloc(&h,a,200,&c)==PW_OK && c!=a);

@@ -14,7 +14,7 @@ parsed = parse_root("01020f95=entry")
 assert (parsed.address, parsed.label) == ("01020f95", "entry")
 result = subprocess.run(
     [str(root / "build/host/classify_x86")],
-    input="8bff\n55\nd9e8\nd9ff\nzz\n\n", text=True, capture_output=True, check=True)
+    input="8bff\n55\nd9e8\nd9fc\nzz\n\n", text=True, capture_output=True, check=True)
 statuses = [int(line) for line in result.stdout.splitlines()]
 assert statuses[:3] == [0, 0, 0], statuses
 assert statuses[3] != 0, statuses

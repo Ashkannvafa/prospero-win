@@ -1,185 +1,78 @@
 # Roadmap
 
-Active implementation strategy: inventory imports first, audit Wine code and
-dependencies, then implement/test coherent subsystems. Runtime iteration is
-integration validation, not one-API-at-a-time scope discovery. See IMPORT_PLAN.md.
+The first target is the owner's original x86 Windows Space Cadet
+`PINBALL.EXE`, executed without recompilation. Runtime iteration validates
+coherent subsystems discovered from static inventory, public reference source
+and private local analysis; it is not one-API-at-a-time scope discovery.
 
-The first game milestone is the original x86 Windows Space Cadet
-PINBALL.EXE, running without recompilation. DRM, anti-cheat and kernel
-drivers are out of scope. Each hardware milestone needs artifact identity,
-structured ps5log/1 evidence and an independently checked result.
+Every hardware milestone requires an exact artifact hash, `ps5log/1`
+telemetry and an independently checked result. Visual capture alone is not
+renderer or audio proof.
 
-## Proven foundation
+## Completed foundation
 
-- [x] **0.1 PE mapping on FW 12.02.** Synthetic images parsed, mapped,
-  rebased, relocated, protected, verified and released. Dependency names
-  classified; import addresses are not yet bound. See PE_MAPPING_PHASE0.md.
-- [x] **0.2a LDT route refused.** The tested title cannot install the required
-  descriptor. This closes that compatibility-mode route on the tested
-  firmware, not ABI marshalling. See COMPAT32_PHASE0A.md.
-- [x] Low-address allocation and RW-to-RX/RWX protection measured in a title.
-  These are allocation/protection results, not a completed execution engine.
+- [x] **P0 — target inventory.** Exact binary identity, PE32 layout, 207
+  static imports, resources and public-PDB/source-oracle correlation are
+  recorded without publishing proprietary data.
+- [x] **P1 — x86 feasibility.** A generation-scoped x86-to-x86-64 DBT with
+  bounded guest memory, isolated guest flags/x87 state, RW-to-RX publication,
+  cache invalidation and differential/unit regressions executes the target.
+- [x] **P2 — application entry and startup.** PE mapping, IAT binding,
+  CRT/heap/registry/resource services and guest callbacks reach `WinMain` and
+  complete startup through the original message loop.
+- [x] **P3 — message and window foundation.** Transactional window creation,
+  nested WndProc callbacks, queues, painting, timers/waits and deterministic
+  synthetic key messages run on host and PS5. Real controller mapping is not
+  implied.
+- [x] **P4 — first hardware frame.** The original GDI surface is composed on
+  CPU, tiled for PS5 scanout, copied by AGC DMA and flipped through VideoOut.
+  Fence completion, flips and changing frame hashes are observable.
+- [x] **P4.5 — visible and audible.** The animated table and the original
+  WaveMix PCM path run together on FW 12.02. The audio adapter converts the
+  requested 11025 Hz unsigned 8-bit mono stream to SceAudioOut's 48000 Hz
+  signed 16-bit stereo blocks. A correlated 1080p60/AAC Remote Play capture,
+  artifact hash and telemetry are recorded in HARDWARE_VALIDATION.md.
 
-## Next: target inventory and execution contracts
+## Next milestones
 
-- [ ] **P0 Pinball inventory.** Owner-supplied binary identity (SHA-256,
-  architecture and version), complete static import names/ordinals,
-  resources, TLS, relocations, delay imports and dynamically resolved APIs.
-  `make inspect-only` supplies initial layout and static imports; the rest
-  needs separate inspection. The supplied binary's initial layout and 207
-  static imports are recorded in PINBALL_TARGET.md; P0 remains incomplete.
-- [ ] **0.2b PE64 execution and ABI bridge.** RW-to-RX publication, mapped
-  leaf return, integer and floating arguments, more than four arguments,
-  aggregate returns, shadow space, stack alignment, preserved registers and
-  XMM state, guest-to-host imports and host-to-guest callbacks. Use explicit
-  Win64 ABI functions/thunks. Each case has expected outputs and canaries;
-  repeat on hardware before claiming the bridge works there.
-  Host mapped-code integer/float/callback tests pass; the six-integer
-  assembly call bridge passed synthetic-code execution on PS5. The target rejects ms_abi,
-  so native import/callback stubs must be explicit. See EXECUTION_MODEL.md.
-- [ ] **P1 x86 feasibility prototype.** Decode and translate bounded blocks;
-  compare registers, flags, memory and exceptions with native 32-bit host
-  execution. Cover address-size changes, absolute versus RIP-relative
-  addressing, stack width, indirect branches, segment/TLS references and
-  floating-point instructions the target uses. Choose decoder and execution
-  approach from measured coverage and performance.
-  The initial push/direct-call/return translator and a native-i386 host
-  differential sequence pass; see X86_EXECUTION.md for its limited coverage.
-  Register MOV and bounded guest FS moffs32 primitives pass host tests;
-  Windows TEB initialization and exception dispatch are not implemented yet.
-  ModRM/SIB LEA and stack-memory MOV now pass host tests; wrapping SIB
-  arithmetic also matches native i386 execution. A bounded region registry
-  now permits mapped PE reads/writes; allocation APIs remain unimplemented.
-- [ ] **Memory feasibility.** Test scattered low allocations, reserve versus
-  commit/decommit and realistic working sets. A 256 MiB low mapping does not
-  prove a 2 GiB guest address space or sufficient resident memory.
+- [ ] **P5 — playable.** Adapt the already proven PS5 pad lifecycle into
+  reusable Win32 key/mouse messages. Launch a ball, operate both flippers,
+  score, lose a ball and restart with correct transitions and timing.
+- [ ] **P5.5 — presentation fidelity and pacing.** Correct remaining GDI
+  composition defects, select the actual top-level presentation target by
+  ownership rather than size, eliminate duplicated/stale regions and measure
+  frame pacing without busy-looping the guest.
+- [ ] **P6 — complete Pinball runtime.** Implement required persistence,
+  preferences and score storage; classify optional missing assets; add only
+  the MCI/MIDI behavior the target actually needs; perform repeated launch,
+  close and long soaks with stable ownership and no unhandled APIs.
+- [ ] **P7 — reusable compatibility expansion.** Select a second title and
+  measure which CRT/User32/GDI/WinMM contracts generalize. Add compatibility
+  by subsystem with fixtures, never by title-name hacks.
+- [ ] **P8 — D3D8/9 investigation.** Evaluate DXVK's D3D8/9 frontend against
+  a Vulkan-on-AGC layer or a narrower direct backend. DXVK is not a call-name
+  translation table: shaders, descriptors, formats, synchronization and
+  resource residency remain substantial engineering work.
 
-## Bind and start the target
+## Known boundaries
 
-- [ ] **0.3 Imports/exports.** Names, ordinals, forwarders and dynamically
-  resolved functions. Replace broad system-DLL classification with an
-  explicit policy: core host modules, API sets, application overrides and
-  host fallback. Local d3d9.dll/dinput8.dll wrappers must not be silently
-  bypassed. Add resolver conformance fixtures.
-  A shared PE32 IAT binder now plans all name/ordinal destinations before
-  writing, distinguishes function/data imports and rejects partial failures.
-  Pinball's catalog now binds 205 function tokens and two CRT data words in
-  the host tracer. Forwarders, dynamic imports and most handlers remain pending.
-- [ ] **0.4 Initialisation.** Dependency ordering, TLS, CRT entry, DllMain
-  and teardown required by the target. Track unsupported features.
-- [x] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
-  until the executable reaches application entry.
-  Initial Ghidra findings and subsystem packages: [STARTUP_ANALYSIS.md](STARTUP_ANALYSIS.md).
-  Immediate approach: use Ghidra on the hash-identified private Pinball PE to
-  map startup through window creation and message-loop entry before expanding
-  handlers further. Inventory direct calls, unresolved indirect edges, callback
-  registrations, structures and instruction families; distinguish decompiler
-  inference from assembly-confirmed contracts and runtime observations.
-  Package work by subsystem: allocator family (malloc/calloc/realloc/free),
-  CRT/string services, window/messages/GDI, then audio/input/persistence.
-  Review the pinned Wine implementations and relevant tests for each package,
-  with Microsoft documentation as the API contract reference. Do not claim a
-  complete call graph when indirect calls remain unresolved. Keep decompiled
-  code and original resources private; publish only original contracts/tests.
-  Runtime classified stops validate integration, not the primary discovery plan.
-  A callback-inclusive Ghidra survey now measures 25,092 of 25,538 exact static
-  instructions accepted (98.25%) across 393 reachable functions. Integer-only
-  binary80 helpers translate 2,253/2,300 x87 occurrences, including all 36 forms
-  and 384 occurrences in startup. The remaining 47 x87 occurrences are later
-  wndproc/gameplay forms; 399 rejected non-x87 instructions and indirect/callback
-  graph incompleteness remain. See STARTUP_ANALYSIS.md.
-  The host runner now executes generation-scoped cached multi-instruction
-  blocks. It publishes through an ownership-safe RW-to-RX transition, reports
-  hit/miss/publish/retirement metrics, and has invalidation and mid-block-fault
-  regressions. No fast-JIT performance claim is currently validated. The full
-  completion target remains playable
-  original Pinball on PS5 with graphics, input, audio, persistence and cleanup.
-  Keep guest pointers and
-  handles 32-bit; exercise callbacks in both directions.
-  Shared integer call frames and callback state services pass host tests;
-  an actual translated synthetic cdecl callback returns through the adapter.
-  See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing now executes 37,925 instructions and reaches the verified
-  `WinMain` address through cached blocks. It completes GetModuleHandleA(NULL),
-  __set_app_type, both CRT mode-pointer getters, _controlfp, _initterm and __getmainargs after binding all 207 imports.
-  UTC/tick/counter/ID, GetStartupInfoA, LoadStringA, lstrlenA, lstrcpyA and
-  lstrcatA, lstrcmpA, strstr, sprintf, GetModuleFileNameA, the three initial
-  User32/common-controls calls and all seven registry adapters. Named icon and
-  cursor ownership, splash-class registration, transactional window creation,
-  both synchronous creation callbacks, four-byte window-extra storage and
-  virtual-desktop geometry. The owned GDI package then completes compatible
-  DC/bitmap construction, resource-bitmap conversion, selection, paint
-  lifecycle, logical palette construction, clipping and both splash blits.
-  Keyboard mapping, main-window creation, nested WaveMix helper creation and
-  INI lookup complete. The next stop is `waveOutGetNumDevs`, the first
-  source-confirmed audio-device query. The guest heap
-  family and all four CRT adapters pass
-  host ownership/fragmentation/ABI tests; original malloc now succeeds.
-  Guest errno is modeled, with pointer export and registered new-handler
-  support pending. PS5 execution integration remains pending.
-  Resource lookup and exact CP1252 string conversion have synthetic tests and
-  original-game host evidence; broader locale/MUI and
-  best-fit/default-character conversion remain pending. See GUEST_ABI.md.
-  RET imm16 also has an actual translated stdcall callback regression.
-  Six time/counter and identity handlers have injected-service tests; PS5 clock backends remain pending.
-  Initializer callbacks have complete translated synthetic tests and one complete
-  original-game callback in host. Registry storage/ABI and error branches have
-  synthetic tests. FP control, isolated raw 80-bit state, transfer/constant/status
-  operations and startup add/subtract/multiply/divide/compare/square-root families
-  execute without installing guest FP state in the host. Masked stack faults
-  implement the AMD indefinite-value push/store/pop responses with `IE|SF` and
-  directional `C1`; unmasked stack, invalid, divide-by-zero and precision
-  exceptions propagate as a pending guest trap without committing their
-  destination. Guest handler delivery, later x87
-  forms and SSE execution remain pending.
-  This proves host-side application entry and a complete initial splash package
-  with deterministic cleanup, not PS5 guest execution or a running game; most
-  APIs are pending. See GDI.md.
-- [ ] Implement the observed Win32 surface: process/error state, heap,
-  virtual memory, files/resources, registry subset if needed, clocks and
-  synchronisation. Unsupported calls identify themselves and stop with a
-  classified error instead of returning fabricated success.
-
-## First frame to playable Pinball
-
-- [ ] **P3 Message loop.** Window procedures, messages, timers and input.
-  Reuse Xash3D's gameplay-validated ScePad lifecycle with a Win32 event adapter;
-  Half-Life 1 already exercises movement, aim, actions and weapon controls on
-  hardware, so the open work is guest message semantics rather than PS5 pad
-  feasibility.
-- [ ] **P4 First frame.** Implement observed graphics calls and present
-  through the reusable AGC backend. Determine GDI/DirectDraw requirements
-  from the binary; D3D9 is not a prerequisite. Preserve fence, flip-token,
-  guard and cleanup telemetry. Capture the board.
-- [ ] **P5 Playable.** Launch a ball, use both flippers with DualSense,
-  score, lose a ball and restart. Check timing and physics against Windows.
-  Run continuously until operator closure.
-- [ ] **P6 Complete.** Required audio/music APIs, preferences and scores,
-  adapting Xash3D's live-game-validated PCM backend to WinMM (MIDI/MCI remain
-  separate work),
-  repeated launch/close and a soak with stable memory and no unhandled APIs.
-  Record binary/build hashes, telemetry and reviewed video evidence.
-
-A native source port can be a reference, but does not close these binary
-compatibility milestones. See [PINBALL_TARGET.md](PINBALL_TARGET.md).
-
-## After Pinball
-
-Select a second title to expand reusable APIs. Evaluate D3D8/9 to AGC
-against DXVK plus a Vulkan backend with a representative workload before
-choosing a fork strategy. DXVK's Vulkan backend is substantial; renaming
-calls is insufficient. Shaders, formats, synchronization and graphics state
-remain implementation work.
-
-The 1995–2010 catalogue is long-term scope, not a compatibility claim.
-Track individual versions, required APIs, working set and measured results.
+- The current frame path uses CPU GDI composition and PS5 tile conversion;
+  AGC accelerates the final DMA/presentation step. It is not D3D acceleration.
+- The current x86 engine is target-capable, not a complete IA-32 CPU or Windows
+  process model. Exceptions, SSE breadth, TLS and dynamic module semantics are
+  incomplete.
+- `SOUND59.WAV`, requested by the target's plunger mapping, is absent from the
+  owner's original asset set. Other original effects produce validated PCM;
+  the runtime does not fabricate a replacement.
+- Windows binaries/resources, decompiler output and raw captures stay private.
+  Only project-authored source, synthetic fixtures and reviewed facts are
+  publishable.
 
 ## Engineering gates
 
-- Host contracts and ASan/UBSan pass before loader/execution changes advance.
-- Add toolchain-generated PE fixtures and fuzz parser/import/relocation input.
-- Audit native imports and smoke-test unfamiliar platform functions.
-- Keep binaries/resources/vendor DLLs private; publish source, synthetic
-  fixtures and reviewed structural evidence.
-- Use topic branches and PRs. Reconcile integration with current lab main
-  before merging, preserving concurrent renderer work.
+- `make test audit` before project commits and `make check` before lab commits.
+- ASan/UBSan after loader, DBT, ABI, GDI or audio ownership changes.
+- Exact stdcall/cdecl stack-balance tests for every adapter. The `mmioClose`
+  regression is permanent because its two-argument ABI previously consumed a
+  saved guest register and silently disconnected valid WaveMix buffers.
+- Topic branches and pull requests only; never push directly to `main`.

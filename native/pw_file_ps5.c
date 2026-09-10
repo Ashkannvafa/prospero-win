@@ -48,12 +48,68 @@ int pw_file_ps5_init(PwFilePs5 *state, const char *directory)
     if (!state || !directory)
         return PW_ERR_PRECONDITION;
     memset(state, 0, sizeof(*state));
+    for(unsigned index=0;index<8;index++)state->streams[index]=-1;
     length = strlen(directory);
     if (length == 0u || length > PW_PATH_MAX)
         return PW_ERR_LIMIT;
     memcpy(state->directory, directory, length);
     state->directory[length] = '\0';
     return PW_OK;
+}
+
+static int stream_slot(PwFilePs5 *state,uint32_t handle,unsigned *slot)
+{
+    if(!state || !slot || handle<0x0d000001u || handle>0x0d000008u)
+        return PW_ERR_PRECONDITION;
+    *slot=handle-0x0d000001u;
+    return state->streams[*slot]>=0?PW_OK:PW_ERR_NOT_FOUND;
+}
+static int guest_path(PwFilePs5 *state,const char *guest,char *out,size_t capacity)
+{
+    if(!state || !guest || !out)return PW_ERR_PRECONDITION;
+    const char *base=strrchr(guest,'\\');base=base?base+1:guest;
+    if(!*base || strchr(base,'/') || strchr(base,'\\') || strstr(base,".."))
+        return PW_ERR_PRECONDITION;
+    char lower[PW_PATH_MAX+1];size_t length=strlen(base);
+    if(length>PW_PATH_MAX)return PW_ERR_LIMIT;
+    for(size_t i=0;i<length;i++) {
+        unsigned char c=(unsigned char)base[i];
+        lower[i]=(char)(c>='A'&&c<='Z'?c+('a'-'A'):c);
+    }
+    lower[length]=0;return join(out,capacity,state->directory,lower);
+}
+int pw_file_ps5_stream_open(void *opaque,const char *path,const char *mode,uint32_t *handle)
+{
+    PwFilePs5 *state=opaque;char translated[2u*(PW_PATH_MAX+1u)];unsigned slot=8;
+    if(!state || !path || !mode || !handle || (strcmp(mode,"r") && strcmp(mode,"rb")))
+        return PW_ERR_UNSUPPORTED;
+    int status=guest_path(state,path,translated,sizeof(translated));if(status!=PW_OK)return status;
+    for(unsigned i=0;i<8;i++)if(state->streams[i]<0){slot=i;break;}
+    if(slot==8)return PW_ERR_LIMIT;
+    int descriptor=sceKernelOpen(translated,O_RDONLY,0);if(descriptor<0)return PW_ERR_NOT_FOUND;
+    state->streams[slot]=descriptor;*handle=0x0d000001u+slot;return PW_OK;
+}
+int pw_file_ps5_stream_close(void *opaque,uint32_t handle)
+{
+    PwFilePs5 *state=opaque;unsigned slot;int status=stream_slot(state,handle,&slot);
+    if(status!=PW_OK)return status;
+    int result=sceKernelClose(state->streams[slot]);state->streams[slot]=-1;
+    return result==0?PW_OK:PW_ERR_STATE;
+}
+int pw_file_ps5_stream_read(void *opaque,uint32_t handle,void *output,uint32_t bytes,uint32_t *got)
+{
+    PwFilePs5 *state=opaque;unsigned slot;int status=stream_slot(state,handle,&slot);
+    if(status!=PW_OK || !output || !got)return status==PW_OK?PW_ERR_PRECONDITION:status;
+    ssize_t result=read(state->streams[slot],output,bytes);
+    if(result<0)return PW_ERR_STATE;*got=(uint32_t)result;return PW_OK;
+}
+int pw_file_ps5_stream_seek(void *opaque,uint32_t handle,int32_t offset,uint32_t origin,uint32_t *position)
+{
+    PwFilePs5 *state=opaque;unsigned slot;int status=stream_slot(state,handle,&slot);
+    if(status!=PW_OK || !position || origin>2)return status==PW_OK?PW_ERR_PRECONDITION:status;
+    off_t result=lseek(state->streams[slot],offset,(int)origin);
+    if(result<0 || (uint64_t)result>UINT32_MAX)return PW_ERR_STATE;
+    *position=(uint32_t)result;return PW_OK;
 }
 
 static int remember(PwFilePs5 *state, void *base, size_t bytes)

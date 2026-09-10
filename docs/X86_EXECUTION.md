@@ -79,8 +79,9 @@ for byte. GNU as/ld and host i386 execution
 support are required; this check does not substitute an emulator silently.
 
 The differential test covers only that instruction sequence, not the whole
-supported subset, arbitrary guest blocks or PS5 execution. The generated
-blocks still need hardware validation.
+supported subset or arbitrary guest blocks. Generated blocks now have
+integration-level PS5 evidence from the original game runtime, but not a
+separate instruction-by-instruction hardware differential suite.
 
 ## Pinball dependency
 
@@ -107,7 +108,8 @@ On 2026-09-08, input SHA-256
 initially completed 22 translated instructions through the startup helper.
 With import binding and indirect-call dispatch, the same input now completes
 495 instructions and 24 completed API calls (eighteen distinct APIs),
-using the optional 4096-event limit (`trace_x86_entry private.exe 4096`), after
+using the optional bounded event limit (`trace_x86_entry private.exe 4096`, up
+to 10,000,000 events for long startup discovery), after
 adding memory arithmetic and initializer epilogue support, clock services, logical TEST, guest arguments,
 operand PUSH, initializer dispatch, guest FP control, absolute MOV, immediate ALU
 operations, conditional execution and initial CRT state services:
@@ -174,7 +176,7 @@ and signed overflow; LEAVE/RET tests cover full frame teardown and invalid EBP.
 Byte tests cover all low/high register MOV combinations, partial-register
 preservation, comparison/test flags, last-byte memory access and crossing
 faults. INC/DEC preserve guest CF while updating the other arithmetic flags.
-The tracer accepts an optional maximum of 1..65536 events and an optional
+The tracer accepts an optional maximum of 1..10000000 events and an optional
 generic hexadecimal PC milestone, both validated before opening the executable.
 It reports DBT dispatch, cache hit/miss/publication, retired-instruction,
 emitted-byte and generation metrics. Default-budget, explicit-budget, cache-hit
@@ -194,8 +196,9 @@ Counts are masked to five bits; zero preserves every guest flag, AF is retained,
 and OF is updated only for count one. Tests cover ECX/CL aliasing, continuation
 and rejected crossing-boundary accesses, including a zero-count memory operand.
 Rotates and 8/16-bit shifts are not yet implemented.
-The tracer and its synthetic contracts reproduce under ASan/UBSan; the
-translator compiles for PS5. Native guest execution is still not integrated.
+The tracer and its synthetic contracts reproduce under ASan/UBSan. The same
+translator is integrated into the PS5 runtime and executes the original guest
+continuously; this does not turn its supported subset into complete IA-32.
 Immediate-ALU tests cover all eight operations, all three encoding forms,
 16/32-bit operands, carry inputs, boundary values and memory/register results.
 Read-modify-write requires both read and write permissions; rejected accesses
@@ -206,10 +209,10 @@ that field is not a CRT return value (the same applies to `_initterm` and
 GetSystemTimeAsFileTime and GetStartupInfoA). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: the current run completes 151 adapter calls across
-58 distinct DLL/API pairs and returns from the splash `UpdateWindow` callback;
-no gameplay has begun, and this tracer has
-not been exercised on PS5. Synthetic PE tests independently cover normal
+The counts in this historical section are host-tracer evidence. Current PS5
+evidence supersedes its old integration boundary: the native runner reaches
+the message loop, changing frames and original PCM. See
+HARDWARE_VALIDATION.md. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
 stop. Executable bytes remain private; no extracted routine is embedded here.
 
@@ -220,14 +223,16 @@ host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
 base and the shared stdcall return service. Other API cases remain pending.
 
-The current exact-binary trace retires 37,925 instructions and stops at
+The historical splash-era exact-binary trace retired 37,925 instructions and stopped at
 `waveOutGetNumDevs` in source-confirmed WaveMix initialization. Its cache totals
 are 3,807 dispatches, 3,469 hits and 338 publications (107,008 bytes). The GDI
 live-state and post-reset cleanup records are described in [GDI.md](GDI.md).
 Keyboard mapping, main-window creation, the nested audio helper window, REP
-string operations, 16-bit tests and integer MUL/DIV are already covered. Next
-coverage is the reusable WaveOut device/header state machine, message-loop
-initialization, TEB delivery and later wndproc integer/x87 forms.
+string operations, 16-bit tests and integer MUL/DIV were already covered at
+that checkpoint. The current engine adds the remaining observed WaveMix,
+message-loop and wndproc forms and runs continuously on PS5. Remaining broad
+coverage includes TEB/exception delivery, SSE, cache eviction and a fuller
+memory/scheduling model.
 The diagnostic tracer uses the tested generation-scoped cache and reports its
 dispatch/publication metrics. Integer-only binary80 execution covers every
 startup x87 form without touching host FP state. Masked stack overflow and

@@ -56,6 +56,13 @@ static int find(const PwGuestHeap *h,uint32_t address,uint32_t *index)
     }
     return PW_ERR_PRECONDITION;
 }
+int pw_guest_heap_query(const PwGuestHeap *h,uint32_t address,uint32_t *requested)
+{
+    if(!requested)return PW_ERR_PRECONDITION;
+    int status=pw_guest_heap_validate(h);if(status!=PW_OK)return status;
+    uint32_t index;if((status=find(h,address,&index))!=PW_OK)return status;
+    *requested=h->blocks[index].requested;return PW_OK;
+}
 int pw_guest_heap_alloc(PwGuestHeap *h,uint32_t n,uint32_t *address)
 {
     if(!address)return PW_ERR_PRECONDITION;

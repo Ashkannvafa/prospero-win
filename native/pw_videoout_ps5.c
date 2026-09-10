@@ -1,0 +1,82 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/*
+ * The pixel-address permutation is adapted from SDL's PS5 tilemap backend:
+ * Copyright (C) 2026 John Törnblom <john.tornblom@gmail.com>.
+ * SDL's zlib license permits use and modification; this is a small standalone
+ * scalar presenter, not a copy of the SDL video driver.
+ */
+#include "pw_videoout_ps5.h"
+#include <string.h>
+
+enum { WIDTH=1920,HEIGHT=1080,FRAME_BYTES=0x1000000,MEMORY_BYTES=0x3000000 };
+typedef struct VideoBuffer {void *data,*metadata,*reserved0,*reserved1;} VideoBuffer;
+typedef struct VideoAttribute {uint8_t bytes[80];} VideoAttribute;
+extern size_t sceKernelGetDirectMemorySize(void);
+extern int sceKernelAllocateDirectMemory(int64_t,int64_t,size_t,size_t,int,int64_t *);
+extern int sceKernelMapDirectMemory(void **,size_t,int,int,int64_t,size_t);
+extern int sceVideoOutOpen(int32_t,int32_t,int32_t,const void *);
+extern int sceVideoOutSetFlipRate(int32_t,int32_t);
+extern void sceVideoOutSetBufferAttribute2(void *,uint64_t,uint32_t,uint32_t,uint32_t,
+                                            uint64_t,uint32_t,uint64_t);
+extern int sceVideoOutRegisterBuffers2(int32_t,int32_t,int32_t,void *,int32_t,void *,int32_t,void *);
+extern int sceVideoOutWaitVblank(int32_t);
+extern int sceSystemServiceHideSplashScreen(void);
+
+static uint32_t tile_offset(uint32_t x,uint32_t y)
+{
+    return ((x&1u)<<0)|(((x>>1)&1u)<<1)|(((y>>0)&1u)<<2)|(((y>>1)&1u)<<3)|
+        (((y>>2)&1u)<<4)|(((x>>2)&1u)<<5)|((((x>>3)^(y>>3))&1u)<<6)|
+        ((((x>>4)^(y>>4))&1u)<<7)|((((x>>6)^(y>>5))&1u)<<8)|
+        ((((x>>5)^(y>>6))&1u)<<9)|(((y>>3)&1u)<<10)|(((x>>4)&1u)<<11)|
+        (((y>>6)&1u)<<12)|(((x>>6)&1u)<<13)|(((x>>7)&1u)<<14)|(((x>>8)&1u)<<15);
+}
+static size_t tile_pixel(uint32_t x,uint32_t y)
+{
+    return (size_t)(x/512u)*(512u*128u)+(size_t)(y/128u)*(128u*WIDTH)+
+        (tile_offset(x%512u,0)^tile_offset(0,y%128u));
+}
+int pw_videoout_ps5_open(PwVideoOutPs5 *video)
+{
+    if(!video)return PW_ERR_PRECONDITION;memset(video,0,sizeof(*video));video->handle=-1;
+    int status=pw_agc_ps5_open(&video->agc);if(status!=PW_OK)return status;
+    video->handle=sceVideoOutOpen(0xff,0,0,NULL);if(video->handle<0)return PW_ERR_STATE;
+    size_t pool=sceKernelGetDirectMemorySize();if(pool<MEMORY_BYTES)return PW_ERR_LIMIT;
+    if(sceKernelAllocateDirectMemory(0,(int64_t)pool,MEMORY_BYTES,0x200000,3,
+                                     &video->physical)<0)return PW_ERR_VM;
+    if(sceKernelMapDirectMemory(&video->memory,MEMORY_BYTES,0x33,0,video->physical,0x200000)<0)
+        return PW_ERR_VM;
+    video->bytes=MEMORY_BYTES;video->frame_bytes=FRAME_BYTES;
+    VideoBuffer buffers[2]={{video->memory,0,0,0},
+        {(uint8_t *)video->memory+FRAME_BYTES,0,0,0}};VideoAttribute attribute;
+    memset(&attribute,0,sizeof(attribute));
+    (void)sceVideoOutSetFlipRate(video->handle,0);
+    sceVideoOutSetBufferAttribute2(&attribute,0x8000000022000000ull,0,WIDTH,HEIGHT,0,0,0);
+    if(sceVideoOutRegisterBuffers2(video->handle,0,0,buffers,2,&attribute,0,NULL)<0)
+        return PW_ERR_STATE;
+    video->opened=1;(void)sceSystemServiceHideSplashScreen();return PW_OK;
+}
+int pw_videoout_ps5_present(PwVideoOutPs5 *video,const PwGdiTargetView *view)
+{
+    if(!video || !video->opened || !view || !view->pixels || !view->width || !view->height)
+        return PW_ERR_PRECONDITION;
+    unsigned index=video->index^1u;
+    uint32_t *output=(uint32_t *)((uint8_t *)video->memory+2u*video->frame_bytes);
+    void *scanout=(uint8_t *)video->memory+(size_t)index*video->frame_bytes;
+    uint32_t background=0xff101018u;
+    for(uint32_t y=0;y<HEIGHT;y++)for(uint32_t x=0;x<WIDTH;x++)
+        output[tile_pixel(x,y)]=background;
+    uint32_t scale_x=(WIDTH-80u)/view->width,scale_y=(HEIGHT-80u)/view->height;
+    uint32_t scale=scale_x<scale_y?scale_x:scale_y;if(!scale)scale=1;if(scale>3)scale=3;
+    uint32_t shown_w=view->width*scale,shown_h=view->height*scale;
+    uint32_t left=(WIDTH-shown_w)/2u,top=(HEIGHT-shown_h)/2u;
+    for(uint32_t sy=0;sy<view->height;sy++) {
+        const uint32_t *source=(const uint32_t *)(view->pixels+(size_t)sy*view->stride);
+        for(uint32_t sx=0;sx<view->width;sx++)for(uint32_t yy=0;yy<scale;yy++)
+            for(uint32_t xx=0;xx<scale;xx++)
+                output[tile_pixel(left+sx*scale+xx,top+sy*scale+yy)]=source[sx]|0xff000000u;
+    }
+    int status=pw_agc_ps5_copy_flip(&video->agc,video->handle,(int)index,output,
+                                    scanout,(uint32_t)video->frame_bytes,video->flips+1);
+    if(status!=PW_OK)return status;
+    (void)sceVideoOutWaitVblank(video->handle);video->index=index;video->flips++;return PW_OK;
+}
