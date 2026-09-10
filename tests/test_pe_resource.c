@@ -42,5 +42,13 @@ int main(void)
     assert(pe_resource_find(&im,6,1,0,&r)==PW_ERR_TRUNCATED && !memcmp(&r,&before,sizeof(r)));
     im=fixture();im.directories[PE_DIR_RESOURCE].virtual_address=0;
     assert(pe_resource_find(&im,6,1,0,&r)==PW_ERR_NOT_FOUND);
+    im=fixture();
+    w(44,1);w(48,0x800000a0);w(52,0x80000040);
+    bytes[0xa0]=6;
+    const char icon[]="ICON_1";
+    for(unsigned i=0;i<6;i++)bytes[0xa2+i*2]=(uint8_t)icon[i];
+    assert(pe_resource_find_name(&im,6,"ICON_1",0x409,&r)==PW_OK && r.size==34);
+    assert(pe_resource_find_name(&im,6,"icon_1",0x409,&r)==PW_ERR_NOT_FOUND);
+    assert(pe_resource_find_name(&im,6,"IC\xff",0x409,&r)==PW_ERR_UNSUPPORTED);
     return 0;
 }

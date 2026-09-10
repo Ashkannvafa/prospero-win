@@ -16,9 +16,10 @@ DRM, anti-cheat and kernel drivers are out of scope.
   mprotect RW-to-RX/RWX work in a title.
 - **Host progress:** the exact Pinball binary reaches its public-PDB-verified
   `WinMain` address through generation-scoped cached multi-instruction blocks:
-  1,823 instructions and 105 completed calls (30 distinct APIs). The measured
-  run records 417 dispatches, 270 cache hits and 147 published blocks. The next
-  classified stop is `LoadIconA`, before window-class registration.
+  1,944 instructions and 113 completed calls (33 distinct APIs). The measured
+  run records 437 dispatches, 279 cache hits and 158 published blocks. Named
+  icon lookup, cursor ownership and real class registration complete; the next
+  classified stop is `CreateWindowExA` at the splash-window boundary.
 - **Measured execution scope:** 25,092/25,538 reachable static instructions
   are accepted (98.25%). Integer-only binary80 helpers now translate 2,253 of
   2,300 x87 occurrences, including all 36 forms and all 384 occurrences in the
@@ -27,8 +28,8 @@ DRM, anti-cheat and kernel drivers are out of scope.
 - **Verified oracle:** the target SHA-1, public PDB identity and ten public
   symbol addresses match the pinned MIT source reconstruction. The generated
   manifest groups source-confirmed startup, graphics, input and audio APIs.
-- **Next:** implement the resource/window ownership package beginning at
-  `LoadIconA`, then exercise x87 on newly reached exact-binary paths. Wine remains a contract
+- **Next:** implement window creation and its ordered guest WndProc callbacks,
+  then exercise x87 on newly reached exact-binary paths. Wine remains a contract
   and test reference, not a claim of implemented compatibility.
 - **Not yet implemented:** a complete execution engine, Win32 API surface
   or a running Windows game.

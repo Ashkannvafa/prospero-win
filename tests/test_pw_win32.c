@@ -13,6 +13,70 @@ static int string_fixture(void *opaque,uint32_t module,uint32_t id,const uint8_t
     if(id==4)return PW_ERR_TRUNCATED;
     *text=id==2?unmapped:sample;*units=id==1?0:id==2?1:4;return PW_OK;
 }
+static int named_fixture(void *opaque,uint32_t module,uint32_t type,const char *name,
+                         const uint8_t **bytes,size_t *size)
+{
+    (void)opaque;static const uint8_t icon[]={1,2,3,4};
+    if(module!=0x01000000 || type!=14)return PW_ERR_UNSUPPORTED;
+    if(!strcmp(name,"MISSING"))return PW_ERR_NOT_FOUND;
+    if(strcmp(name,"ICON_1"))return PW_ERR_MALFORMED;
+    *bytes=icon;*size=sizeof(icon);return PW_OK;
+}
+static int code_fixture(void *opaque,uint32_t address)
+{
+    (void)opaque;return address==0x01002000?PW_OK:PW_ERR_NOT_FOUND;
+}
+static void resource_tests(PwWin32 *r,PwX86State *s)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;
+    uint32_t name=s->stack_low+64;strcpy((char *)(uintptr_t)name,"ICON_1");
+    const char *apis[]={"LoadIconA","LoadIconA","LoadCursorA"};
+    for(unsigned i=0;i<3;i++) {
+        strcpy(symbol.name,apis[i]);assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+        s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-12;s->eflags=0xad7;
+        uint32_t frame[]={0x01001234,i<2?0x01000000:0,i<2?name:32512};
+        memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));unsigned calls=r->calls;
+        assert(pw_win32_dispatch(r,s)==PW_OK && s->eip==frame[0] &&
+               s->gpr[4]==s->stack_high && s->eflags==0xad7 && r->calls==calls+1);
+        assert(s->gpr[0]==(i<2?PW_USER32_OBJECT_FIRST:PW_USER32_OBJECT_FIRST+1));
+    }
+    strcpy((char *)(uintptr_t)name,"MISSING");strcpy(symbol.name,"LoadIconA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-12;
+    uint32_t missing[]={0x01001234,0x01000000,name};
+    memcpy((void *)(uintptr_t)s->gpr[4],missing,sizeof(missing));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] && r->last_error==1814);
+    unsigned used=0;for(unsigned i=0;i<r->user32->resource_capacity;i++)used+=r->user32->resources[i].used;
+    assert(used==2);
+    strcpy((char *)(uintptr_t)name,"ICON_1");s->eip=(uint32_t)target.address;
+    s->gpr[4]=s->stack_high-8;PwX86State before=*s;unsigned calls=r->calls;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_VM && !memcmp(s,&before,sizeof(before)) && r->calls==calls);
+    used=0;for(unsigned i=0;i<r->user32->resource_capacity;i++)used+=r->user32->resources[i].used;
+    assert(used==2);
+}
+static void class_tests(PwWin32 *r,PwX86State *s)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"RegisterClassA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    uint32_t base=s->stack_low+128,raw[10]={4104,0x01002000,0,0,0x01000000,
+        PW_USER32_OBJECT_FIRST,PW_USER32_OBJECT_FIRST+1,16,base+48,base+64};
+    memcpy((void *)(uintptr_t)base,raw,sizeof(raw));
+    strcpy((char *)(uintptr_t)(base+48),"MENU_1");strcpy((char *)(uintptr_t)(base+64),"Pinball");
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-4;
+    PwX86State before=*s;unsigned calls=r->calls;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_VM && !memcmp(s,&before,sizeof(before)) &&
+           r->calls==calls && !r->user32->classes[0].used);
+    for(unsigned attempt=0;attempt<2;attempt++) {
+        s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-8;
+        uint32_t frame[]={0x01001234,base};memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));
+        calls=r->calls;assert(pw_win32_dispatch(r,s)==PW_OK && s->eip==frame[0] &&
+            s->gpr[4]==s->stack_high && r->calls==calls+1);
+        assert(s->gpr[0]==(attempt?0:PW_USER32_ATOM_FIRST));
+        if(attempt)assert(r->last_error==1410);
+    }
+    assert(r->user32->classes[0].used && r->user32->classes[0].wndproc==0x01002000 &&
+           !strcmp(r->user32->classes[0].class_name,"Pinball"));
+}
 static void string_tests(PwWin32 *r,PwX86State *s)
 {
     PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"LoadStringA");
@@ -325,8 +389,13 @@ int main(void)
     PwRegistry registry;PwRegistryKey registry_keys[8];PwRegistryValue registry_values[16];
     assert(pw_registry_init(&registry,registry_keys,8,registry_values,16)==PW_OK);
     PwUser32 user32;PwUser32Message user_messages[8];PwUser32Window user_windows[8];
+    PwUser32Resource user_resources[8];PwUser32Class user_classes[8];
     assert(pw_user32_init(&user32,user_messages,8,user_windows,8)==PW_OK);
+    assert(pw_user32_init_resources(&user32,user_resources,8)==PW_OK);
+    assert(pw_user32_init_classes(&user32,user_classes,8)==PW_OK);
     runtime.registry=&registry;runtime.user32=&user32;
+    runtime.services.named_resource=named_fixture;
+    runtime.services.code_address=code_fixture;
     PeImportSymbol symbol={0};PwImportTarget target;
     strcpy(symbol.name,"_acmdln");
     assert(pw_win32_resolve(&runtime,"MSVCRT.DLL",&symbol,&target)==PW_OK && target.kind==PW_IMPORT_DATA);
@@ -378,6 +447,8 @@ int main(void)
     memcpy((void *)(uintptr_t)state.gpr[4],words,4);
     assert(pw_win32_dispatch(&runtime,&state)==PW_OK && state.gpr[0]==0 &&
            state.gpr[4]==state.stack_high && state.eip==words[0]);
+    resource_tests(&runtime,&state);
+    class_tests(&runtime,&state);
     const char *crt_names[]={"__set_app_type","__p__fmode","__p__commode"};
     for(unsigned i=0;i<3;i++) {
         strcpy(symbol.name,crt_names[i]);

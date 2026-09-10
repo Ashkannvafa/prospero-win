@@ -4,7 +4,9 @@
 #include "../include/prospero_win.h"
 
 enum { PW_USER32_NAME_MAX=255, PW_USER32_MESSAGE_FIRST=0xc000,
-       PW_USER32_MESSAGE_LAST=0xffff };
+       PW_USER32_MESSAGE_LAST=0xffff, PW_USER32_OBJECT_FIRST=0x10000,
+       PW_USER32_ATOM_FIRST=1 };
+typedef enum PwUser32ResourceKind { PW_USER32_ICON=1,PW_USER32_SYSTEM_CURSOR=2 } PwUser32ResourceKind;
 typedef struct PwUser32Message {
     char name[PW_USER32_NAME_MAX+1];
     uint32_t id;
@@ -15,9 +17,26 @@ typedef struct PwUser32Window {
     uint32_t handle;
     unsigned used;
 } PwUser32Window;
+typedef struct PwUser32Resource {
+    char name[PW_USER32_NAME_MAX+1];
+    const uint8_t *bytes;
+    uint32_t handle,module,type,size,id;
+    PwUser32ResourceKind kind;
+    unsigned used;
+} PwUser32Resource;
+typedef struct PwUser32Class {
+    char menu_name[PW_USER32_NAME_MAX+1],class_name[PW_USER32_NAME_MAX+1];
+    uint32_t style,wndproc,class_extra,window_extra,module,icon,cursor,background;
+    uint16_t atom;
+    unsigned used;
+} PwUser32Class;
 typedef struct PwUser32 {
     PwUser32Message *messages;PwUser32Window *windows;
     uint32_t message_capacity,window_capacity,next_message,common_controls;
+    PwUser32Resource *resources;
+    uint32_t resource_capacity,next_object;
+    PwUser32Class *classes;
+    uint32_t class_capacity,next_atom;
 } PwUser32;
 
 int pw_user32_init(PwUser32 *,PwUser32Message *,uint32_t,
@@ -25,4 +44,9 @@ int pw_user32_init(PwUser32 *,PwUser32Message *,uint32_t,
 int pw_user32_register_message(PwUser32 *,const char *,uint32_t *);
 int pw_user32_find_window(const PwUser32 *,const char *,const char *,uint32_t *);
 int pw_user32_init_common_controls(PwUser32 *,uint32_t structure_bytes,uint32_t classes);
+int pw_user32_init_resources(PwUser32 *,PwUser32Resource *,uint32_t);
+int pw_user32_init_classes(PwUser32 *,PwUser32Class *,uint32_t);
+int pw_user32_resource(PwUser32 *,PwUser32ResourceKind,uint32_t module,uint32_t type,
+                       const char *name,uint32_t id,const uint8_t *,uint32_t,uint32_t *handle);
+int pw_user32_register_class(PwUser32 *,const PwUser32Class *,uint16_t *atom);
 #endif

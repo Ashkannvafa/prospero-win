@@ -33,6 +33,45 @@ static int entry(const PeImage *im,uint32_t table,uint32_t id,int language,
     if(best==UINT32_MAX)return PW_ERR_NOT_FOUND;
     *target=value;*selected=key;return PW_OK;
 }
+static int entry_name(const PeImage *im,uint32_t table,const char *name,uint32_t *target)
+{
+    if(!name || !*name)return PW_ERR_PRECONDITION;
+    size_t wanted=0;while(wanted<=255 && name[wanted]) {
+        if((unsigned char)name[wanted]>=0x80)return PW_ERR_UNSUPPORTED;
+        wanted++;
+    }
+    if(wanted>255)return PW_ERR_LIMIT;
+    const uint8_t *p;int status=span(im,table,16,&p);if(status!=PW_OK)return status;
+    unsigned names=u16(p+12),ids=u16(p+14),count=names+ids;
+    if(count>4096)return PW_ERR_LIMIT;
+    if(table>UINT32_MAX-16)return PW_ERR_OVERFLOW;
+    if((status=span(im,table+16,count*8,&p))!=PW_OK)return status;
+    for(unsigned i=0;i<names;i++) {
+        uint32_t key=u32(p+i*8),value=u32(p+i*8+4);
+        if(!(key&0x80000000u))return PW_ERR_MALFORMED;
+        const uint8_t *text;
+        if((status=span(im,key&0x7fffffffu,2,&text))!=PW_OK)return status;
+        unsigned units=u16(text);
+        if((status=span(im,(key&0x7fffffffu)+2,units*2,&text))!=PW_OK)return status;
+        if(units!=wanted)continue;
+        unsigned equal=1;
+        for(unsigned j=0;j<units;j++)if(u16(text+j*2)!=(unsigned char)name[j]){equal=0;break;}
+        if(equal){*target=value;return PW_OK;}
+    }
+    return PW_ERR_NOT_FOUND;
+}
+static int resource_data(const PeImage *im,uint32_t target,uint32_t language,
+                         PeResource *out)
+{
+    if(target&0x80000000u)return PW_ERR_UNSUPPORTED;
+    const uint8_t *p;int status=span(im,target,16,&p);
+    if(status!=PW_OK)return status;
+    uint32_t rva=u32(p),size=u32(p+4),cp=u32(p+8);
+    if(u32(p+12))return PW_ERR_MALFORMED;
+    size_t offset;
+    if((status=pe_image_file_offset(im,rva,size,&offset))!=PW_OK)return status;
+    *out=(PeResource){im->bytes+offset,size,cp,language};return PW_OK;
+}
 int pe_resource_find(const PeImage *im,uint32_t type,uint32_t name,uint16_t lang,PeResource *out)
 {
     if(!im || !out || type&0x80000000u || name&0x80000000u)return PW_ERR_PRECONDITION;
@@ -47,13 +86,19 @@ int pe_resource_find(const PeImage *im,uint32_t type,uint32_t name,uint16_t lang
             table=target&0x7fffffffu;
         } else if(target&0x80000000u)return PW_ERR_UNSUPPORTED;
     }
-    const uint8_t *p;int status=span(im,target,16,&p);
-    if(status!=PW_OK)return status;
-    uint32_t rva=u32(p),size=u32(p+4),cp=u32(p+8);
-    if(u32(p+12))return PW_ERR_MALFORMED;
-    size_t offset;
-    if((status=pe_image_file_offset(im,rva,size,&offset))!=PW_OK)return status;
-    *out=(PeResource){im->bytes+offset,size,cp,key};return PW_OK;
+    return resource_data(im,target,key,out);
+}
+int pe_resource_find_name(const PeImage *im,uint32_t type,const char *name,
+                          uint16_t lang,PeResource *out)
+{
+    if(!im || !out || type&0x80000000u)return PW_ERR_PRECONDITION;
+    uint32_t target,key;
+    int status=entry(im,0,type,0,&target,&key);if(status!=PW_OK)return status;
+    if(!(target&0x80000000u))return PW_ERR_UNSUPPORTED;
+    if((status=entry_name(im,target&0x7fffffffu,name,&target))!=PW_OK)return status;
+    if(!(target&0x80000000u))return PW_ERR_UNSUPPORTED;
+    if((status=entry(im,target&0x7fffffffu,lang,1,&target,&key))!=PW_OK)return status;
+    return resource_data(im,target,key,out);
 }
 int pe_resource_string(const PeImage *im,uint32_t id,uint16_t lang,const uint8_t **text,size_t *units)
 {

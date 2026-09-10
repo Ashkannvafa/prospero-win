@@ -19,6 +19,8 @@ static PwRegistryKey registry_keys[32];
 static PwRegistryValue registry_values[128];
 static PwUser32Message user_messages[128];
 static PwUser32Window user_windows[128];
+static PwUser32Resource user_resources[128];
+static PwUser32Class user_classes[128];
 static PwX86CacheEntry cache_entries[8192];
 typedef struct TraceSource { const PeImage *image;const PeLayout *layout; } TraceSource;
 static int trace_source(void *opaque,uint32_t pc,const uint8_t **source,size_t *bytes)
@@ -38,9 +40,23 @@ static int trace_source(void *opaque,uint32_t pc,const uint8_t **source,size_t *
 }
 static int host_string(void *opaque,uint32_t module,uint32_t id,const uint8_t **text,size_t *units)
 {
-    const PeImage *im=opaque;
+    const TraceSource *view=opaque;const PeImage *im=view->image;
     if(module && module!=im->image_base)return PW_ERR_UNSUPPORTED;
     return pe_resource_string(im,id,0x409,text,units);
+}
+static int host_named_resource(void *opaque,uint32_t module,uint32_t type,const char *name,
+                               const uint8_t **bytes,size_t *size)
+{
+    const TraceSource *view=opaque;const PeImage *im=view->image;PeResource resource;
+    if(module!=im->image_base)return PW_ERR_UNSUPPORTED;
+    int status=pe_resource_find_name(im,type,name,0x409,&resource);
+    if(status==PW_OK){*bytes=resource.bytes;*size=resource.size;}
+    return status;
+}
+static int host_code_address(void *opaque,uint32_t address)
+{
+    const TraceSource *view=opaque;const uint8_t *source;size_t bytes;
+    return trace_source((void *)view,address,&source,&bytes);
 }
 static int host_clock(void *opaque,PwClockDomain domain,uint64_t *ns)
 {
@@ -123,9 +139,12 @@ int main(int argc,char **argv)
     if(pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline)!=PW_OK)goto cleanup;
     if(pw_registry_init(&registry,registry_keys,32,registry_values,128)!=PW_OK)goto cleanup;
     if(pw_user32_init(&user32,user_messages,128,user_windows,128)!=PW_OK)goto cleanup;
+    if(pw_user32_init_resources(&user32,user_resources,128)!=PW_OK)goto cleanup;
     runtime.heap=&heap;runtime.registry=&registry;runtime.user32=&user32;
-    runtime.services=(PwWin32Services){.opaque=&image,.clock_ns=host_clock,.process_id=1,.thread_id=2,
-        .string_resource=host_string,.ansi_codepage=1252,.main_module_filename=commandline+1};
+    if(pw_user32_init_classes(&user32,user_classes,128)!=PW_OK)goto cleanup;
+    runtime.services=(PwWin32Services){.opaque=&trace_view,.clock_ns=host_clock,.process_id=1,.thread_id=2,
+        .string_resource=host_string,.named_resource=host_named_resource,
+        .code_address=host_code_address,.ansi_codepage=1252,.main_module_filename=commandline+1};
     commandline[command_bytes-1]=0; /* service path excludes command-line quotes */
     PwImportBindReport binding;
     if(pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,&binding_work,&binding)!=PW_OK)goto cleanup;

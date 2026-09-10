@@ -147,8 +147,8 @@ kind=host-heap-summary blocks=3 live=2 requested=2041 arena=8388608 valid=1
 That historical trace stopped at `RegCreateKeyExA`. The current registry
 package completes create/query/close and create/set/close using real guest
 arguments. The current exact-binary trace reaches the verified `WinMain`
-address and retires 1,823 translated instructions before stopping at
-`LoadIconA`; one live allocation requests 37 bytes at that point.
+address and retires 1,944 translated instructions before stopping at
+`CreateWindowExA`; two live allocations request 473 bytes at that point.
 Before it, malloc, string and resource calls construct the startup state. The CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
@@ -202,7 +202,7 @@ that field is not a CRT return value (the same applies to `_initterm` and
 GetSystemTimeAsFileTime and GetStartupInfoA). Regression tests cover all 16
 conditions across 32 arithmetic-flag combinations, register-byte writes,
 word-access boundaries, compare operand order and immediate sign extension.
-This is host evidence only: 30 distinct API cases and one original callback have completed,
+This is host evidence only: 33 distinct API cases and one original callback have completed,
 no gameplay has begun, and this tracer has
 not been exercised on PS5. Synthetic PE tests independently cover normal
 instruction progress, unsupported stops, memory faults and a looping budget
@@ -215,7 +215,7 @@ host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
 base and the shared stdcall return service. Other API cases remain pending.
 
-Next coverage: the resource/window ownership package from `LoadIconA`, TEB
+Next coverage: owned window creation and ordered WndProc entry from `CreateWindowExA`, TEB
 initialization and broader FS encodings, plus later wndproc integer/x87 forms.
 The diagnostic tracer uses the tested generation-scoped cache and reports its
 dispatch/publication metrics. Integer-only binary80 execution covers every

@@ -25,6 +25,11 @@ typedef struct PwWin32Services {
     /* Borrowed UTF-16LE from a live module's resources. NOT_FOUND is absence,
      * not malformed input. Provider owns module and language selection. */
     int (*string_resource)(void *,uint32_t,uint32_t,const uint8_t **,size_t *);
+    /* Borrowed bytes for an exact named PE resource. The provider validates
+     * the module and owns language selection and byte lifetime. */
+    int (*named_resource)(void *,uint32_t,uint32_t,const char *,const uint8_t **,size_t *);
+    /* Confirms that a guest callback begins in executable image memory. */
+    int (*code_address)(void *,uint32_t);
     unsigned ansi_codepage; /* currently exact CP1252 conversion only */
     /* Stable guest-visible DOS path for the main image, never a host path. */
     const char *main_module_filename;

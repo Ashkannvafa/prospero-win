@@ -184,11 +184,12 @@ Do not infer function-level execution order from unordered graph edges.
 
 The source-confirmed registry package now implements all seven imported Advapi
 entry points over fixed owner-supplied storage. A bounded exact-binary host run
-reaches the public-PDB-verified `WinMain` address and then retires 1,823
-instructions while completing 105 calls across 30 distinct APIs. It records
-417 DBT dispatches, 270 cache hits, 147 misses/publications and 45,488 emitted
-code bytes for generation 1. The classified stop is `LoadIconA`, before
-`RegisterClassA` and window creation. This requires a resource-backed icon
-handle and object-lifetime contract; returning a fabricated handle would not
-advance the implementation. This is host integration evidence, not a window,
-gameplay or translated PS5 execution claim.
+reaches the public-PDB-verified `WinMain` address and then retires 1,944
+instructions while completing 113 calls across 33 distinct APIs. It records
+437 DBT dispatches, 279 cache hits, 158 misses/publications and 50,704 emitted
+code bytes for generation 1. Named `RT_GROUP_ICON` lookup, deduplicated icon
+and system-cursor objects, and the source-confirmed splash `WNDCLASSA` now have
+real ownership records. The classified stop is `CreateWindowExA`: window
+creation must allocate an owned HWND and synchronously enter the registered
+WndProc, not fabricate a successful return. This is host integration evidence,
+not a visible window, gameplay or translated PS5 execution claim.

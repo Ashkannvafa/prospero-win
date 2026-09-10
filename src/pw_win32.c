@@ -321,6 +321,81 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         if(status!=PW_OK)return status;
         *state=after;r->calls++;return PW_OK;
     }
+    if(!strcmp(r->last_dll,"user32.dll") &&
+       (!strcmp(r->last_name,"LoadIconA") || !strcmp(r->last_name,"LoadCursorA"))) {
+        if(!r->user32 || !r->user32->resources)return PW_ERR_STATE;
+        unsigned icon=!strcmp(r->last_name,"LoadIconA");
+        PwGuestCall call={0};uint32_t module,resource;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,8,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&module))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&resource))!=PW_OK)return status;
+        char name[PW_USER32_NAME_MAX+1];const uint8_t *bytes=NULL;size_t size=0;
+        if(icon) {
+            if(module!=r->main_base || resource<0x10000u || !r->services.named_resource)
+                return PW_ERR_UNSUPPORTED;
+            if((status=guest_string(state,resource,name,sizeof(name),0))!=PW_OK)return status;
+            status=r->services.named_resource(r->services.opaque,module,14,name,&bytes,&size);
+            if(status!=PW_OK && status!=PW_ERR_NOT_FOUND)return status;
+            if(status==PW_OK && (!bytes || !size || size>UINT32_MAX))return PW_ERR_STATE;
+        } else if(module || resource!=32512u) {
+            return PW_ERR_UNSUPPORTED; /* exact startup path is IDC_ARROW */
+        }
+        /* Validate the stdcall return before allocating a process object. */
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        uint32_t handle=0,error=0;
+        if(icon && !bytes)error=1814; /* ERROR_RESOURCE_NAME_NOT_FOUND */
+        else {
+            status=pw_user32_resource(r->user32,
+                icon?PW_USER32_ICON:PW_USER32_SYSTEM_CURSOR,
+                icon?module:0,icon?14:0,icon?name:NULL,icon?0:resource,
+                bytes,(uint32_t)size,&handle);
+            if(status==PW_ERR_LIMIT){status=PW_OK;error=8;handle=0;}
+            if(status!=PW_OK)return status;
+        }
+        after.gpr[0]=handle;*state=after;
+        if(error)r->last_error=error;
+        r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"RegisterClassA")) {
+        if(!r->user32 || !r->user32->classes || !r->services.code_address)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t address,raw[10];
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&address))!=PW_OK ||
+           (status=range_access(state,address,sizeof(raw),PW_X86_READ))!=PW_OK)return status;
+        memcpy(raw,(const void *)(uintptr_t)address,sizeof(raw));
+        if(raw[4]!=r->main_base)return PW_ERR_UNSUPPORTED;
+        if((status=r->services.code_address(r->services.opaque,raw[1]))!=PW_OK)return status;
+        char menu[PW_USER32_NAME_MAX+1],name[PW_USER32_NAME_MAX+1];
+        if((status=guest_string(state,raw[8],menu,sizeof(menu),1))!=PW_OK ||
+           (status=guest_string(state,raw[9],name,sizeof(name),0))!=PW_OK)return status;
+        unsigned have_icon=!raw[5],have_cursor=!raw[6];
+        for(uint32_t i=0;i<r->user32->resource_capacity;i++) {
+            const PwUser32Resource *resource=&r->user32->resources[i];
+            if(resource->used && resource->handle==raw[5] && resource->kind==PW_USER32_ICON)
+                have_icon=1;
+            if(resource->used && resource->handle==raw[6] && resource->kind==PW_USER32_SYSTEM_CURSOR)
+                have_cursor=1;
+        }
+        if(!have_icon || !have_cursor)return PW_ERR_UNSUPPORTED;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        PwUser32Class descriptor={0};
+        memcpy(descriptor.menu_name,menu,strlen(menu)+1);
+        memcpy(descriptor.class_name,name,strlen(name)+1);
+        descriptor.style=raw[0];descriptor.wndproc=raw[1];descriptor.class_extra=raw[2];
+        descriptor.window_extra=raw[3];descriptor.module=raw[4];descriptor.icon=raw[5];
+        descriptor.cursor=raw[6];descriptor.background=raw[7];
+        uint16_t atom=0;status=pw_user32_register_class(r->user32,&descriptor,&atom);
+        uint32_t error=0;
+        if(status==PW_ERR_STATE){status=PW_OK;error=1410;atom=0;}
+        else if(status==PW_ERR_LIMIT){status=PW_OK;error=8;atom=0;}
+        if(status!=PW_OK)return status;
+        after.gpr[0]=atom;*state=after;if(error)r->last_error=error;
+        r->calls++;return PW_OK;
+    }
     if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"LoadStringA")) {
         if(!r->services.string_resource || r->services.ansi_codepage!=1252)return PW_ERR_UNSUPPORTED;
         PwGuestCall call={0};uint32_t arg[4];

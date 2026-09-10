@@ -12,6 +12,10 @@ typedef struct PeResource {
  * output is unchanged. Named keys and nonstandard tree depths are unsupported. */
 int pe_resource_find(const PeImage *,uint32_t type,uint32_t name,
                      uint16_t language,PeResource *);
+/* ASCII named-resource lookup. The PE key is compared exactly against its
+ * counted UTF-16 directory name; non-ASCII keys are outside this contract. */
+int pe_resource_find_name(const PeImage *,uint32_t type,const char *name,
+                          uint16_t language,PeResource *);
 /* RT_STRING: 16 counted UTF-16LE strings, no terminating NUL required.
  * Validate the whole block; return the selected borrowed byte span. */
 int pe_resource_string(const PeImage *,uint32_t id,uint16_t language,

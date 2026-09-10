@@ -110,8 +110,8 @@ GetModuleHandleA(NULL), returns its actual mapped base, then calls
 and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA, malloc,
 lstrcpyA and lstrcatA. The registry package then completes the source-confirmed
 read-default and write-default sequences; the exact-binary trace reaches
-`WinMain` and stops at `LoadIconA` after 1,823 instructions and 105 completed
-calls, after an original-game initializer callback has returned.
+`WinMain` and stops at `CreateWindowExA` after 1,944 instructions and 113
+completed calls, after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
@@ -208,6 +208,8 @@ file-backed RVA spans; tree cycles, wrong depths, unsorted/duplicate IDs,
 oversized tables and truncated data are rejected. Language selection is an
 explicit profile: requested language, neutral, then lowest numeric language.
 This is not full Windows locale/MUI fallback. Named-key lookup is pending.
+`pe_resource_find_name` additionally validates bounded ASCII names against
+UTF-16 directory keys; non-ASCII names remain explicitly unsupported.
 `pe_resource_string` validates all 16 counted UTF-16LE strings in an RT_STRING
 block and returns a borrowed span, never a copied proprietary artifact.
 
@@ -218,6 +220,13 @@ capacity 1..4096, truncation, empty/missing resources and exact CP1252 mappings.
 Missing resources return zero without writing the destination; malformed
 resources stop rather than masquerading as missing. Invalid output spans,
 unsupported codepages/characters and invalid frames do not publish output.
+`LoadIconA(hInstance,"ICON_1")` resolves the named `RT_GROUP_ICON` bytes into
+a process-owned, deduplicated icon object; `LoadCursorA(NULL,IDC_ARROW)` does
+the same for a system cursor without inventing a host pointer. `RegisterClassA`
+copies the 40-byte PE32 `WNDCLASSA`, validates its callback against executable
+image storage and preserves its resource ownership links and class metadata.
+Its first exact-binary use is the source-confirmed splash class. Return-frame
+validation precedes every object or class mutation.
 Best-fit/default-character conversion, additional modules, larger capacities,
 LastError reporting and PS5 resource-provider wiring remain pending.
 The provider's UTF-16 span must remain live through dispatch; raw source bytes
@@ -244,7 +253,7 @@ The Win32 dispatcher implements all seven registry imports present in this
 target: `RegCreateKeyExA`, both open variants, both query variants,
 `RegSetValueExA` and `RegCloseKey`. Guest pointers and output spans are checked
 before writes or registry mutation. Source-oracle evidence confirms the startup
-read-default and write-default sequences; the 1,823-instruction host trace
+read-default and write-default sequences; the 1,944-instruction host trace
 executes both. Persistence is intentionally a later injected service—this core
 does not use the host filesystem or claim Windows security/access semantics.
 
