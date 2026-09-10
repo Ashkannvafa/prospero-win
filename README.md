@@ -30,6 +30,11 @@ DRM, anti-cheat and kernel drivers are out of scope.
 - **Verified oracle:** the target SHA-1, public PDB identity and ten public
   symbol addresses match the pinned MIT source reconstruction. The generated
   manifest groups source-confirmed startup, graphics, input and audio APIs.
+- **Reusable PS5 baseline:** `ps5-xash3d` now runs Half-Life 1 gameplay on the
+  same owned FW 12.02 console with native AGC rendering, DualSense input and
+  live game audio. Its public Phase 7 still tracks fidelity, performance,
+  longer soaks and release polish; prospero-win treats the proven platform
+  components as reusable foundations rather than pending research.
 - **Next:** implement the source-confirmed keyboard mapping package and advance
   through main-window creation and the message loop. Wine remains a contract
   and test reference, not a claim of implemented compatibility.

@@ -137,7 +137,14 @@ measure. DRM, anti-cheat and kernel drivers are out of scope.
 
 ## Reuse the Xash3D platform work
 
-Reviewed ps5-xash3d commit 3a3025016131a440782fd1c0e123a85d512887e3.
+Reviewed ps5-xash3d through commit
+`ff6530cdc38067b1cd210c6aa71c43f66d50a3c6`. Half-Life 1 gameplay is now
+operator-validated on the owned FW 12.02 console with the native AGC renderer,
+DualSense controls and live game audio. The Xash3D roadmap still keeps Phase 7
+open for remaining fidelity, performance, long-soak and release work; that
+polish boundary does not reduce the platform layer from a playable hardware
+baseline to an unproven prototype.
+
 Canonical files are xash/platform_ps5/audio_ps5.c/.h and in_ps5.c/.h;
 SNDDMA adapter s_ps5.c remains engine-specific. SCEAUDIOOUT_PHASE5.md,
 SCEPAD_PHASE5.md and HARDWARE_VALIDATION.md document FW 12.02 evidence.
@@ -160,6 +167,11 @@ SCEPAD_PHASE5.md and HARDWARE_VALIDATION.md document FW 12.02 evidence.
   DirectInput import, so a DirectInput implementation is not the first task.
 - Preserve the tested contracts and ps5log/1 counters. Adapted backends need
   their own prospero-win hardware evidence; Xash evidence is the baseline.
+
+This reuse claim covers PS5 platform behavior, not Win32 behavior: prospero-win
+must still implement WAVEHDR/callback, keyboard/message and guest-thread ABIs.
+It should not rebuild the already validated AGC, ScePad, SceAudioOut, memory,
+clock or teardown foundations from scratch.
 
 The source files currently declare GPL-3.0-or-later; prospero-win declares
 LGPL-2.1-or-later. Before extracting source, resolve and document compatible

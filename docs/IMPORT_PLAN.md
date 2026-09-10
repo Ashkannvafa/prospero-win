@@ -70,8 +70,10 @@ data exports. These are declarations, not yet audited argument layouts.
    licensing permit. Add host tests against documented API semantics and
    relevant Wine tests before running the original executable again.
 4. Implement window/messages/GDI together around the PS5 platform boundary,
-   then WinMM/audio and persistence. Adapt reusable Xash3D components only
-   after checking each file's provenance and actual license.
+   then WinMM/audio and persistence. Xash3D's AGC, DualSense and live-audio
+   foundations already have playable Half-Life 1 hardware use; adapt those
+   reusable components after checking each file's provenance and actual
+   license instead of reopening PS5 platform feasibility.
 5. Validate integrated batches with the game, ps5log telemetry and Remote
    Play. x86 instruction execution is a separate required workstream.
 

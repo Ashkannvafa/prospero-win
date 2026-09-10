@@ -142,7 +142,10 @@ structured ps5log/1 evidence and an independently checked result.
 ## First frame to playable Pinball
 
 - [ ] **P3 Message loop.** Window procedures, messages, timers and input.
-  Reuse Xash3D's validated ScePad lifecycle with a Win32 event adapter.
+  Reuse Xash3D's gameplay-validated ScePad lifecycle with a Win32 event adapter;
+  Half-Life 1 already exercises movement, aim, actions and weapon controls on
+  hardware, so the open work is guest message semantics rather than PS5 pad
+  feasibility.
 - [ ] **P4 First frame.** Implement observed graphics calls and present
   through the reusable AGC backend. Determine GDI/DirectDraw requirements
   from the binary; D3D9 is not a prerequisite. Preserve fence, flip-token,
@@ -151,7 +154,8 @@ structured ps5log/1 evidence and an independently checked result.
   score, lose a ball and restart. Check timing and physics against Windows.
   Run continuously until operator closure.
 - [ ] **P6 Complete.** Required audio/music APIs, preferences and scores,
-  adapting Xash3D's PCM backend to WinMM (MIDI/MCI remain separate work),
+  adapting Xash3D's live-game-validated PCM backend to WinMM (MIDI/MCI remain
+  separate work),
   repeated launch/close and a soak with stable memory and no unhandled APIs.
   Record binary/build hashes, telemetry and reviewed video evidence.
 
