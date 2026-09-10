@@ -222,7 +222,9 @@ Next coverage: owned DC/bitmap objects for the source-confirmed splash GDI path,
 TEB initialization and broader FS encodings, plus later wndproc integer/x87 forms.
 The diagnostic tracer uses the tested generation-scoped cache and reports its
 dispatch/publication metrics. Integer-only binary80 execution covers every
-startup x87 form without touching host FP state. Unmasked x87 exceptions now
-produce a distinct pending guest trap with precise PC/retirement and no
-destination publication; guest exception-handler delivery, SSE, cache eviction,
+startup x87 form without touching host FP state. Masked stack overflow and
+underflow now publish AMD's indefinite response, TOP/tag changes, `IE|SF` and
+directional `C1`; unmasked x87 exceptions produce a distinct pending guest trap
+with precise PC/retirement and no destination publication. Guest
+exception-handler delivery, SSE, cache eviction,
 a full memory model and scheduling remain.

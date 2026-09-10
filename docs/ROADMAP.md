@@ -67,7 +67,7 @@ structured ps5log/1 evidence and an independently checked result.
   the host tracer. Forwarders, dynamic imports and most handlers remain pending.
 - [ ] **0.4 Initialisation.** Dependency ordering, TLS, CRT entry, DllMain
   and teardown required by the target. Track unsupported features.
-- [ ] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
+- [x] **P2 Pinball entry.** Expand x86 execution and cdecl/stdcall marshalling
   until the executable reaches application entry.
   Initial Ghidra findings and subsystem packages: [STARTUP_ANALYSIS.md](STARTUP_ANALYSIS.md).
   Immediate approach: use Ghidra on the hash-identified private Pinball PE to
@@ -122,11 +122,14 @@ structured ps5log/1 evidence and an independently checked result.
   original-game callback in host. Registry storage/ABI and error branches have
   synthetic tests. FP control, isolated raw 80-bit state, transfer/constant/status
   operations and startup add/subtract/multiply/divide/compare/square-root families
-  execute without installing guest FP state in the host. Unmasked invalid,
-  divide-by-zero and precision exceptions propagate as a pending guest trap
-  without committing their destination. Guest handler delivery, later x87
+  execute without installing guest FP state in the host. Masked stack faults
+  implement the AMD indefinite-value push/store/pop responses with `IE|SF` and
+  directional `C1`; unmasked stack, invalid, divide-by-zero and precision
+  exceptions propagate as a pending guest trap without committing their
+  destination. Guest handler delivery, later x87
   forms and SSE execution remain pending.
-  This is not application entry or PS5 execution evidence; most APIs are pending.
+  This proves host-side application entry and a precise GDI initialization
+  boundary, not PS5 guest execution or a running game; most APIs are pending.
 - [ ] Implement the observed Win32 surface: process/error state, heap,
   virtual memory, files/resources, registry subset if needed, clocks and
   synchronisation. Unsupported calls identify themselves and stop with a

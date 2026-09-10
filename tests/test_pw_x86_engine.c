@@ -49,6 +49,18 @@ int main(void)
     uint8_t value[10];assert(pw_guest_x87_peek(&state.fp,0,value)==PW_OK);
     assert(pw_guest_x87_peek(&state.fp,1,value)==PW_OK);
     assert(engine.retired_instructions==2);
+
+    const uint8_t x87_stack_trap[]={0xd9,0xe8,0xd9,0xe8,0xd9,0xe8,0xd9,0xe8,
+        0xd9,0xe8,0xd9,0xe8,0xd9,0xe8,0xd9,0xe8,0xd9,0xe8};
+    source=(Source){0x4000,x87_stack_trap,sizeof(x87_stack_trap)};
+    assert(pw_x86_engine_reset(&engine,5)==PW_OK);
+    state=(PwX86State){.eip=0x4000};pw_guest_fp_init(&state.fp);
+    state.fp.x87_control=(uint16_t)(state.fp.x87_control&~1u);
+    assert(pw_x86_engine_step(&engine,&state,&step)==PW_ERR_X87_TRAP);
+    assert(step.instructions==9 && step.retired==8 && state.eip==0x4010 &&
+           state.fp.x87_pending==1 && (state.fp.x87_status&0x02c1)==0x02c1 &&
+           state.fp.x87_tag==0 && ((state.fp.x87_status>>11)&7)==0);
+    assert(engine.retired_instructions==8);
     assert(pw_x86_engine_destroy(&engine)==PW_OK);
     return 0;
 }

@@ -152,5 +152,47 @@ int main(void)
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_ERR_X87_TRAP);
     assert(stored==0xfeedface && (fp.x87_status&0xa0)==0xa0 && fp.x87_pending==32 &&
            fp.x87_tag==before.x87_tag && !memcmp(fp.x87_st,before.x87_st,sizeof(fp.x87_st)));
+
+    /* AMD's masked stack-fault response sets IE+SF and C1 by direction.
+     * Loads push the negative indefinite value; unmasked faults publish only
+     * status/pending state and preserve stack ownership. */
+    const uint8_t indefinite[10]={0,0,0,0,0,0,0,0xc0,0xff,0xff};
+    pw_guest_fp_init(&fp);
+    for(unsigned i=0;i<8;i++)assert(pw_x87_execute(&fp,PW_X87_FLD1,0,NULL)==PW_OK);
+    assert(((fp.x87_status>>11)&7)==0 && fp.x87_tag==0);
+    assert(pw_x87_execute(&fp,PW_X87_FLDZ,0,NULL)==PW_OK);
+    assert((fp.x87_status&0x0241)==0x0241 && ((fp.x87_status>>11)&7)==7 &&
+           pw_guest_x87_peek(&fp,0,got)==PW_OK && !memcmp(got,indefinite,10));
+
+    pw_guest_fp_init(&fp);
+    for(unsigned i=0;i<8;i++)assert(pw_x87_execute(&fp,PW_X87_FLD1,0,NULL)==PW_OK);
+    fp.x87_control=(uint16_t)(fp.x87_control&~1u);before=fp;
+    assert(pw_x87_execute(&fp,PW_X87_FLDZ,0,NULL)==PW_ERR_X87_TRAP);
+    assert((fp.x87_status&0x02c1)==0x02c1 && fp.x87_pending==1 &&
+           (fp.x87_status&0x3800)==(before.x87_status&0x3800) &&
+           fp.x87_tag==before.x87_tag && !memcmp(fp.x87_st,before.x87_st,sizeof(fp.x87_st)));
+
+    pw_guest_fp_init(&fp);stored=0;
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK);
+    assert(stored==0xffc00000u && (fp.x87_status&0x0241)==0x0041 &&
+           ((fp.x87_status>>11)&7)==1 && fp.x87_tag==0xffff);
+    /* Sticky SF does not suppress a later valid instruction. */
+    assert(pw_x87_execute(&fp,PW_X87_FLD1,0,NULL)==PW_OK &&
+           pw_guest_x87_peek(&fp,0,got)==PW_OK && !memcmp(got,ext_one,10));
+
+    pw_guest_fp_init(&fp);fp.x87_control=(uint16_t)(fp.x87_control&~1u);
+    before=fp;stored=0xfeedface;
+    assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_ERR_X87_TRAP);
+    assert(stored==0xfeedface && (fp.x87_status&0x00c1)==0x00c1 && fp.x87_pending==1 &&
+           (fp.x87_status&0x3800)==(before.x87_status&0x3800) && fp.x87_tag==before.x87_tag);
+
+    pw_guest_fp_init(&fp);
+    assert(pw_x87_execute(&fp,PW_X87_FADD_F32,(uintptr_t)&one,NULL)==PW_OK);
+    assert((fp.x87_status&0x0241)==0x0041 && pw_guest_x87_peek(&fp,0,got)==PW_OK &&
+           !memcmp(got,indefinite,10));
+    pw_guest_fp_init(&fp);
+    assert(pw_x87_execute(&fp,PW_X87_FUCOMPP,0,NULL)==PW_OK);
+    assert((fp.x87_status&0x4741)==0x4541 && ((fp.x87_status>>11)&7)==2 &&
+           fp.x87_tag==0xffff);
     return 0;
 }

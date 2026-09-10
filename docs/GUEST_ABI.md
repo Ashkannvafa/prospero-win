@@ -280,10 +280,15 @@ invalid/uninitialized calls, and unchanged host x87/MXCSR controls.
 stack operations, status transfer, add/subtract/multiply/divide, comparisons
 and square root. The translator accepts all 36 source-reachable startup forms;
 synthetic encoding and independently stated IEEE-bit golden vectors cover the
-families. Unmasked invalid, divide-by-zero and precision exceptions now set
-guest status/summary and pending bits, preserve the destination and requested
-pop/store side effects, and propagate `PW_ERR_X87_TRAP` through the generated
-block and engine with exact retired-prefix accounting. Delivery into a guest
+families. Stack overflow and underflow follow the AMD architectural direction
+contract (`IE|SF`, `C1=1` for overflow and `C1=0` for underflow). Masked faults
+complete with the negative indefinite response and the instruction's defined
+push/store/pop behavior; unmasked faults change only status/pending state and
+propagate `PW_ERR_X87_TRAP`. Invalid, divide-by-zero and precision traps likewise
+suppress destination, pop and store publication. These rules have golden-vector
+tests and exact retired-prefix engine coverage; see the
+[AMD64 Architecture Programmer's Manual, Volume 1](https://docs.amd.com/v/u/en-US/24592_3.24).
+Delivery into a guest
 exception handler, later transcendental forms and SSE execution remain pending.
 Every future handler must consume this same
 per-thread state, not host defaults.

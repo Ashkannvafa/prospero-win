@@ -3,7 +3,8 @@
 #include "../include/prospero_win.h"
 #include <string.h>
 
-enum { X87_IE=1, X87_DE=2, X87_OE=8, X87_UE=16, X87_PE=32 };
+enum { X87_IE=1, X87_DE=2, X87_OE=8, X87_UE=16, X87_PE=32,
+       X87_SF=64, X87_C1=0x0200 };
 
 static uint64_t get64(const uint8_t *p)
 {
@@ -144,6 +145,96 @@ static int peek(const PwGuestFp *fp,unsigned logical,uint8_t out[10])
 static int load(PwGuestFp *fp,const uint8_t value[10])
 {
     return pw_guest_x87_push(fp,value);
+}
+static void indefinite80(uint8_t value[10])
+{
+    put80(value,UINT64_C(0xc000000000000000),0xffff);
+}
+static void write_logical(PwGuestFp *fp,unsigned logical,const uint8_t value[10])
+{
+    unsigned slot=(top(fp)+logical)&7;
+    memcpy(fp->x87_st[slot],value,10);set_tag(fp,slot,2);
+}
+static void force_push(PwGuestFp *fp,const uint8_t value[10])
+{
+    unsigned slot=(top(fp)-1)&7;
+    fp->x87_status=(uint16_t)((fp->x87_status&~0x3800u)|(slot<<11));
+    memcpy(fp->x87_st[slot],value,10);set_tag(fp,slot,2);
+}
+static void force_pop(PwGuestFp *fp)
+{
+    unsigned slot=top(fp);memset(fp->x87_st[slot],0,10);set_tag(fp,slot,3);
+    fp->x87_status=(uint16_t)((fp->x87_status&~0x3800u)|(((slot+1)&7)<<11));
+}
+static int stack_fault(PwGuestFp *fp,PwX87Action action,uintptr_t operand,unsigned overflow)
+{
+    fp->x87_status=(uint16_t)((fp->x87_status|X87_SF)&~X87_C1);
+    if(overflow)fp->x87_status=(uint16_t)(fp->x87_status|X87_C1);
+    int status=exception(fp,X87_IE);if(status!=PW_OK)return status;
+    uint8_t indefinite[10];indefinite80(indefinite);
+    switch(action) {
+    case PW_X87_FLD_F32:case PW_X87_FLD_F64:case PW_X87_FILD_I32:
+    case PW_X87_FLD_ST:case PW_X87_FLD1:case PW_X87_FLDZ:
+        force_push(fp,indefinite);break;
+    case PW_X87_FST_F32: {
+        uint32_t value=0xffc00000u;memcpy((void *)operand,&value,4);break;
+    }
+    case PW_X87_FSTP_F32: {
+        uint32_t value=0xffc00000u;memcpy((void *)operand,&value,4);force_pop(fp);break;
+    }
+    case PW_X87_FSTP_F64: {
+        uint64_t value=UINT64_C(0xfff8000000000000);
+        memcpy((void *)operand,&value,8);force_pop(fp);break;
+    }
+    case PW_X87_FSTP_ST:
+        write_logical(fp,(unsigned)operand,indefinite);force_pop(fp);break;
+    case PW_X87_FCOMP_F32:case PW_X87_FCOMP_F64:
+        fp->x87_status=(uint16_t)((fp->x87_status&~0x4500u)|0x4500u);force_pop(fp);break;
+    case PW_X87_FUCOMPP:
+        fp->x87_status=(uint16_t)((fp->x87_status&~0x4500u)|0x4500u);
+        force_pop(fp);force_pop(fp);break;
+    case PW_X87_FCOM_F32:case PW_X87_FCOM_F64:case PW_X87_FCOM_ST:
+        fp->x87_status=(uint16_t)((fp->x87_status&~0x4500u)|0x4500u);break;
+    case PW_X87_FADDP_ST:case PW_X87_FDIVP_ST:
+        write_logical(fp,(unsigned)operand,indefinite);force_pop(fp);break;
+    case PW_X87_FABS:case PW_X87_FSQRT:
+    case PW_X87_FADD_F32:case PW_X87_FADD_F64:
+    case PW_X87_FMUL_F32:case PW_X87_FMUL_F64:
+    case PW_X87_FSUB_F32:case PW_X87_FSUBR_F32:
+    case PW_X87_FDIV_F32:case PW_X87_FDIVR_F64:
+    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FDIV_ST:
+        write_logical(fp,0,indefinite);break;
+    case PW_X87_FNSTSW_AX:return PW_ERR_STATE;
+    }
+    return PW_OK;
+}
+static int stack_preflight(PwGuestFp *fp,PwX87Action action,uintptr_t operand)
+{
+    unsigned push=action==PW_X87_FLD_F32 || action==PW_X87_FLD_F64 ||
+        action==PW_X87_FILD_I32 || action==PW_X87_FLD_ST ||
+        action==PW_X87_FLD1 || action==PW_X87_FLDZ;
+    if(push) {
+        if(action==PW_X87_FLD_ST && tag(fp,(top(fp)+(unsigned)operand)&7)==3) {
+            int status=stack_fault(fp,action,operand,0);return status==PW_OK?1:status;
+        }
+        if(tag(fp,(top(fp)-1)&7)!=3) {
+            int status=stack_fault(fp,action,operand,1);return status==PW_OK?1:status;
+        }
+        return PW_OK;
+    }
+    if(action==PW_X87_FNSTSW_AX)return PW_OK;
+    unsigned logical=0;
+    switch(action) {
+    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FDIV_ST:
+    case PW_X87_FADDP_ST:case PW_X87_FDIVP_ST:case PW_X87_FCOM_ST:
+        logical=(unsigned)operand;break;
+    case PW_X87_FUCOMPP:logical=1;break;
+    default:break;
+    }
+    if(tag(fp,top(fp))==3 || (logical && tag(fp,(top(fp)+logical)&7)==3)) {
+        int status=stack_fault(fp,action,operand,0);return status==PW_OK?1:status;
+    }
+    return PW_OK;
 }
 static int store_memory(PwGuestFp *fp,uintptr_t operand,unsigned bits,unsigned pop)
 {
@@ -374,6 +465,18 @@ static int compare(PwGuestFp *fp,Soft80 rhs,unsigned pop_count)
 int pw_x87_execute(PwGuestFp *fp,PwX87Action action,uintptr_t operand,uint16_t *ax)
 {
     if(!fp || !fp->initialized)return fp?PW_ERR_STATE:PW_ERR_PRECONDITION;
+    if((unsigned)action>PW_X87_FUCOMPP)return PW_ERR_UNSUPPORTED;
+    switch(action) {
+    case PW_X87_FLD_ST:case PW_X87_FSTP_ST:
+    case PW_X87_FADD_ST:case PW_X87_FMUL_ST:case PW_X87_FSUB_ST:case PW_X87_FDIV_ST:
+    case PW_X87_FADDP_ST:case PW_X87_FDIVP_ST:case PW_X87_FCOM_ST:
+        if(operand>=8)return PW_ERR_PRECONDITION;
+        break;
+    default:break;
+    }
+    int preflight=stack_preflight(fp,action,operand);
+    if(preflight<0)return preflight;
+    if(preflight>0)return PW_OK;
     uint8_t value[10];uint32_t u32;uint64_t u64;int status;
     switch(action) {
     case PW_X87_FLD_F32:
