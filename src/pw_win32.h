@@ -6,6 +6,7 @@
 #include "pw_guest_args.h"
 #include "pw_guest_heap.h"
 #include "pw_registry.h"
+#include "pw_user32.h"
 enum { PW_WIN32_TOKEN_BASE=0xe0000000u, PW_WIN32_CALLBACK_BASE=0xe1000000u,
        PW_WIN32_INIT_DEPTH=8, PW_WIN32_INIT_ENTRIES=1024 };
 typedef struct PwWin32Init {
@@ -25,6 +26,8 @@ typedef struct PwWin32Services {
      * not malformed input. Provider owns module and language selection. */
     int (*string_resource)(void *,uint32_t,uint32_t,const uint8_t **,size_t *);
     unsigned ansi_codepage; /* currently exact CP1252 conversion only */
+    /* Stable guest-visible DOS path for the main image, never a host path. */
+    const char *main_module_filename;
 } PwWin32Services;
 typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
@@ -32,6 +35,7 @@ typedef struct PwWin32 {
     uint32_t new_mode;
     PwGuestHeap *heap; /* owner-supplied arena, registered RW in guest memory */
     PwRegistry *registry; /* owner-supplied fixed-capacity Win32 registry */
+    PwUser32 *user32; /* owner-supplied registered-message/window namespace */
     uint32_t crt_errno; /* logical per-guest-thread errno; pointer export pending */
     uint32_t last_error; /* Win32 per-guest-thread error, distinct from CRT errno */
     uint16_t startup_show; /* explicit GUI launch profile: SW_SHOWNORMAL by default */

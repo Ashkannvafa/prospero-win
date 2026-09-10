@@ -146,8 +146,9 @@ kind=host-heap-summary blocks=3 live=2 requested=2041 arena=8388608 valid=1
 
 That historical trace stopped at `RegCreateKeyExA`. The current registry
 package completes create/query/close and create/set/close using real guest
-arguments. The current trace reaches 723 translated instructions and stops at
-`GetModuleFileNameA`; two live allocations request 541 bytes at that point.
+arguments. The current exact-binary trace reaches the verified `WinMain`
+address and retires 1,823 translated instructions before stopping at
+`LoadIconA`; one live allocation requests 37 bytes at that point.
 Before it, malloc, string and resource calls construct the startup state. The CRT reads
 the GUI startup profile, walks the command line and
 the second `_initterm` returns. Its original-game callback has completed through the translator and
@@ -169,8 +170,11 @@ and signed overflow; LEAVE/RET tests cover full frame teardown and invalid EBP.
 Byte tests cover all low/high register MOV combinations, partial-register
 preservation, comparison/test flags, last-byte memory access and crossing
 faults. INC/DEC preserve guest CF while updating the other arithmetic flags.
-The tracer accepts an optional maximum of 1..65536 events, validated before
-opening the executable. Default-budget and explicit-budget regressions remain.
+The tracer accepts an optional maximum of 1..65536 events and an optional
+generic hexadecimal PC milestone, both validated before opening the executable.
+It reports DBT dispatch, cache hit/miss/publication, retired-instruction,
+emitted-byte and generation metrics. Default-budget, explicit-budget, cache-hit
+and milestone regressions are synthetic and require no proprietary input.
 RET imm16 tests cover zero, odd and boundary cleanup sizes, oversized cleanup
 rejection, unchanged flags, and an actual translated stdcall callback with
 two arguments. Return-PC reads and final ESP validation precede state publication.

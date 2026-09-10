@@ -26,11 +26,15 @@ typedef struct PwX86State {
 typedef struct PwX86Block {
     size_t source_bytes, code_bytes;
     uint32_t instructions;
+    /* End offset of each guest instruction. This lets the dispatcher report
+     * the precise retired prefix when a generated memory guard exits early. */
+    uint16_t instruction_ends[32];
 } PwX86Block;
 
 /* Initial bounded DBT subset: push immediate/register/memory, pop register,
  * mov register/immediate, register/register or registered memory (ModRM/SIB),
- * MOV immediate/register or memory, register/memory ADD/SUB/XOR with arithmetic flags,
+ * MOV immediate/register or memory, register/memory ADD/OR/ADC/SBB/AND/SUB/XOR
+ * with arithmetic flags,
  * NOT/NEG register/memory, LEAVE,
  * byte MOV/CMP/TEST (including high registers), register/memory INC/DEC,
  * immediate ALU 16/32-bit (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP),

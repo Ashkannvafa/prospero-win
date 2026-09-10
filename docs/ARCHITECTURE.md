@@ -21,6 +21,9 @@ src/               the portable loader core
   pw_registry   fixed-capacity guest keys, values and opaque handles
   pw_x86_block  bounded x86-to-x86-64 translation
   pw_x86_cache  mapping-generation-scoped translated-block lifecycle
+  pw_x86_engine source-span translation, cache dispatch and RW-to-RX publication
+  pw_user32     process-owned message/window namespace and common-control state
+  pw_crt_format allocation-free guest varargs formatting subset
   pw_guest_fp   isolated x87/SSE control and raw 80-bit stack state
   pw_vm_posix   anonymous-mapping backend (host and console)
   pw_file_posix directory backend (host tools and tests only)
@@ -128,3 +131,18 @@ relocation table, an unknown relocation type, and a verification mismatch.
 A failed load releases every reservation it had already made and closes every
 span it had opened, so `PW_EXIT` on a failing run is as trustworthy as on a
 passing one.
+
+## Translated block ownership
+
+`PwX86Engine` owns one executable arena and borrows both immutable executable
+source spans and fixed-capacity cache metadata. A mapping generation identifies
+the lifetime of source bytes. Compilation takes the maximal valid prefix up to
+the explicit block limits, emits while the arena is writable, publishes the
+entry only after copying, and seals the complete arena read/execute before
+dispatch. A protection failure poisons the engine; reset invalidates every
+entry and changes the generation before translation resumes.
+
+Blocks retain every guest instruction end offset. If a translated memory guard
+fails midway, the dispatcher reports only the exact retired prefix. Cache and
+retirement metrics are part of the runner's structured host evidence; they are
+not a throughput claim and do not imply PS5 execution.

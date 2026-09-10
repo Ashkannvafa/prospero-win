@@ -14,19 +14,19 @@ DRM, anti-cheat and kernel drivers are out of scope.
   protection, dependency classification, verification and release.
 - **Measured:** the tested LDT route is refused; low allocations and
   mprotect RW-to-RX/RWX work in a title.
-- **Host progress:** 723 translated instructions, 38 completed Win32/CRT calls and
-  one original initializer callback completed
-  from original Pinball startup; 207 imports bound as 205 functions/2 data.
-  Heap, startup, initial strings and the seven-function registry package have
-  unit coverage. The next classified stop is `GetModuleFileNameA`.
-- **Measured execution scope:** 22,816/25,538 reachable static instructions
+- **Host progress:** the exact Pinball binary reaches its public-PDB-verified
+  `WinMain` address through generation-scoped cached multi-instruction blocks:
+  1,823 instructions and 105 completed calls (30 distinct APIs). The measured
+  run records 417 dispatches, 270 cache hits and 147 published blocks. The next
+  classified stop is `LoadIconA`, before window-class registration.
+- **Measured execution scope:** 22,839/25,538 reachable static instructions
   are accepted. The 2,300 x87 occurrences reduce to 54 unique semantic forms
   (36 in the startup graph), not 2,300 separate implementation tasks.
 - **Verified oracle:** the target SHA-1, public PDB identity and ten public
   symbol addresses match the pinned MIT source reconstruction. The generated
   manifest groups source-confirmed startup, graphics, input and audio APIs.
-- **Next:** integrate the new block-cache lifecycle, implement the measured
-  x87 forms and continue source-ranked Win32 packages. Wine remains a contract
+- **Next:** implement the 36 startup x87 forms and the resource/window ownership
+  package beginning at `LoadIconA`. Wine remains a contract
   and test reference, not a claim of implemented compatibility.
 - **Not yet implemented:** a complete execution engine, Win32 API surface
   or a running Windows game.

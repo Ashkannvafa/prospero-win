@@ -7,6 +7,7 @@ typedef struct PwX86CacheEntry {
     uint32_t guest_pc,generation;
     size_t code_offset,code_bytes,source_bytes;
     uint32_t instructions;
+    uint16_t instruction_ends[32];
     unsigned used;
 } PwX86CacheEntry;
 

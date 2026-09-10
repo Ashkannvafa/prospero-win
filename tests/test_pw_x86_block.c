@@ -71,6 +71,13 @@ static void addressing_tests(void)
 }
 static void arithmetic_tests(void)
 {
+    for(unsigned carry=0;carry<2;carry++) {
+        state.gpr[0]=7;state.eflags=0x202|carry;
+        const uint8_t sbb[]={0x1b,0xc0};
+        assert(run(sbb,sizeof(sbb),0x8f0)==0);
+        assert(state.gpr[0]==(carry?0xffffffffu:0));
+        assert((state.eflags&1)==carry);
+    }
     const uint32_t values[]={0,1,15,16,0x7fffffffu,0x80000000u,0xffffffffu};
     for(unsigned a=0;a<7;a++)for(unsigned b=0;b<7;b++)
         for(unsigned direction=0;direction<2;direction++) {

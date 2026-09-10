@@ -109,8 +109,9 @@ GetModuleHandleA(NULL), returns its actual mapped base, then calls
 `__set_app_type`, `__p__fmode`, `__p__commode`, `_controlfp`, `_initterm`, `__getmainargs`
 and the time/identity calls plus GetStartupInfoA, LoadStringA, lstrlenA, malloc,
 lstrcpyA and lstrcatA. The registry package then completes the source-confirmed
-read-default and write-default sequences; the trace stops at GetModuleFileNameA
-after 723 instructions, after an original-game initializer callback has returned.
+read-default and write-default sequences; the exact-binary trace reaches
+`WinMain` and stops at `LoadIconA` after 1,823 instructions and 105 completed
+calls, after an original-game initializer callback has returned.
 The pointer getters now have original-game
 host execution evidence as well as unit coverage.
 Synthetic PE tests cover binding,
@@ -243,7 +244,7 @@ The Win32 dispatcher implements all seven registry imports present in this
 target: `RegCreateKeyExA`, both open variants, both query variants,
 `RegSetValueExA` and `RegCloseKey`. Guest pointers and output spans are checked
 before writes or registry mutation. Source-oracle evidence confirms the startup
-read-default and write-default sequences; the 723-instruction host trace
+read-default and write-default sequences; the 1,823-instruction host trace
 executes both. Persistence is intentionally a later injected service—this core
 does not use the host filesystem or claim Windows security/access semantics.
 

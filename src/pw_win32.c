@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "pw_win32.h"
+#include "pw_crt_format.h"
 #include "pw_module_name.h"
 #include <string.h>
 #include "pw_win32_catalog.h"
@@ -75,6 +76,33 @@ static int guest_string(PwX86State *s,uint32_t address,char *output,size_t capac
     if(status!=PW_OK)return status;
     if((uint64_t)length+1>capacity)return PW_ERR_LIMIT;
     memcpy(output,(const void *)(uintptr_t)address,(size_t)length+1);return PW_OK;
+}
+static int writable_capacity(PwX86State *s,uint32_t address,size_t limit,size_t *capacity)
+{
+    if(!address || !capacity || !limit || s->memory_count>PW_X86_MEMORY_REGIONS)return PW_ERR_VM;
+    uint64_t best=0;
+    if(address>=s->stack_low && address<s->stack_high)best=s->stack_high-address;
+    for(unsigned i=0;i<s->memory_count;i++) {
+        const PwX86Memory *m=&s->memory[i];
+        if((m->permissions&PW_X86_WRITE) && m->high<=0x100000000ull &&
+           address>=m->low && address<m->high && m->high-address>best)best=m->high-address;
+    }
+    if(!best)return PW_ERR_VM;
+    *capacity=(size_t)(best<limit?best:limit);return PW_OK;
+}
+typedef struct FormatGuest { const PwGuestCall *call;PwX86State *state; } FormatGuest;
+static int format_u32(void *opaque,unsigned index,uint32_t *value)
+{
+    FormatGuest *guest=opaque;
+    if(index>(UINT32_MAX-8)/4)return PW_ERR_LIMIT;
+    return pw_guest_call_u32(guest->call,8+index*4,value);
+}
+static int format_string(void *opaque,uint32_t address,char *output,size_t capacity,size_t *length)
+{
+    FormatGuest *guest=opaque;uint32_t n;int status=string_length(guest->state,address,&n);
+    if(status!=PW_OK)return status;
+    if((uint64_t)n+1>capacity)return PW_ERR_LIMIT;
+    memcpy(output,(const void *)(uintptr_t)address,(size_t)n+1);*length=n;return PW_OK;
 }
 static int registry_dispatch(PwWin32 *r,PwX86State *state)
 {
@@ -256,6 +284,43 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
        pw_catalog[index].kind!=PW_IMPORT_FUNCTION)return PW_ERR_NOT_FOUND;
     r->last_dll=pw_catalog[index].dll;r->last_name=pw_catalog[index].name;
     if(!strcmp(r->last_dll,"advapi32.dll"))return registry_dispatch(r,state);
+    if(!strcmp(r->last_dll,"user32.dll") &&
+       (!strcmp(r->last_name,"RegisterWindowMessageA") || !strcmp(r->last_name,"FindWindowA"))) {
+        if(!r->user32)return PW_ERR_STATE;
+        unsigned find=!strcmp(r->last_name,"FindWindowA");PwGuestCall call={0};uint32_t a[2]={0};
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,find?8:4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&a[0]))!=PW_OK ||
+           (find && (status=pw_guest_call_u32(&call,4,&a[1]))!=PW_OK))return status;
+        char first[PW_USER32_NAME_MAX+1],second[PW_USER32_NAME_MAX+1];uint32_t result=0;
+        if((status=guest_string(state,a[0],first,sizeof(first),find))!=PW_OK)return status;
+        if(find && (status=guest_string(state,a[1],second,sizeof(second),1))!=PW_OK)return status;
+        /* Validate the return frame before a registration can mutate the
+         * process-owned User32 namespace. */
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,0))!=PW_OK)return status;
+        if(find)status=pw_user32_find_window(r->user32,a[0]?first:NULL,a[1]?second:NULL,&result);
+        else status=pw_user32_register_message(r->user32,first,&result);
+        uint32_t error=0;
+        if(status==PW_ERR_PRECONDITION || status==PW_ERR_LIMIT){error=status==PW_ERR_LIMIT?8:87;result=0;status=PW_OK;}
+        if(status!=PW_OK)return status;
+        after.gpr[0]=result;
+        *state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"comctl32.dll") && !strcmp(r->last_name,"InitCommonControlsEx")) {
+        if(!r->user32)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t address,descriptor[2];
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&address))!=PW_OK ||
+           (status=range_access(state,address,sizeof(descriptor),PW_X86_READ))!=PW_OK)return status;
+        memcpy(descriptor,(const void *)(uintptr_t)address,sizeof(descriptor));
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,1))!=PW_OK)return status;
+        status=pw_user32_init_common_controls(r->user32,descriptor[0],descriptor[1]);
+        if(status!=PW_OK)return status;
+        *state=after;r->calls++;return PW_OK;
+    }
     if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"LoadStringA")) {
         if(!r->services.string_resource || r->services.ansi_codepage!=1252)return PW_ERR_UNSUPPORTED;
         PwGuestCall call={0};uint32_t arg[4];
@@ -289,6 +354,73 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         if(status==PW_OK)status=pw_guest_call_finish(&call,32,r->last_error);
         if(status==PW_OK)r->calls++;
         return status;
+    }
+    if(kernel && !strcmp(r->last_name,"GetModuleFileNameA")) {
+        PwGuestCall call={0};uint32_t module,destination,capacity;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,12,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&module))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&destination))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,8,&capacity))!=PW_OK)return status;
+        if(module && module!=r->main_base)return PW_ERR_UNSUPPORTED;
+        const char *filename=r->services.main_module_filename;
+        if(!filename)return PW_ERR_STATE;
+        size_t length=0;
+        while(length<=PW_PATH_MAX && filename[length])length++;
+        if(length>PW_PATH_MAX)return PW_ERR_LIMIT;
+        size_t written=length<capacity?length+1:capacity;
+        if(written && (status=range_access(state,destination,written,PW_X86_WRITE))!=PW_OK)
+            return status;
+        PwX86State after=*state;call.state=&after;
+        uint32_t result=length<capacity?(uint32_t)length:capacity;
+        if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
+        if(written)memcpy((void *)(uintptr_t)destination,filename,written);
+        *state=after;r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"msvcrt.dll") && !strcmp(r->last_name,"sprintf")) {
+        PwGuestCall call={0};uint32_t destination,format_address;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_CDECL,8,1);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&destination))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&format_address))!=PW_OK)return status;
+        char format[1024],output[4096];
+        if((status=guest_string(state,format_address,format,sizeof(format),0))!=PW_OK)return status;
+        size_t capacity;
+        if((status=writable_capacity(state,destination,sizeof(output),&capacity))!=PW_OK)return status;
+        FormatGuest guest={&call,state};PwCrtFormatInput input={&guest,format_u32,format_string};
+        uint32_t length;
+        if((status=pw_crt_format_ascii(output,capacity,format,&input,&length))!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,length))!=PW_OK)return status;
+        memcpy((void *)(uintptr_t)destination,output,(size_t)length+1);
+        *state=after;r->calls++;return PW_OK;
+    }
+    unsigned compare_string=kernel && !strcmp(r->last_name,"lstrcmpA");
+    unsigned search_string=!strcmp(r->last_dll,"msvcrt.dll") && !strcmp(r->last_name,"strstr");
+    if(compare_string || search_string) {
+        PwGuestCall call={0};uint32_t first,second,first_length,second_length;
+        int status=pw_guest_call_begin(&call,state,
+            compare_string?PW_GUEST_STDCALL:PW_GUEST_CDECL,8,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&first))!=PW_OK ||
+           (status=pw_guest_call_u32(&call,4,&second))!=PW_OK ||
+           (status=string_length(state,first,&first_length))!=PW_OK ||
+           (status=string_length(state,second,&second_length))!=PW_OK)return status;
+        const uint8_t *a=(const uint8_t *)(uintptr_t)first;
+        const uint8_t *b=(const uint8_t *)(uintptr_t)second;uint32_t result=0;
+        if(compare_string) {
+            uint32_t common=first_length<second_length?first_length:second_length;int order=0;
+            for(uint32_t i=0;i<common && !order;i++)order=a[i]<b[i]?-1:a[i]>b[i]?1:0;
+            if(!order)order=first_length<second_length?-1:first_length>second_length?1:0;
+            result=(uint32_t)order;
+        } else if(!second_length)result=first;
+        else if(second_length<=first_length) {
+            for(uint32_t i=0;i<=first_length-second_length;i++)
+                if(!memcmp(a+i,b,second_length)){result=first+i;break;}
+        }
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
+        *state=after;r->calls++;return PW_OK;
     }
     unsigned bounded=kernel && !strcmp(r->last_name,"lstrcpynA");
     unsigned append=kernel && !strcmp(r->last_name,"lstrcatA");

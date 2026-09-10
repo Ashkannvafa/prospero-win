@@ -1,0 +1,42 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+#include "../src/pw_x86_engine.h"
+#include "../src/pw_vm_posix.h"
+#include <assert.h>
+
+typedef struct Source { uint32_t base;const uint8_t *data;size_t bytes; } Source;
+static int source_view(void *opaque,uint32_t pc,const uint8_t **data,size_t *bytes)
+{
+    Source *s=opaque;
+    if(pc<s->base || (uint64_t)pc>=s->base+s->bytes)return PW_ERR_NOT_FOUND;
+    size_t offset=pc-s->base;*data=s->data+offset;*bytes=s->bytes-offset;return PW_OK;
+}
+
+int main(void)
+{
+    const uint8_t loop[]={0x40,0xeb,0xfd}; /* inc eax; jmp to block start */
+    Source source={0x1000,loop,sizeof(loop)};PwVmBackend vm;PwX86Engine engine;
+    PwX86CacheEntry entries[8];PwX86State state={.eip=0x1000};PwX86StepReport step;
+    assert(pw_vm_posix_backend(&vm)==PW_OK);
+    assert(pw_x86_engine_init(&engine,&vm,entries,8,4096,1,source_view,&source)==PW_OK);
+    assert(pw_x86_engine_step(&engine,&state,&step)==PW_OK);
+    assert(step.instructions==2 && step.retired==2 && !step.cache_hit);
+    assert(state.eip==0x1000 && state.gpr[0]==1 && engine.cache.publishes==1);
+    assert(pw_x86_engine_step(&engine,&state,&step)==PW_OK);
+    assert(step.instructions==2 && step.retired==2 && step.cache_hit);
+    assert(state.eip==0x1000 && state.gpr[0]==2 && engine.cache.hits==1);
+    assert(engine.dispatches==2 && engine.retired_instructions==4);
+
+    assert(pw_x86_engine_reset(&engine,2)==PW_OK);
+    state.eip=0x1000;
+    assert(pw_x86_engine_step(&engine,&state,&step)==PW_OK && !step.cache_hit);
+    assert(engine.cache.generation==2 && engine.cache.publishes==2 && engine.cache.resets==1);
+
+    const uint8_t fault[]={0xbc,0,0,0,0,0x50}; /* mov esp,0; push esp */
+    source=(Source){0x2000,fault,sizeof(fault)};
+    assert(pw_x86_engine_reset(&engine,3)==PW_OK);state=(PwX86State){.eip=0x2000};
+    assert(pw_x86_engine_step(&engine,&state,&step)==PW_ERR_VM);
+    assert(step.instructions==2 && step.retired==1 && state.eip==0x2005);
+    assert(engine.retired_instructions==1);
+    assert(pw_x86_engine_destroy(&engine)==PW_OK);
+    return 0;
+}

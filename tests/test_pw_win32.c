@@ -199,6 +199,59 @@ static void copy_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
     assert(r->crt_errno==77);
     assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
 }
+static void search_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
+{
+    PwVmRegion text;
+    assert(vm->reserve_at(NULL,0x03400000,4096,4096,&text)==PW_OK);
+    assert(vm->commit(NULL,&text,0,4096,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+    s->memory_count=1;s->memory[0]=(PwX86Memory){0x03400000,0x03401000,PW_X86_READ};
+    strcpy((char *)(uintptr_t)0x03400000,"pinball -quick demo");
+    strcpy((char *)(uintptr_t)0x03400100,"-quick");
+    strcpy((char *)(uintptr_t)0x03400200,"pinball -quick demo");
+    const char *names[]={"strstr","strstr","lstrcmpA","lstrcmpA"};
+    const char *dlls[]={"msvcrt.dll","msvcrt.dll","kernel32.dll","kernel32.dll"};
+    uint32_t right[]={0x03400100,0x03400300,0x03400200,0x03400100};
+    strcpy((char *)(uintptr_t)0x03400300,"missing");
+    uint32_t expected[]={0x03400008,0,0,1};
+    for(unsigned i=0;i<4;i++) {
+        PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,names[i]);
+        assert(pw_win32_resolve(r,dlls[i],&symbol,&target)==PW_OK);
+        s->gpr[4]=s->stack_high-12;s->eip=(uint32_t)target.address;s->eflags=0xad7;
+        uint32_t frame[]={0x01001234,0x03400000,right[i]};
+        memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));
+        assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==expected[i] &&
+               s->eip==frame[0] && s->eflags==0xad7);
+        assert(s->gpr[4]==s->stack_high-(i<2?8:0));
+    }
+    assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
+}
+static void user32_tests(PwWin32 *r,PwX86State *s)
+{
+    uint32_t name=s->stack_low+256,title=s->stack_low+320;
+    strcpy((char *)(uintptr_t)name,"PinballUniqueMessage");
+    strcpy((char *)(uintptr_t)title,"3D Pinball");
+    PeImportSymbol symbol={0};PwImportTarget target;
+    strcpy(symbol.name,"RegisterWindowMessageA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    s->gpr[4]=s->stack_high-8;s->eip=(uint32_t)target.address;s->eflags=0xad7;
+    uint32_t message_frame[]={0x01001234,name};
+    memcpy((void *)(uintptr_t)s->gpr[4],message_frame,sizeof(message_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==0xc000 &&
+           s->gpr[4]==s->stack_high && s->eip==message_frame[0] && s->eflags==0xad7);
+    strcpy(symbol.name,"FindWindowA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    s->gpr[4]=s->stack_high-12;s->eip=(uint32_t)target.address;
+    uint32_t find_frame[]={0x01001234,name,0};
+    memcpy((void *)(uintptr_t)s->gpr[4],find_frame,sizeof(find_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] && s->gpr[4]==s->stack_high);
+    r->user32->windows[0]=(PwUser32Window){.handle=0x10001,.used=1};
+    strcpy(r->user32->windows[0].class_name,"PinballUniqueMessage");
+    strcpy(r->user32->windows[0].title,"3D Pinball");
+    find_frame[2]=title;s->gpr[4]=s->stack_high-12;s->eip=(uint32_t)target.address;
+    memcpy((void *)(uintptr_t)s->gpr[4],find_frame,sizeof(find_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==0x10001);
+    r->user32->windows[0]=(PwUser32Window){0};
+}
 static int registry_call(PwWin32 *r,PwX86State *s,const char *name,
                          const uint32_t *args,unsigned count)
 {
@@ -268,9 +321,12 @@ int main(void)
     assert(vm.commit(NULL,&data,0,8192,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
     PwWin32 runtime={0};
     assert(pw_win32_init(&runtime,0x01000000,0x03000000,"\"C:\\game\\sample.exe\"")==PW_OK);
+    runtime.services.main_module_filename="C:\\game\\sample.exe";
     PwRegistry registry;PwRegistryKey registry_keys[8];PwRegistryValue registry_values[16];
     assert(pw_registry_init(&registry,registry_keys,8,registry_values,16)==PW_OK);
-    runtime.registry=&registry;
+    PwUser32 user32;PwUser32Message user_messages[8];PwUser32Window user_windows[8];
+    assert(pw_user32_init(&user32,user_messages,8,user_windows,8)==PW_OK);
+    runtime.registry=&registry;runtime.user32=&user32;
     PeImportSymbol symbol={0};PwImportTarget target;
     strcpy(symbol.name,"_acmdln");
     assert(pw_win32_resolve(&runtime,"MSVCRT.DLL",&symbol,&target)==PW_OK && target.kind==PW_IMPORT_DATA);
@@ -287,10 +343,35 @@ int main(void)
     assert(pw_win32_dispatch(&runtime,&state)==PW_OK);
     assert(state.gpr[0]==0x01000000 && state.eip==words[0] && state.gpr[4]==state.stack_high);
     assert(runtime.calls==1);
+    strcpy(symbol.name,"GetModuleFileNameA");
+    assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_OK);
+    for(unsigned test=0;test<4;test++) {
+        uint32_t destination=state.stack_low+64,capacity=test==0?64:test==1?4:test==2?0:64;
+        uint32_t module=test==3?0x02000000:0;
+        memset((void *)(uintptr_t)destination,0xcc,64);
+        state.gpr[4]=state.stack_high-16;state.eip=(uint32_t)target.address;state.gpr[0]=0xaabbccdd;
+        uint32_t filename_frame[]={0x01001234,module,destination,capacity};
+        memcpy((void *)(uintptr_t)state.gpr[4],filename_frame,sizeof(filename_frame));
+        PwX86State filename_before=state;unsigned filename_calls=runtime.calls;
+        int expected=test==3?PW_ERR_UNSUPPORTED:PW_OK;
+        assert(pw_win32_dispatch(&runtime,&state)==expected);
+        if(expected==PW_OK) {
+            uint32_t length=test==0?18:test==1?4:0;
+            assert(state.gpr[0]==length && state.gpr[4]==state.stack_high &&
+                   state.eip==filename_frame[0] && runtime.calls==filename_calls+1);
+            if(test==0)assert(!strcmp((char *)(uintptr_t)destination,"C:\\game\\sample.exe"));
+            else if(test==1)assert(!memcmp((void *)(uintptr_t)destination,"C:\\g",4) &&
+                                   *(uint8_t *)(uintptr_t)(destination+4)==0xcc);
+            else assert(*(uint8_t *)(uintptr_t)destination==0xcc);
+        } else assert(!memcmp(&state,&filename_before,sizeof(state)) && runtime.calls==filename_calls);
+    }
+    strcpy(symbol.name,"GetModuleHandleA");
+    assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_OK);
     state.gpr[4]-=8;state.eip=(uint32_t)target.address;words[1]=0x03000010;
     memcpy((void *)(uintptr_t)state.gpr[4],words,8);PwX86State before=state;
+    unsigned calls_before=runtime.calls;
     assert(pw_win32_dispatch(&runtime,&state)==PW_ERR_UNSUPPORTED);
-    assert(memcmp(&state,&before,sizeof(state))==0 && runtime.calls==1);
+    assert(memcmp(&state,&before,sizeof(state))==0 && runtime.calls==calls_before);
     strcpy(symbol.name,"GetLastError");
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_OK);
     state.gpr[4]=state.stack_high-4;state.eip=(uint32_t)target.address;
@@ -381,6 +462,8 @@ int main(void)
     string_tests(&runtime,&state);
     length_tests(&runtime,&state,&vm);
     copy_tests(&runtime,&state,&vm);
+    search_tests(&runtime,&state,&vm);
+    user32_tests(&runtime,&state);
     registry_tests(&runtime,&state);
     heap_tests(&runtime,&state,&vm);
     assert(vm.release(NULL,&data)==PW_OK);return 0;

@@ -5,7 +5,7 @@
 #include "../src/pe_image.h"
 #include "../src/pe_resource.h"
 #include "../src/pw_map.h"
-#include "../src/pw_x86_block.h"
+#include "../src/pw_x86_engine.h"
 #include "../src/pw_vm_posix.h"
 #include "../src/pw_win32.h"
 #include <stdio.h>
@@ -13,15 +13,29 @@
 #include <string.h>
 #include <time.h>
 
-#if defined(__clang__)
-__attribute__((no_sanitize("function")))
-#endif
-static int invoke(void *entry,PwX86State *state)
-{ return ((int (*)(PwX86State *))entry)(state); }
 static PwImportBindWorkspace binding_work;
 static PwHeapBlock heap_blocks[4096];
 static PwRegistryKey registry_keys[32];
 static PwRegistryValue registry_values[128];
+static PwUser32Message user_messages[128];
+static PwUser32Window user_windows[128];
+static PwX86CacheEntry cache_entries[8192];
+typedef struct TraceSource { const PeImage *image;const PeLayout *layout; } TraceSource;
+static int trace_source(void *opaque,uint32_t pc,const uint8_t **source,size_t *bytes)
+{
+    const TraceSource *view=opaque;
+    if(pc<view->image->image_base)return PW_ERR_NOT_FOUND;
+    uint32_t rva=pc-(uint32_t)view->image->image_base;
+    for(unsigned i=0;i<view->layout->section_count;i++) {
+        const PeLayoutSection *section=&view->layout->sections[i];
+        uint64_t end=(uint64_t)section->rva+section->mapped_bytes;
+        if((section->protection&PW_PROT_EXEC) && rva>=section->rva && (uint64_t)rva<end) {
+            *source=(const uint8_t *)(uintptr_t)pc;
+            *bytes=(size_t)(end-rva);return PW_OK;
+        }
+    }
+    return PW_ERR_NOT_FOUND;
+}
 static int host_string(void *opaque,uint32_t module,uint32_t id,const uint8_t **text,size_t *units)
 {
     const PeImage *im=opaque;
@@ -45,12 +59,18 @@ static int host_clock(void *opaque,PwClockDomain domain,uint64_t *ns)
 
 int main(int argc,char **argv)
 {
-    if(argc!=2 && argc!=3) {fprintf(stderr,"usage: trace_x86_entry private.exe [max-events:1..65536]\n");return 1;}
+    if(argc<2 || argc>4) {fprintf(stderr,"usage: trace_x86_entry private.exe [max-events:1..65536] [milestone-pc-hex]\n");return 1;}
     unsigned max_events=256;
-    if(argc==3) {
+    if(argc>=3) {
         char *end;unsigned long parsed=strtoul(argv[2],&end,10);
         if(!*argv[2] || *end || parsed<1 || parsed>65536)return 1;
         max_events=(unsigned)parsed;
+    }
+    uint32_t milestone=0;unsigned milestone_seen=0;
+    if(argc==4) {
+        char *end;unsigned long parsed=strtoul(argv[3],&end,16);
+        if(!*argv[3] || *end || !parsed || parsed>UINT32_MAX)return 1;
+        milestone=(uint32_t)parsed;
     }
     int result=1;
     FILE *file=fopen(argv[1],"rb");
@@ -66,13 +86,11 @@ int main(int argc,char **argv)
        image.machine!=PE_MACHINE_I386 || image.image_base>UINT32_MAX ||
        image.image_base+image.size_of_image>UINT32_MAX)goto done;
     PwVmBackend vm;
-    PwVmRegion code={0},stack={0},thread={0},crt={0},heap_region={0};
-    PwGuestHeap heap;PwRegistry registry;
-    PwMappedImage mapped={0};PeLayout layout;
-    int have_code=0,have_stack=0,have_thread=0,have_image=0,have_crt=0,have_heap=0;
+    PwVmRegion stack={0},thread={0},crt={0},heap_region={0};
+    PwGuestHeap heap;PwRegistry registry;PwUser32 user32;PwX86Engine engine={0};
+    PwMappedImage mapped={0};PeLayout layout;TraceSource trace_view={&image,&layout};
+    int have_engine=0,have_stack=0,have_thread=0,have_image=0,have_crt=0,have_heap=0;
     if(pw_vm_posix_backend(&vm)!=PW_OK)goto done;
-    if(vm.reserve(NULL,8192,4096,&code)!=PW_OK)goto done;
-    have_code=1;
     if(vm.reserve_at(NULL,0x03000000,0x100000,4096,&stack)!=PW_OK)goto cleanup;
     have_stack=1;
     if(vm.reserve_at(NULL,0x03200000,4096,4096,&thread)!=PW_OK)goto cleanup;
@@ -104,9 +122,11 @@ int main(int argc,char **argv)
     if(command_bytes<0 || (size_t)command_bytes>=sizeof(commandline))goto cleanup;
     if(pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline)!=PW_OK)goto cleanup;
     if(pw_registry_init(&registry,registry_keys,32,registry_values,128)!=PW_OK)goto cleanup;
-    runtime.heap=&heap;runtime.registry=&registry;
+    if(pw_user32_init(&user32,user_messages,128,user_windows,128)!=PW_OK)goto cleanup;
+    runtime.heap=&heap;runtime.registry=&registry;runtime.user32=&user32;
     runtime.services=(PwWin32Services){.opaque=&image,.clock_ns=host_clock,.process_id=1,.thread_id=2,
-        .string_resource=host_string,.ansi_codepage=1252};
+        .string_resource=host_string,.ansi_codepage=1252,.main_module_filename=commandline+1};
+    commandline[command_bytes-1]=0; /* service path excludes command-line quotes */
     PwImportBindReport binding;
     if(pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,&binding_work,&binding)!=PW_OK)goto cleanup;
     printf("kind=host-import-bind total=%u functions=%u data=%u\n",binding.total,binding.functions,binding.data);
@@ -126,9 +146,15 @@ int main(int argc,char **argv)
     state.gpr[4]=state.stack_high-4;state.fs_base=0x03200000;state.fs_bytes=4096;
     state.eflags=0x202;state.eip=(uint32_t)image.image_base+image.entry_point;
     *(uint32_t *)thread.write_base=0xffffffffu;
+    if(pw_x86_engine_init(&engine,&vm,cache_entries,8192,4*1024*1024,1,
+                          trace_source,&trace_view)!=PW_OK)goto cleanup;
+    have_engine=1;
     unsigned steps=0,events=0;
     const char *stop="budget";
     for(;events<max_events;events++) {
+        if(milestone && !milestone_seen && state.eip==milestone) {
+            milestone_seen=1;printf("kind=host-pc-milestone pc=0x%08x\n",milestone);
+        }
         int dispatched=pw_win32_dispatch(&runtime,&state);
         if(dispatched==PW_OK) {
             if(runtime.callback_pending)
@@ -142,29 +168,27 @@ int main(int argc,char **argv)
                    runtime.last_name?runtime.last_name:"unknown",dispatched);
             stop=dispatched==PW_ERR_UNSUPPORTED?"unimplemented-api":"api-frame-error";break;
         }
-        if(state.eip<image.image_base){stop="outside-image";break;}
-        uint32_t rva=state.eip-(uint32_t)image.image_base;
-        const PeSection *section=pe_image_section_for_rva(&image,rva);
-        if(!section || !(section->characteristics&PE_SCN_MEM_EXECUTE)){stop="non-code";break;}
-        if(vm.protect(NULL,&code,0,code.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)goto cleanup;
-        PwX86Block block;
-        int status=PW_ERR_TRUNCATED;
-        for(unsigned n=1;n<=15;n++) {
-            size_t offset;
-            if(pe_image_file_offset(&image,rva,n,&offset)!=PW_OK)break;
-            status=pw_x86_translate((const uint8_t *)(uintptr_t)state.eip,n,state.eip,
-                                    code.write_base,code.bytes,&block);
-            if(status!=PW_ERR_TRUNCATED)break;
+        PwX86StepReport step;int status=pw_x86_engine_step(&engine,&state,&step);
+        steps+=step.retired;
+        if(status!=PW_OK) {
+            stop=status==PW_ERR_UNSUPPORTED?"unsupported":
+                 status==PW_ERR_VM?"memory-bounds":
+                 status==PW_ERR_LIMIT?"cache-limit":
+                 status==PW_ERR_NOT_FOUND?"non-code":"decode-failure";
+            break;
         }
-        if(status!=PW_OK){stop=status==PW_ERR_UNSUPPORTED?"unsupported":"decode-failure";break;}
-        if(block.instructions!=1)goto cleanup;
-        if(vm.protect(NULL,&code,0,code.bytes,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK)goto cleanup;
-        if(invoke(code.exec_base,&state)!=0){stop="memory-bounds";break;}
-        steps++;
     }
     printf("kind=host-entry-trace steps=%u stop=%s eip=0x%08x esp=0x%08x "
            "ebp=0x%08x fs0=0x%08x flags=0x%08x\n",steps,stop,state.eip,
            state.gpr[4],state.gpr[5],*(uint32_t *)thread.write_base,state.eflags);
+    printf("kind=host-dbt-cache dispatches=%llu hits=%llu misses=%llu publishes=%llu "
+           "retired=%llu code_bytes=%zu generation=%u\n",
+           (unsigned long long)engine.dispatches,(unsigned long long)engine.cache.hits,
+           (unsigned long long)engine.cache.misses,(unsigned long long)engine.cache.publishes,
+           (unsigned long long)engine.retired_instructions,engine.cache.cursor,
+           engine.cache.generation);
+    if(milestone)printf("kind=host-pc-milestone-summary pc=0x%08x seen=%u\n",
+                        milestone,milestone_seen);
     unsigned live=0;uint64_t requested=0;
     for(uint32_t i=0;i<heap.count;i++)if(heap.blocks[i].used){live++;requested+=heap.blocks[i].requested;}
     printf("kind=host-heap-summary blocks=%u live=%u requested=%llu arena=%u valid=%d\n",
@@ -172,12 +196,12 @@ int main(int argc,char **argv)
     /* A classified stop is evidence, never a successful game startup. */
     result=2;
 cleanup:
+    if(have_engine && pw_x86_engine_destroy(&engine)!=PW_OK)result=1;
     if(have_heap && vm.release(NULL,&heap_region)!=PW_OK)result=1;
     if(have_crt && vm.release(NULL,&crt)!=PW_OK)result=1;
     if(have_image && pw_map_release(&mapped,&vm)!=PW_OK)result=1;
     if(have_thread && vm.release(NULL,&thread)!=PW_OK)result=1;
     if(have_stack && vm.release(NULL,&stack)!=PW_OK)result=1;
-    if(have_code && vm.release(NULL,&code)!=PW_OK)result=1;
 done:
     free(bytes);return result;
 }

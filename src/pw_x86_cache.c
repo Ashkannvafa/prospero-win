@@ -44,6 +44,8 @@ int pw_x86_cache_publish(PwX86Cache *cache,uint32_t guest_pc,const PwX86Block *b
         .guest_pc=guest_pc,.generation=cache->generation,.code_offset=code_offset,
         .code_bytes=block->code_bytes,.source_bytes=block->source_bytes,
         .instructions=block->instructions,.used=1};
+    memcpy(cache->entries[slot].instruction_ends,block->instruction_ends,
+           block->instructions*sizeof(block->instruction_ends[0]));
     size_t end=code_offset+block->code_bytes;
     cache->cursor=(end+15)&~(size_t)15;
     if(cache->cursor>cache->arena_bytes)cache->cursor=cache->arena_bytes;

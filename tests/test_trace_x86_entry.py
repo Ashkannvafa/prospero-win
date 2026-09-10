@@ -31,10 +31,14 @@ with tempfile.TemporaryDirectory(prefix="pw-entry-") as directory:
         assert result.returncode == 2, result.stderr
         assert f"steps={steps} stop={reason} " in result.stdout, result.stdout
         assert "kind=host-heap-summary blocks=1 live=0 requested=0 arena=8388608 valid=1" in result.stdout
+        assert "kind=host-dbt-cache " in result.stdout
         if reason == "budget":
-            limited = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), "8"],
+            limited = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), "8", "01001000"],
                                      capture_output=True, text=True, timeout=5)
             assert limited.returncode == 2 and "steps=8 stop=budget " in limited.stdout
+            assert "dispatches=8 hits=7 misses=1 publishes=1 retired=8 " in limited.stdout
+            assert "kind=host-pc-milestone pc=0x01001000" in limited.stdout
+            assert "kind=host-pc-milestone-summary pc=0x01001000 seen=1" in limited.stdout
             for invalid in ("0", "65537", "no", "12bad", "-1", ""):
                 rejected = subprocess.run([str(root / "build/host/trace_x86_entry"), str(path), invalid],
                                           capture_output=True, text=True, timeout=5)

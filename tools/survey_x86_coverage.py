@@ -196,20 +196,22 @@ def main() -> int:
         addresses = set().union(*(function_addresses.get(node, set()) for node in nodes))
         root_supported = sum(status_by_address.get(address) == 0
                              for address in addresses)
-        root_x87 = [x87_form(bytes.fromhex(str(by_address[address]["bytes"])),
-                             str(by_address[address]["mnemonic"]))
-                    for address in addresses if address in by_address]
+        root_x87 = collections.Counter(form for form in (
+            x87_form(bytes.fromhex(str(by_address[address]["bytes"])),
+                     str(by_address[address]["mnemonic"]))
+            for address in addresses if address in by_address) if form)
         per_root[label] = {
             "reachable_functions": len(nodes),
             "unique_static_instructions": len(addresses),
             "exact_forms_supported": root_supported,
             "exact_form_coverage_percent": round(
                 100.0 * root_supported / len(addresses), 2) if addresses else 0.0,
-            "x87_occurrences": sum(form is not None for form in root_x87),
-            "x87_unique_forms": len({form for form in root_x87 if form}),
+            "x87_occurrences": sum(root_x87.values()),
+            "x87_unique_forms": len(root_x87),
+            "x87_forms": sorted(root_x87.items()),
         }
     report = {
-        "schema": "pw-x86-coverage/1",
+        "schema": "pw-x86-coverage/2",
         "program": args.program,
         "roots": per_root,
         "reachable_function_union": len(functions),
@@ -223,6 +225,7 @@ def main() -> int:
             "supported_occurrences": x87_supported,
             "unique_forms": len(x87_forms),
             "top_forms": x87_forms.most_common(30),
+            "forms": sorted(x87_forms.items()),
         },
         "unsupported_non_x87": total - supported - (x87_total - x87_supported),
         "indirect_control_transfers": {

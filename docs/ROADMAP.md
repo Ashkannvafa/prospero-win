@@ -82,26 +82,29 @@ structured ps5log/1 evidence and an independently checked result.
   complete call graph when indirect calls remain unresolved. Keep decompiled
   code and original resources private; publish only original contracts/tests.
   Runtime classified stops validate integration, not the primary discovery plan.
-  A callback-inclusive Ghidra survey now measures 22,816 of 25,538 exact static
-  instructions accepted (89.34%) across 393 reachable functions. x87 accounts
+  A callback-inclusive Ghidra survey now measures 22,839 of 25,538 exact static
+  instructions accepted (89.43%) across 393 reachable functions. x87 accounts
   for 2,300 occurrences but only 54 unique semantic forms (36 in startup);
-  422 rejected non-x87 instructions
+  399 rejected non-x87 instructions
   and indirect/callback graph incompleteness remain. See STARTUP_ANALYSIS.md.
-  A generation-scoped cache metadata/lifecycle core is tested; next integrate
-  it with multi-instruction translation and measured dispatch optimization.
-  No fast-JIT performance
-  claim is currently validated. The full completion target remains playable
+  The host runner now executes generation-scoped cached multi-instruction
+  blocks. It publishes through an ownership-safe RW-to-RX transition, reports
+  hit/miss/publish/retirement metrics, and has invalidation and mid-block-fault
+  regressions. No fast-JIT performance claim is currently validated. The full
+  completion target remains playable
   original Pinball on PS5 with graphics, input, audio, persistence and cleanup.
   Keep guest pointers and
   handles 32-bit; exercise callbacks in both directions.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
   See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing now executes 723 instructions, GetModuleHandleA(NULL),
+  Bounded host tracing now executes 1,823 instructions and reaches the verified
+  `WinMain` address through cached blocks. It completes GetModuleHandleA(NULL),
   __set_app_type, both CRT mode-pointer getters, _controlfp, _initterm and __getmainargs after binding all 207 imports.
   UTC/tick/counter/ID, GetStartupInfoA, LoadStringA, lstrlenA, lstrcpyA and
-  lstrcatA and all seven imported registry adapters are complete; the next stop
-  is GetModuleFileNameA. The guest heap
+  lstrcatA, lstrcmpA, strstr, sprintf, GetModuleFileNameA, the three initial
+  User32/common-controls calls and all seven registry adapters; the next stop
+  is `LoadIconA`, before class registration. The guest heap
   family and all four CRT adapters pass
   host ownership/fragmentation/ABI tests; original malloc now succeeds.
   Guest errno is modeled, with pointer export and registered new-handler

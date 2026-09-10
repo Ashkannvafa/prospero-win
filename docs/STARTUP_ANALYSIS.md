@@ -42,15 +42,15 @@ is supported.
 
 | Root | Reachable functions | Static instructions | Accepted | Unique x87 forms |
 | --- | ---: | ---: | ---: | ---: |
-| Entry | 151 | 8,082 | 7,547 (93.38%) | 36 |
-| Application startup | 145 | 7,905 | 7,371 (93.24%) | 36 |
-| Main window procedure | 350 | 23,338 | 20,641 (88.44%) | 54 |
-| Union of all three | 393 | 25,538 | 22,816 (89.34%) | 54 |
+| Entry | 151 | 8,082 | 7,558 (93.52%) | 36 |
+| Application startup | 145 | 7,905 | 7,382 (93.38%) | 36 |
+| Main window procedure | 350 | 23,338 | 20,661 (88.53%) | 54 |
+| Union of all three | 393 | 25,538 | 22,839 (89.43%) | 54 |
 
-All 393 function bodies were read successfully. Of 2,722 rejected static
-instructions, 2,300 are x87 occurrences (84.50%) comprising only 54 unique
+All 393 function bodies were read successfully. Of 2,699 rejected static
+instructions, 2,300 are x87 occurrences (85.22%) comprising only 54 unique
 semantic encoding forms; none executes yet. The startup graph needs 36 forms.
-The remaining 422 include unsupported MOV forms, string
+The remaining 399 include unsupported MOV forms, string
 operations shown by Ghidra as MOVSD, IMUL, CDQ and less frequent integer forms.
 The largest x87 groups are FSTP (781), FLD (583), FLDZ (279), FNSTSW (129) and
 FMUL (125). If every observed x87 form alone were implemented, the arithmetic
@@ -155,9 +155,10 @@ x87 dependency, not the complete floating-point requirements of gameplay.
    Windows keyboard messages and guest audio callbacks remain guest contracts.
 6. **Execution coverage and measured DBT.** Survey opcode families across the
    callback-inclusive graph, including x87 and unresolved indirect targets.
-   Expand and test groups, integrate the new generation-scoped code-cache
-   lifecycle and measure dispatch cost. The current host single-instruction trace is correctness
-   evidence, not a performance benchmark or a production execution loop.
+   Expand and test groups and measure dispatch cost. The host runner now uses
+   generation-scoped cached multi-instruction blocks with explicit control-flow
+   boundaries and RW-to-RX publication. This is correctness and integration
+   evidence, not a performance benchmark.
 
 ## Wine comparison for the first package
 
@@ -180,8 +181,12 @@ and decompile_function. Raw responses containing proprietary code stay private.
 Do not infer function-level execution order from unordered graph edges.
 
 The source-confirmed registry package now implements all seven imported Advapi
-entry points over fixed owner-supplied storage. Host evidence reaches 723
-instructions and 38 completed API calls, including create/query-default,
-create/set and balanced closes; the classified stop is `GetModuleFileNameA`.
-This is original-binary host integration evidence, not a window, gameplay or
-translated PS5 execution claim.
+entry points over fixed owner-supplied storage. A bounded exact-binary host run
+reaches the public-PDB-verified `WinMain` address and then retires 1,823
+instructions while completing 105 calls across 30 distinct APIs. It records
+417 DBT dispatches, 270 cache hits, 147 misses/publications and 45,488 emitted
+code bytes for generation 1. The classified stop is `LoadIconA`, before
+`RegisterClassA` and window creation. This requires a resource-backed icon
+handle and object-lifetime contract; returning a fabricated handle would not
+advance the implementation. This is host integration evidence, not a window,
+gameplay or translated PS5 execution claim.
