@@ -184,9 +184,9 @@ Do not infer function-level execution order from unordered graph edges.
 
 The source-confirmed registry and initial GDI packages use fixed owner-supplied
 storage. A bounded exact-binary host run reaches the public-PDB-verified
-`WinMain` address and then retires 2,287 instructions while completing 151
-adapter calls across 58 distinct DLL/API pairs. It records 522 DBT dispatches,
-298 cache hits, 224 misses/publications and 72,464 emitted code bytes for
+`WinMain` address and then retires 37,925 instructions while completing 241
+adapter calls across 67 distinct DLL/API pairs. It records 3,807 DBT dispatches,
+3,469 cache hits, 338 misses/publications and 107,008 emitted code bytes for
 generation 1. The run creates the splash HWND transactionally, executes its
 creation callbacks, constructs/selects the resource bitmap, executes the
 synchronous `WM_PAINT`, clips the oversized `BLACKNESS`, copies the centered
@@ -195,9 +195,8 @@ bitmap with `SRCCOPY`, balances the paint/window DCs and returns from
 bitmap and 16,872,960 pixel bytes; explicit reset then validates zero owned
 objects and zero live pixel bytes.
 
-The next classified stop is `MapVirtualKeyA`, with return PC 0x01006826 inside
-the keyboard scan-code discovery routine at 0x010067f3. Ghidra confirms that
-routine scans values using map type 1 before asking `GetKeyNameTextA` to order
-left/right variants. This is beyond the complete splash package and is a
-precise main-initialization boundary, not a visible window, gameplay or
-translated PS5 execution claim. See [GDI.md](GDI.md).
+The keyboard scan-code discovery and nested WaveMix helper-window creation now
+complete. The next classified stop is `winmm!waveOutGetNumDevs`, called from
+the source-confirmed audio initialization path after the first `wavemix.inf`
+lookup. This is a precise host audio boundary, not a visible window, gameplay
+or translated PS5 execution claim. See [GDI.md](GDI.md).

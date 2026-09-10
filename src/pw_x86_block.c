@@ -47,12 +47,11 @@ static void stack_bounds(Emitter *e)
     byte(e,0x83); byte(e,0xea); byte(e,4);
     byte(e,0x39); byte(e,0xd0); require_condition(e,0x76);
 }
-static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write,unsigned width)
+static uintptr_t memory_range_pointer(PwX86State *state,uint32_t address,unsigned write,uint64_t width)
 {
     uint64_t end=(uint64_t)address+width;
     unsigned permission=write==2?(PW_X86_READ|PW_X86_WRITE):write?PW_X86_WRITE:PW_X86_READ;
-    if (!address || (width!=1 && width!=2 && width!=4 && width!=8 && width!=10) ||
-        end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
+    if (!address || !width || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
         return 0;
     if(address>=state->stack_low && end<=state->stack_high)return address;
     for(unsigned i=0;i<state->memory_count;i++) {
@@ -61,6 +60,11 @@ static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned writ
            (m->permissions&permission)==permission)return address;
     }
     return 0;
+}
+static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write,unsigned width)
+{
+    if(width!=1 && width!=2 && width!=4 && width!=8 && width!=10)return 0;
+    return memory_range_pointer(state,address,write,width);
 }
 static void memory_address_width(Emitter *e,unsigned write,unsigned width)
 {
@@ -201,6 +205,101 @@ static void x87_call(Emitter *e,unsigned action,unsigned register_operand)
     byte(e,0xff);byte(e,0xd0);byte(e,0x5f);byte(e,0x85);byte(e,0xc0);
     byte(e,0x74);byte(e,1);byte(e,0xc3); /* propagate helper failure */
 }
+static int string_dispatch(PwX86State *state,unsigned opcode,unsigned width,unsigned repeat)
+{
+    if(!state || (width!=1 && width!=2 && width!=4) ||
+       (opcode!=0xa4 && opcode!=0xa5 && opcode!=0xaa && opcode!=0xab))
+        return PW_ERR_PRECONDITION;
+    uint32_t count=repeat?state->gpr[1]:1;
+    if(!count)return PW_OK;
+    uint64_t span=(uint64_t)count*width;
+    if(span>0x100000000ull)return PW_ERR_VM;
+    unsigned backwards=!!(state->eflags&0x400);uint32_t destination=state->gpr[7],source=state->gpr[6];
+    uint32_t dst_low=destination;
+    if(backwards) {
+        uint64_t retreat=(uint64_t)(count-1)*width;
+        if(retreat>destination)return PW_ERR_VM;
+        dst_low=destination-(uint32_t)retreat;
+    } else if((uint64_t)destination+span>0x100000000ull)return PW_ERR_VM;
+    if(!memory_range_pointer(state,dst_low,1,span))return PW_ERR_VM;
+    unsigned moving=opcode==0xa4 || opcode==0xa5;uint32_t src_low=source;
+    if(moving) {
+        if(backwards) {
+            uint64_t retreat=(uint64_t)(count-1)*width;
+            if(retreat>source)return PW_ERR_VM;
+            src_low=source-(uint32_t)retreat;
+        } else if((uint64_t)source+span>0x100000000ull)return PW_ERR_VM;
+        if(!memory_range_pointer(state,src_low,0,span))return PW_ERR_VM;
+    }
+    for(uint32_t i=0;i<count;i++) {
+        uint32_t offset=i*width;
+        uint32_t dst=backwards?destination-offset:destination+offset;
+        if(moving) {
+            uint32_t src=backwards?source-offset:source+offset;
+            memmove((void *)(uintptr_t)dst,(const void *)(uintptr_t)src,width);
+        } else memcpy((void *)(uintptr_t)dst,&state->gpr[0],width);
+    }
+    uint32_t delta=(uint32_t)span;
+    state->gpr[7]=backwards?destination-delta:destination+delta;
+    if(moving)state->gpr[6]=backwards?source-delta:source+delta;
+    if(repeat)state->gpr[1]=0;
+    return PW_OK;
+}
+static void string_call(Emitter *e,unsigned opcode,unsigned width,unsigned repeat)
+{
+    byte(e,0xbe);word(e,opcode);byte(e,0xba);word(e,width);byte(e,0xb9);word(e,repeat);
+    byte(e,0x57);byte(e,0x48);byte(e,0xb8);
+    uint64_t target=(uint64_t)(uintptr_t)&string_dispatch;
+    word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
+    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);byte(e,0x85);byte(e,0xc0);
+    byte(e,0x74);byte(e,1);byte(e,0xc3);
+}
+static int muldiv_dispatch(PwX86State *state,unsigned action,uint32_t operand)
+{
+    if(!state || action<4 || action>7)return PW_ERR_PRECONDITION;
+    uint32_t eax=state->gpr[0],edx=state->gpr[2],result_eax=0,result_edx=0;
+    unsigned overflow=0;
+    if(action==4) {
+        uint64_t product=(uint64_t)eax*operand;
+        result_eax=(uint32_t)product;result_edx=(uint32_t)(product>>32);
+        overflow=result_edx!=0;
+    } else if(action==5) {
+        int64_t product=(int64_t)(int32_t)eax*(int32_t)operand;
+        result_eax=(uint32_t)product;result_edx=(uint32_t)((uint64_t)product>>32);
+        overflow=product<(int64_t)INT32_MIN || product>(int64_t)INT32_MAX;
+    } else if(action==6) {
+        if(!operand)return PW_ERR_VM;
+        uint64_t dividend=((uint64_t)edx<<32)|eax;
+        uint64_t quotient=dividend/operand;
+        if(quotient>UINT32_MAX)return PW_ERR_VM;
+        result_eax=(uint32_t)quotient;result_edx=(uint32_t)(dividend%operand);
+    } else {
+        int32_t divisor=(int32_t)operand;
+        if(!divisor)return PW_ERR_VM;
+        uint64_t bits=((uint64_t)edx<<32)|eax;int64_t dividend;
+        memcpy(&dividend,&bits,sizeof(dividend));
+        if(dividend==INT64_MIN && divisor==-1)return PW_ERR_VM;
+        int64_t quotient=dividend/divisor;
+        if(quotient<INT32_MIN || quotient>INT32_MAX)return PW_ERR_VM;
+        result_eax=(uint32_t)(int32_t)quotient;
+        result_edx=(uint32_t)(int32_t)(dividend%divisor);
+    }
+    state->gpr[0]=result_eax;state->gpr[2]=result_edx;
+    if(action<6) {
+        state->eflags&=~0x801u;
+        if(overflow)state->eflags|=0x801u;
+    }
+    return PW_OK;
+}
+static void muldiv_call(Emitter *e,unsigned action)
+{
+    byte(e,0x89);byte(e,0xc2);byte(e,0xbe);word(e,action);
+    byte(e,0x57);byte(e,0x48);byte(e,0xb8);
+    uint64_t target=(uint64_t)(uintptr_t)&muldiv_dispatch;
+    word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
+    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);byte(e,0x85);byte(e,0xc0);
+    byte(e,0x74);byte(e,1);byte(e,0xc3);
+}
 
 int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                      uint8_t *output, size_t capacity, PwX86Block *block)
@@ -217,8 +316,31 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         Operand operand;
         unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,extend=0,setcc=0;
         unsigned x87=0,x87_width=0,x87_write=0,x87_register=0;
+        unsigned string_op=0,string_width=0,string_repeat=0;
+        unsigned word_general=0;
+        unsigned byte_alu=0,byte_direction=0;
         int terminal = 0;
-        if(op>=0xd8 && op<=0xdf) {
+        if(op==0xf3) {
+            if(bytes-cursor<2)return PW_ERR_TRUNCATED;
+            if(source[cursor+1]!=0xa4 && source[cursor+1]!=0xa5 &&
+               source[cursor+1]!=0xaa && source[cursor+1]!=0xab)
+                return PW_ERR_UNSUPPORTED;
+            string_op=source[cursor+1];string_width=(string_op&1)?4:1;
+            string_repeat=1;length=2;
+        } else if((op==0xa4 || op==0xa5 || op==0xaa || op==0xab)) {
+            string_op=op;string_width=(op&1)?4:1;length=1;
+        } else if(op==0x66 && bytes-cursor>=2 &&
+                  (source[cursor+1]==0xa5 || source[cursor+1]==0xab)) {
+            string_op=source[cursor+1];string_width=2;length=2;
+        } else if(op==0x66 && bytes-cursor>=2 &&
+                  (source[cursor+1]==0x89 || source[cursor+1]==0x8b ||
+                   source[cursor+1]==0x39 || source[cursor+1]==0x3b ||
+                   source[cursor+1]==0x85)) {
+            word_general=source[cursor+1];
+            int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+            if(result!=PW_OK)return result;
+            length=2+operand.bytes;
+        } else if(op>=0xd8 && op<=0xdf) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if(result!=PW_OK)return result;
             length=1+operand.bytes;
@@ -264,6 +386,11 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if(result!=PW_OK)return result;
             if(operand.reg!=4 && operand.reg!=5 && operand.reg!=7)return PW_ERR_UNSUPPORTED;
             length=1+operand.bytes+(op==0xc1);
+        } else if(op<=0x3a && ((op&7)==0 || (op&7)==2)) {
+            byte_alu=(op>>3)+1;byte_direction=!!(op&2);
+            int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
+            if(result!=PW_OK)return result;
+            length=1+operand.bytes;
         } else if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if(result!=PW_OK)return result;
@@ -276,7 +403,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             else {
                 int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
                 if(result!=PW_OK)return result;
-                if(op==0xf7 && operand.reg!=0 && operand.reg!=2 && operand.reg!=3)return PW_ERR_UNSUPPORTED;
+                if(op==0xf7 && operand.reg!=0 && operand.reg<2)return PW_ERR_UNSUPPORTED;
                 length=1+operand.bytes+(op==0xf7 && operand.reg==0?4:0);
             }
         } else if(op==0x66 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
@@ -332,7 +459,88 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if(x87) {
+        if(string_op)string_call(&e,string_op,string_width,string_repeat);
+        else if(byte_alu) {
+            unsigned operation=byte_alu-1;
+            unsigned rm=(operand.rm&3)*4+(operand.rm>>2);
+            unsigned reg=(operand.reg&3)*4+(operand.reg>>2);
+            if(operand.mod!=3) {
+                effective_address(&e,&operand);
+                memory_address_width(&e,!byte_direction && operation!=7?2:0,1);
+            }
+            if(byte_direction) {
+                if(operand.mod==3) {
+                    byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x4f);byte(&e,rm);
+                } else {
+                    byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x00);
+                    byte(&e,0x89);byte(&e,0xc1);
+                }
+                byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x47);byte(&e,reg);
+            } else if(operand.mod==3) {
+                byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x47);byte(&e,rm);
+                byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x4f);byte(&e,reg);
+            } else {
+                byte(&e,0x49);byte(&e,0x89);byte(&e,0xc0);
+                byte(&e,0x41);byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x00);
+            }
+            if(operation==2 || operation==3) {
+                byte(&e,0x0f);byte(&e,0xba);byte(&e,0x67);
+                byte(&e,offsetof(PwX86State,eflags));byte(&e,0);
+            }
+            if(!byte_direction && operand.mod!=3) {
+                byte(&e,(uint8_t)(operation*8+2));byte(&e,0x47);byte(&e,reg);
+                if(operation!=7){byte(&e,0x41);byte(&e,0x88);byte(&e,0x00);}
+            } else {
+                byte(&e,(uint8_t)(operation*8));byte(&e,0xc8);
+                if(operation!=7) {
+                    unsigned destination=byte_direction?reg:rm;
+                    byte(&e,0x88);byte(&e,0x47);byte(&e,destination);
+                }
+            }
+            save_arithmetic_flags(&e,(operation==1 || operation==4 || operation==6)?0x8c5:0x8d5);
+        }
+        else if(word_general) {
+            unsigned load=word_general==0x8b;
+            unsigned compare_word=word_general==0x39 || word_general==0x3b;
+            unsigned test_word=word_general==0x85;
+            if(operand.mod==3) {
+                if(word_general==0x89) {
+                    load_eax(&e,operand.reg*4);byte(&e,0x66);byte(&e,0x89);
+                    byte(&e,0x47);byte(&e,operand.rm*4);
+                } else if(word_general==0x8b) {
+                    load_eax(&e,operand.rm*4);byte(&e,0x66);byte(&e,0x89);
+                    byte(&e,0x47);byte(&e,operand.reg*4);
+                } else if(compare_word) {
+                    load_eax(&e,(word_general==0x39?operand.rm:operand.reg)*4);
+                    byte(&e,0x66);byte(&e,0x3b);byte(&e,0x47);
+                    byte(&e,(word_general==0x39?operand.reg:operand.rm)*4);
+                } else {
+                    load_eax(&e,operand.rm*4);byte(&e,0x66);byte(&e,0x85);
+                    byte(&e,0x47);byte(&e,operand.reg*4);
+                }
+            } else {
+                effective_address(&e,&operand);
+                memory_address_width(&e,!load && !compare_word && !test_word,2);
+                if(word_general==0x89) {
+                    byte(&e,0x8b);byte(&e,0x4f);byte(&e,operand.reg*4);
+                    byte(&e,0x66);byte(&e,0x89);byte(&e,0x08);
+                } else if(word_general==0x8b) {
+                    byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x00);
+                    byte(&e,0x66);byte(&e,0x89);byte(&e,0x47);byte(&e,operand.reg*4);
+                } else if(word_general==0x39) {
+                    byte(&e,0x66);byte(&e,0x8b);byte(&e,0x00);
+                    byte(&e,0x66);byte(&e,0x3b);byte(&e,0x47);byte(&e,operand.reg*4);
+                } else if(compare_word) {
+                    byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x08);
+                    load_eax(&e,operand.reg*4);byte(&e,0x66);byte(&e,0x39);byte(&e,0xc8);
+                } else {
+                    byte(&e,0x66);byte(&e,0x8b);byte(&e,0x00);
+                    byte(&e,0x66);byte(&e,0x85);byte(&e,0x47);byte(&e,operand.reg*4);
+                }
+            }
+            if(compare_word || test_word)save_arithmetic_flags(&e,test_word?0x8c5:0x8d5);
+        }
+        else if(x87) {
             if(operand.mod!=3){effective_address(&e,&operand);memory_address_width(&e,x87_write,x87_width);}
             x87_call(&e,x87-1,x87_register);
         } else if(op==0xc1 || op==0xd1 || op==0xd3) {
@@ -405,6 +613,10 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             byte(&e,0x83);byte(&e,0xc0);byte(&e,4);
             store_eax(&e,offsetof(PwX86State,gpr[4]));
             byte(&e,0x89);byte(&e,0x4f);byte(&e,offsetof(PwX86State,gpr[5]));
+        } else if(op==0xf7 && operand.reg>=4) {
+            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            else {effective_address(&e,&operand);memory_address_width(&e,0,4);byte(&e,0x8b);byte(&e,0x00);}
+            muldiv_call(&e,operand.reg);
         } else if(op==0xf7 && operand.reg!=0) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {effective_address(&e,&operand);memory_address_width(&e,2,4);}

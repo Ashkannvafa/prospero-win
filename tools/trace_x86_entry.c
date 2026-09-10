@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
+#include <ctype.h>
 
 static PwImportBindWorkspace binding_work;
 static PwHeapBlock heap_blocks[4096];
@@ -25,7 +27,10 @@ static PwGdiDc gdi_dcs[128];
 static PwGdiSurface gdi_surfaces[128];
 static uint8_t gdi_pixels[32*1024*1024];
 static PwX86CacheEntry cache_entries[8192];
-typedef struct TraceSource { const PeImage *image;const PeLayout *layout; } TraceSource;
+typedef struct TraceSource {
+    const PeImage *image;const PeLayout *layout;
+    char directory[PATH_MAX];FILE *files[8];
+} TraceSource;
 static int trace_source(void *opaque,uint32_t pc,const uint8_t **source,size_t *bytes)
 {
     const TraceSource *view=opaque;
@@ -75,6 +80,72 @@ static int host_clock(void *opaque,PwClockDomain domain,uint64_t *ns)
     if((uint64_t)value.tv_sec>(UINT64_MAX-(uint64_t)value.tv_nsec)/1000000000)return PW_ERR_LIMIT;
     *ns=(uint64_t)value.tv_sec*1000000000+(uint64_t)value.tv_nsec;return PW_OK;
 }
+static int host_file_open(void *opaque,const char *path,const char *mode,uint32_t *handle)
+{
+    TraceSource *view=opaque;
+    if(!view || !path || !mode || !handle || (strcmp(mode,"r") && strcmp(mode,"rb")))
+        return PW_ERR_UNSUPPORTED;
+    const char *base=strrchr(path,'\\');base=base?base+1:path;
+    if(!*base || strchr(base,'/') || strchr(base,'\\') || strstr(base,".."))
+        return PW_ERR_PRECONDITION;
+    unsigned slot=8;for(unsigned i=0;i<8;i++)if(!view->files[i]){slot=i;break;}
+    if(slot==8)return PW_ERR_LIMIT;
+    char translated[PATH_MAX];int length=snprintf(translated,sizeof(translated),"%s/%s",view->directory,base);
+    if(length<0 || (size_t)length>=sizeof(translated))return PW_ERR_LIMIT;
+    FILE *file=fopen(translated,mode);if(!file)return PW_ERR_NOT_FOUND;
+    view->files[slot]=file;*handle=0x0d000001u+slot;return PW_OK;
+}
+static int host_file_close(void *opaque,uint32_t handle)
+{
+    TraceSource *view=opaque;
+    if(!view || handle<0x0d000001u || handle>=0x0d000009u)return PW_ERR_NOT_FOUND;
+    unsigned slot=handle-0x0d000001u;if(!view->files[slot])return PW_ERR_NOT_FOUND;
+    int result=fclose(view->files[slot]);view->files[slot]=NULL;
+    return result?PW_ERR_STATE:PW_OK;
+}
+static int ascii_equal(const char *a,const char *b)
+{
+    while(*a && *b) {
+        if(tolower((unsigned char)*a)!=tolower((unsigned char)*b))return 0;
+        a++;b++;
+    }
+    return !*a && !*b;
+}
+static int host_profile_int(void *opaque,const char *section,const char *key,
+                            uint32_t fallback,const char *filename,uint32_t *value)
+{
+    TraceSource *view=opaque;
+    if(!view || !section || !*section || !key || !*key || !filename || !*filename || !value)
+        return PW_ERR_PRECONDITION;
+    const char *base=strrchr(filename,'\\');base=base?base+1:filename;
+    if(!*base || strchr(base,'/') || strchr(base,'\\') || strstr(base,".."))
+        return PW_ERR_PRECONDITION;
+    char translated[PATH_MAX];int length=snprintf(translated,sizeof(translated),"%s/%s",view->directory,base);
+    if(length<0 || (size_t)length>=sizeof(translated))return PW_ERR_LIMIT;
+    FILE *file=fopen(translated,"rb");*value=fallback;
+    if(!file)return PW_OK;
+    char line[1024];unsigned in_section=0;
+    while(fgets(line,sizeof(line),file)) {
+        char *p=line;while(isspace((unsigned char)*p))p++;
+        char *end=p+strlen(p);while(end>p && isspace((unsigned char)end[-1]))*--end=0;
+        if(!*p || *p==';' || *p=='#')continue;
+        if(*p=='[') {
+            char *close=strchr(p+1,']');
+            if(!close){in_section=0;continue;}
+            *close=0;in_section=ascii_equal(p+1,section);continue;
+        }
+        if(!in_section)continue;
+        char *equals=strchr(p,'=');if(!equals)continue;
+        char *key_end=equals;while(key_end>p && isspace((unsigned char)key_end[-1]))key_end--;
+        char saved=*key_end;*key_end=0;unsigned match=ascii_equal(p,key);*key_end=saved;
+        if(!match)continue;
+        p=equals+1;while(isspace((unsigned char)*p))p++;
+        char *number_end=NULL;long parsed=strtol(p,&number_end,0);
+        if(number_end!=p)*value=(uint32_t)parsed;
+        break;
+    }
+    int failed=ferror(file);fclose(file);return failed?PW_ERR_STATE:PW_OK;
+}
 
 int main(int argc,char **argv)
 {
@@ -107,7 +178,13 @@ int main(int argc,char **argv)
     PwVmBackend vm;
     PwVmRegion stack={0},thread={0},crt={0},heap_region={0};
     PwGuestHeap heap;PwRegistry registry;PwUser32 user32;PwGdi gdi;PwX86Engine engine={0};
-    PwMappedImage mapped={0};PeLayout layout;TraceSource trace_view={&image,&layout};
+    PwMappedImage mapped={0};PeLayout layout;TraceSource trace_view={.image=&image,.layout=&layout};
+    const char *slash=strrchr(argv[1],'/');
+    size_t directory_length=slash?(size_t)(slash-argv[1]):1;
+    if(directory_length>=sizeof(trace_view.directory))goto done;
+    if(slash)memcpy(trace_view.directory,argv[1],directory_length);
+    else trace_view.directory[0]='.';
+    trace_view.directory[directory_length]=0;
     int have_engine=0,have_stack=0,have_thread=0,have_image=0,have_crt=0,have_heap=0,
         have_gdi=0;
     if(pw_vm_posix_backend(&vm)!=PW_OK)goto done;
@@ -153,7 +230,8 @@ int main(int argc,char **argv)
     if(pw_user32_init_classes(&user32,user_classes,128)!=PW_OK)goto cleanup;
     runtime.services=(PwWin32Services){.opaque=&trace_view,.clock_ns=host_clock,.process_id=1,.thread_id=2,
         .string_resource=host_string,.named_resource=host_named_resource,
-        .code_address=host_code_address,.ansi_codepage=1252,.main_module_filename=commandline+1};
+        .code_address=host_code_address,.ansi_codepage=1252,.main_module_filename=commandline+1,
+        .file_open=host_file_open,.file_close=host_file_close,.profile_int=host_profile_int};
     commandline[command_bytes-1]=0; /* service path excludes command-line quotes */
     PwImportBindReport binding;
     if(pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,&binding_work,&binding)!=PW_OK)goto cleanup;
@@ -243,6 +321,7 @@ int main(int argc,char **argv)
                (unsigned long long)gdi_counts.pixel_bytes);
     }
 cleanup:
+    for(unsigned i=0;i<8;i++)if(trace_view.files[i]){fclose(trace_view.files[i]);trace_view.files[i]=NULL;}
     if(have_gdi && pw_gdi_reset(&gdi)!=PW_OK)result=1;
     if(have_engine && pw_x86_engine_destroy(&engine)!=PW_OK)result=1;
     if(have_heap && vm.release(NULL,&heap_region)!=PW_OK)result=1;

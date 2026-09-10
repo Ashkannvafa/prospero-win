@@ -69,6 +69,77 @@ static void addressing_tests(void)
     state.gpr[5]=0xabcddcba;
     assert(run(load,sizeof(load),0x730)==-1 && state.gpr[5]==0xabcddcba);
 }
+static void string_tests(void)
+{
+    uint8_t *memory=(uint8_t *)stack.write_base;
+    const uint32_t source=state.stack_low+0x100,destination=state.stack_low+0x200;
+    const uint8_t repeat_stosd[]={0xf3,0xab};
+    memset(memory+0x200,0,32);state.gpr[0]=0x12345678;state.gpr[1]=4;
+    state.gpr[7]=destination;state.eflags=0x202;
+    assert(run(repeat_stosd,sizeof(repeat_stosd),0xc000)==0);
+    for(unsigned i=0;i<4;i++)assert(((uint32_t *)(memory+0x200))[i]==0x12345678);
+    assert(state.gpr[1]==0 && state.gpr[7]==destination+16);
+
+    const uint8_t stosw[]={0x66,0xab};
+    state.gpr[0]=0xaabbccdd;state.gpr[7]=destination+16;
+    assert(run(stosw,sizeof(stosw),0xc010)==0);
+    assert(*(uint16_t *)(memory+0x210)==0xccdd && state.gpr[7]==destination+18);
+
+    for(unsigned i=0;i<24;i++)memory[0x100+i]=(uint8_t)(0x40+i);
+    memset(memory+0x200,0,24);state.gpr[1]=3;state.gpr[6]=source;
+    state.gpr[7]=destination;state.eflags=0x202;
+    const uint8_t repeat_movsd[]={0xf3,0xa5};
+    assert(run(repeat_movsd,sizeof(repeat_movsd),0xc020)==0);
+    assert(!memcmp(memory+0x100,memory+0x200,12));
+    assert(state.gpr[1]==0 && state.gpr[6]==source+12 && state.gpr[7]==destination+12);
+
+    /* DF walks high-to-low and still leaves SI/DI one element beyond the copy. */
+    memset(memory+0x200,0,24);state.gpr[1]=5;state.gpr[6]=source+4;
+    state.gpr[7]=destination+4;state.eflags=0x602;
+    const uint8_t repeat_movsb[]={0xf3,0xa4};
+    assert(run(repeat_movsb,sizeof(repeat_movsb),0xc030)==0);
+    assert(!memcmp(memory+0x100,memory+0x200,5));
+    assert(state.gpr[1]==0 && state.gpr[6]==source-1 && state.gpr[7]==destination-1);
+
+    /* Zero count is a no-op; an out-of-range span faults atomically. */
+    uint8_t before[24];memcpy(before,memory+0x200,sizeof(before));
+    state.gpr[1]=0;state.gpr[6]=0;state.gpr[7]=0;state.eflags=0x202;
+    assert(run(repeat_movsd,sizeof(repeat_movsd),0xc040)==0);
+    assert(!memcmp(before,memory+0x200,sizeof(before)) && state.gpr[1]==0);
+    state.gpr[0]=0xfeedface;state.gpr[1]=2;state.gpr[7]=state.stack_high-4;
+    assert(run(repeat_stosd,sizeof(repeat_stosd),0xc050)==PW_ERR_VM);
+    assert(state.gpr[1]==2 && state.gpr[7]==state.stack_high-4);
+
+    uint8_t output[512];PwX86Block block;
+    const uint8_t prefix[]={0xf3};
+    assert(pw_x86_translate(prefix,sizeof(prefix),0,output,sizeof(output),&block)==PW_ERR_TRUNCATED);
+    const uint8_t word_prefix[]={0x66,0x89};
+    assert(pw_x86_translate(word_prefix,sizeof(word_prefix),0,output,sizeof(output),&block)==PW_ERR_TRUNCATED);
+}
+static void muldiv_tests(void)
+{
+    const uint8_t mul_ebx[]={0xf7,0xe3},imul_ebx[]={0xf7,0xeb};
+    const uint8_t div_ebx[]={0xf7,0xf3},idiv_ebx[]={0xf7,0xfb};
+    state.gpr[0]=0xffffffffu;state.gpr[2]=0x11223344;state.gpr[3]=2;state.eflags=0x246;
+    assert(run(mul_ebx,sizeof(mul_ebx),0xc100)==PW_OK);
+    assert(state.gpr[0]==0xfffffffeu && state.gpr[2]==1 && (state.eflags&0x801)==0x801);
+    state.gpr[0]=0xffffffffu;state.gpr[2]=0;state.gpr[3]=2;state.eflags=0xa47;
+    assert(run(imul_ebx,sizeof(imul_ebx),0xc110)==PW_OK);
+    assert(state.gpr[0]==0xfffffffeu && state.gpr[2]==0xffffffffu && !(state.eflags&0x801));
+    state.gpr[0]=0;state.gpr[2]=1;state.gpr[3]=3;
+    assert(run(div_ebx,sizeof(div_ebx),0xc120)==PW_OK);
+    assert(state.gpr[0]==0x55555555u && state.gpr[2]==1);
+    state.gpr[0]=(uint32_t)-17;state.gpr[2]=UINT32_MAX;state.gpr[3]=5;
+    assert(run(idiv_ebx,sizeof(idiv_ebx),0xc130)==PW_OK);
+    assert((int32_t)state.gpr[0]==-3 && (int32_t)state.gpr[2]==-2);
+    state.gpr[0]=7;state.gpr[2]=0;state.gpr[3]=0;uint32_t before[8];
+    memcpy(before,state.gpr,sizeof(before));
+    assert(run(div_ebx,sizeof(div_ebx),0xc140)==PW_ERR_VM);
+    assert(!memcmp(before,state.gpr,sizeof(before)));
+    state.gpr[0]=0;state.gpr[2]=1;state.gpr[3]=1;memcpy(before,state.gpr,sizeof(before));
+    assert(run(idiv_ebx,sizeof(idiv_ebx),0xc150)==PW_ERR_VM);
+    assert(!memcmp(before,state.gpr,sizeof(before)));
+}
 static void x87_transfer_tests(void)
 {
     pw_guest_fp_init(&state.fp);state.gpr[0]=0xabcd0000;state.eflags=0xad7;
@@ -241,6 +312,22 @@ static void ret_cleanup_tests(void)
 }
 static void byte_tests(void)
 {
+    state.gpr[0]=0x112233f9;state.gpr[1]=0xaabbcc0f;state.eflags=0x202;
+    const uint8_t add_al_cl[]={0x02,0xc1};
+    assert(run(add_al_cl,sizeof(add_al_cl),0xaff0)==PW_OK);
+    assert(state.gpr[0]==0x11223308 && (state.eflags&0x8d5)==0x11);
+    state.gpr[0]=0x1122ff44;state.gpr[1]=0x55667700;state.eflags=0x203;
+    const uint8_t adc_ah_ch[]={0x12,0xe5};
+    assert(run(adc_ah_ch,sizeof(adc_ah_ch),0xaff2)==PW_OK);
+    assert(state.gpr[0]==0x11227744 && (state.eflags&0x8d5)==0x15);
+    state.gpr[0]=0x12345603;state.gpr[1]=state.stack_low+32;state.eflags=0x202;
+    *((uint8_t *)stack.write_base+32)=5;
+    const uint8_t sub_memory_al[]={0x28,0x01};
+    assert(run(sub_memory_al,sizeof(sub_memory_al),0xaff4)==PW_OK);
+    assert(*((uint8_t *)stack.write_base+32)==2 && state.gpr[0]==0x12345603);
+    const uint8_t cmp_al_memory[]={0x3a,0x01};state.eflags=0x202;
+    assert(run(cmp_al_memory,sizeof(cmp_al_memory),0xaff6)==PW_OK);
+    assert((state.eflags&0x8d5)==0 && *((uint8_t *)stack.write_base+32)==2);
     for(unsigned src=0;src<8;src++)for(unsigned dst=0;dst<8;dst++)for(unsigned direction=0;direction<2;direction++) {
         for(unsigned i=0;i<4;i++)state.gpr[i]=0x778899aau+i*0x1101;
         uint32_t before[8];memcpy(before,state.gpr,sizeof(before));state.eflags=0xad7;
@@ -456,6 +543,10 @@ static void immediate_tests(void)
 }
 static void comparison_tests(void)
 {
+    state.gpr[0]=0x12348000;state.gpr[1]=0xffff8000;state.eflags=0xad7;
+    const uint8_t test_ax_cx[]={0x66,0x85,0xc8};
+    assert(run(test_ax_cx,sizeof(test_ax_cx),0x7ff)==PW_OK);
+    assert(state.gpr[0]==0x12348000 && state.gpr[1]==0xffff8000 && state.eflags==0x296);
     for(unsigned flags=0;flags<32;flags++)for(unsigned condition=0;condition<16;condition++) {
         unsigned cf=flags&1,pf=(flags>>1)&1,zf=(flags>>2)&1,sf=(flags>>3)&1,of=(flags>>4)&1;
         unsigned expected[]={of,!of,cf,!cf,zf,!zf,cf||zf,!(cf||zf),sf,!sf,pf,!pf,sf!=of,sf==of,zf||(sf!=of),!zf&&(sf==of)};
@@ -506,6 +597,8 @@ int main(int argc, char **argv)
     assert(backend.commit(NULL,&stack,0,stack.bytes,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
     state.stack_low=0x03000000; state.stack_high=0x03001000;
     state.gpr[4]=state.stack_high;
+    string_tests();
+    muldiv_tests();
     /* Independent reference in test_pw_x86_reference.S executes these
      * operations as 32-bit instructions on the host CPU. */
     const uint8_t input[]={0x6a,0xff,0x68,0x44,0x33,0x22,0x11,0xe8,0,0,0,0};

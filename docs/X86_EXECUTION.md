@@ -147,8 +147,8 @@ kind=host-heap-summary blocks=3 live=2 requested=2041 arena=8388608 valid=1
 That historical trace stopped at `RegCreateKeyExA`. The current registry
 package completes create/query/close and create/set/close using real guest
 arguments. The current exact-binary trace reaches the verified `WinMain`
-address and retires 2,287 translated instructions before stopping at
-`MapVirtualKeyA`; two live allocations request 473 bytes at that point. It
+address and retires 37,925 translated instructions before stopping at
+`waveOutGetNumDevs`; two live allocations request 473 bytes at that point. It
 transactionally creates the splash HWND, executes the original WndProc's
 creation and paint callbacks, stores the splash state in four owned
 window-extra bytes, constructs/composes the splash bitmap and returns from
@@ -220,13 +220,14 @@ host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
 base and the shared stdcall return service. Other API cases remain pending.
 
-The current exact-binary trace retires 2,287 instructions and stops at
-`MapVirtualKeyA` in source-confirmed keyboard scan-code discovery after the
-owned splash GDI path has completed. Its cache totals are 522 dispatches, 298
-hits and 224 publications (72,464 bytes). The GDI live-state and post-reset
-cleanup records are described in [GDI.md](GDI.md). Next coverage is the coherent
-keyboard mapping package, main-window/message-loop initialization, TEB delivery
-and later wndproc integer/x87 forms.
+The current exact-binary trace retires 37,925 instructions and stops at
+`waveOutGetNumDevs` in source-confirmed WaveMix initialization. Its cache totals
+are 3,807 dispatches, 3,469 hits and 338 publications (107,008 bytes). The GDI
+live-state and post-reset cleanup records are described in [GDI.md](GDI.md).
+Keyboard mapping, main-window creation, the nested audio helper window, REP
+string operations, 16-bit tests and integer MUL/DIV are already covered. Next
+coverage is the reusable WaveOut device/header state machine, message-loop
+initialization, TEB delivery and later wndproc integer/x87 forms.
 The diagnostic tracer uses the tested generation-scoped cache and reports its
 dispatch/publication metrics. Integer-only binary80 execution covers every
 startup x87 form without touching host FP state. Masked stack overflow and

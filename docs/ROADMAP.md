@@ -99,7 +99,7 @@ structured ps5log/1 evidence and an independently checked result.
   Shared integer call frames and callback state services pass host tests;
   an actual translated synthetic cdecl callback returns through the adapter.
   See GUEST_ABI.md; no Win32 APIs or PS5 callbacks are proven by these tests.
-  Bounded host tracing now executes 2,287 instructions and reaches the verified
+  Bounded host tracing now executes 37,925 instructions and reaches the verified
   `WinMain` address through cached blocks. It completes GetModuleHandleA(NULL),
   __set_app_type, both CRT mode-pointer getters, _controlfp, _initterm and __getmainargs after binding all 207 imports.
   UTC/tick/counter/ID, GetStartupInfoA, LoadStringA, lstrlenA, lstrcpyA and
@@ -109,9 +109,10 @@ structured ps5log/1 evidence and an independently checked result.
   both synchronous creation callbacks, four-byte window-extra storage and
   virtual-desktop geometry. The owned GDI package then completes compatible
   DC/bitmap construction, resource-bitmap conversion, selection, paint
-  lifecycle, palette failure/no-op semantics, clipping and both splash blits.
-  The next stop is `MapVirtualKeyA` in source-confirmed keyboard scan-code
-  discovery, after the splash package. The guest heap
+  lifecycle, logical palette construction, clipping and both splash blits.
+  Keyboard mapping, main-window creation, nested WaveMix helper creation and
+  INI lookup complete. The next stop is `waveOutGetNumDevs`, the first
+  source-confirmed audio-device query. The guest heap
   family and all four CRT adapters pass
   host ownership/fragmentation/ABI tests; original malloc now succeeds.
   Guest errno is modeled, with pointer export and registered new-handler

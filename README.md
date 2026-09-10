@@ -15,13 +15,13 @@ DRM, anti-cheat and kernel drivers are out of scope.
 - **Measured:** the tested LDT route is refused; low allocations and
   mprotect RW-to-RX/RWX work in a title.
 - **Host progress:** the exact Pinball binary reaches its public-PDB-verified
-  `WinMain` address and completes the splash construction and paint path:
-  2,287 translated instructions and 151 completed adapter calls across 58
-  distinct DLL/API pairs. The measured run records 522 DBT dispatches, 298
-  cache hits and 224 published blocks. Owned window/memory DCs, bitmap decode,
-  selection, clipping, palette calls and both splash blits complete. The next
-  classified stop is `MapVirtualKeyA` in keyboard scan-code discovery, beyond
-  the splash package.
+  `WinMain` address, completes the splash path and enters WaveMix setup:
+  37,925 translated instructions and 241 completed adapter calls across 67
+  distinct DLL/API pairs. The measured run records 3,807 DBT dispatches, 3,469
+  cache hits and 338 published blocks. Keyboard scan-code discovery, main and
+  nested helper-window creation, logical palettes, INI lookup and the complete
+  splash blits now execute. The next classified stop is
+  `winmm!waveOutGetNumDevs`, the first audio-device query.
 - **Measured execution scope:** 25,092/25,538 reachable static instructions
   are accepted (98.25%). Integer-only binary80 helpers now translate 2,253 of
   2,300 x87 occurrences, including all 36 forms and all 384 occurrences in the
@@ -35,8 +35,8 @@ DRM, anti-cheat and kernel drivers are out of scope.
   live game audio. Its public Phase 7 still tracks fidelity, performance,
   longer soaks and release polish; prospero-win treats the proven platform
   components as reusable foundations rather than pending research.
-- **Next:** implement the source-confirmed keyboard mapping package and advance
-  through main-window creation and the message loop. Wine remains a contract
+- **Next:** implement the source-confirmed reusable WaveOut state machine and
+  advance through audio initialization toward the message loop. Wine remains a contract
   and test reference, not a claim of implemented compatibility.
 - **Not yet implemented:** a complete execution engine, Win32 API surface
   or a running Windows game.

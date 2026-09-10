@@ -42,7 +42,7 @@ typedef struct PwUser32 {
     PwUser32Class *classes;
     uint32_t class_capacity,next_atom;
     uint32_t desktop_width,desktop_height;
-    uint32_t focus_window;
+    uint32_t focus_window,cursor;
     unsigned desktop_configured;
 } PwUser32;
 
@@ -71,10 +71,14 @@ int pw_user32_move_window(PwUser32 *,uint32_t handle,int32_t x,int32_t y,
                           uint32_t width,uint32_t height);
 int pw_user32_show_window(PwUser32 *,uint32_t handle,uint32_t command,uint32_t *previous);
 int pw_user32_set_focus(PwUser32 *,uint32_t handle,uint32_t *previous);
+int pw_user32_set_cursor(PwUser32 *,uint32_t handle,uint32_t *previous);
 int pw_user32_paint_info(const PwUser32 *,uint32_t handle,uint32_t *wndproc,
                          uint32_t *needed);
 int pw_user32_finish_paint(PwUser32 *,uint32_t handle);
 int pw_user32_begin_paint(PwUser32 *,uint32_t handle,uint32_t dc);
 int pw_user32_end_paint(PwUser32 *,uint32_t handle,uint32_t dc);
 int pw_user32_check_paint(const PwUser32 *,uint32_t handle,uint32_t dc);
+int pw_user32_map_virtual_key(uint32_t code,uint32_t type,uint32_t *result);
+int pw_user32_get_key_name(uint32_t lparam,char *output,uint32_t capacity,
+                           uint32_t *length);
 #endif

@@ -9,6 +9,10 @@ int main(void)
     assert(pw_gdi_init(NULL,dcs,4,surfaces,5,pixels,sizeof(pixels))==PW_ERR_PRECONDITION);
     assert(pw_gdi_init(&gdi,dcs,4,surfaces,5,pixels,sizeof(pixels))==PW_OK);
     assert(pw_gdi_validate(&gdi)==PW_OK);
+    uint32_t stock;
+    assert(pw_gdi_stock_object(1,&stock)==PW_OK && stock==PW_GDI_STOCK_OBJECT_BASE+1);
+    assert(pw_gdi_stock_object(9,&stock)==PW_ERR_NOT_FOUND);
+    assert(pw_gdi_stock_object(20,&stock)==PW_ERR_NOT_FOUND);
     uint32_t screen,screen_again;
     assert(pw_gdi_get_dc(&gdi,0x10000,8,8,&screen)==PW_OK);
     assert(pw_gdi_get_dc(&gdi,0x10000,8,8,&screen_again)==PW_OK);
@@ -31,6 +35,16 @@ int main(void)
     assert(pw_gdi_select_palette(&gdi,memory,1,0,&layout)==PW_ERR_NOT_FOUND);
     assert(pw_gdi_select_palette(&gdi,memory,0,2,&layout)==PW_ERR_PRECONDITION);
     assert(pw_gdi_realize_palette(&gdi,memory,&layout)==PW_OK && !layout);
+    const uint8_t palette_entries[2][4]={{1,2,3,0},{4,5,6,0}};
+    uint32_t palette;
+    assert(pw_gdi_create_palette(&gdi,0x300,2,palette_entries,&palette)==PW_OK);
+    assert(pw_gdi_select_palette(&gdi,memory,palette,0,&layout)==PW_OK && !layout);
+    assert(pw_gdi_delete_object(&gdi,palette)==PW_ERR_STATE);
+    const uint8_t replacement[1][4]={{7,8,9,0}};uint32_t written=0;
+    assert(pw_gdi_set_palette_entries(&gdi,palette,1,1,replacement,&written)==PW_OK && written==1);
+    assert(pw_gdi_set_palette_entries(&gdi,palette,2,1,replacement,&written)==PW_ERR_PRECONDITION);
+    assert(pw_gdi_select_palette(&gdi,memory,0,0,&layout)==PW_OK && layout==palette);
+    assert(pw_gdi_delete_object(&gdi,palette)==PW_OK);
     assert(pw_gdi_create_compatible_bitmap(&gdi,screen,4,4,&bitmap)==PW_OK);
     assert(pw_gdi_select_bitmap(&gdi,memory,bitmap,&old)==PW_OK && old==PW_GDI_STOCK_BITMAP);
     assert(pw_gdi_delete_object(&gdi,bitmap)==PW_ERR_STATE);
@@ -97,7 +111,7 @@ int main(void)
 
     PwGdiCounts counts;
     assert(pw_gdi_counts(&gdi,&counts)==PW_OK && !counts.dcs && counts.surfaces==1 &&
-           counts.target_surfaces==1 && counts.pixel_bytes==256);
+           counts.target_surfaces==1 && !counts.palettes && counts.pixel_bytes==256);
     assert(pw_gdi_reset(&gdi)==PW_OK && pw_gdi_validate(&gdi)==PW_OK);
     assert(pw_gdi_counts(&gdi,&counts)==PW_OK && !counts.dcs && !counts.surfaces);
 

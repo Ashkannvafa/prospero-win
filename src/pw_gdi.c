@@ -18,6 +18,13 @@ static PwGdiSurface *find_bitmap(PwGdi *gdi,uint32_t handle)
            gdi->surfaces[i].handle==handle)return &gdi->surfaces[i];
     return NULL;
 }
+static PwGdiPalette *find_palette(PwGdi *gdi,uint32_t handle)
+{
+    if(!gdi || !handle)return NULL;
+    for(uint32_t i=0;i<PW_GDI_PALETTE_CAPACITY;i++)
+        if(gdi->palettes[i].used && gdi->palettes[i].handle==handle)return &gdi->palettes[i];
+    return NULL;
+}
 static int free_dc_slot(const PwGdi *gdi,uint32_t *slot)
 {
     for(uint32_t i=0;i<gdi->dc_capacity;i++)if(!gdi->dcs[i].used){*slot=i;return PW_OK;}
@@ -125,6 +132,8 @@ int pw_gdi_release_dc(PwGdi *gdi,uint32_t owner,uint32_t handle)
     PwGdiDc *dc=find_dc(gdi,handle);
     if(!owner || !dc)return PW_ERR_NOT_FOUND;
     if(dc->kind!=PW_GDI_WINDOW_DC || dc->owner_window!=owner)return PW_ERR_STATE;
+    PwGdiPalette *palette=find_palette(gdi,dc->selected_palette);
+    if(palette)palette->selected_by--;
     memset(dc,0,sizeof(*dc));return PW_OK;
 }
 int pw_gdi_create_compatible_dc(PwGdi *gdi,uint32_t source,uint32_t *result)
@@ -187,6 +196,34 @@ int pw_gdi_create_dib_bitmap(PwGdi *gdi,const uint8_t *dib,uint32_t dib_bytes,
     }
     *bitmap=handle;return PW_OK;
 }
+int pw_gdi_create_palette(PwGdi *gdi,uint16_t version,uint16_t count,
+                          const uint8_t entries[][4],uint32_t *palette)
+{
+    if(!gdi || !entries || !palette || version!=0x300 || !count ||
+       count>PW_GDI_PALETTE_ENTRIES)return PW_ERR_PRECONDITION;
+    uint32_t slot=PW_GDI_PALETTE_CAPACITY;
+    for(uint32_t i=0;i<PW_GDI_PALETTE_CAPACITY;i++)
+        if(!gdi->palettes[i].used){slot=i;break;}
+    if(slot==PW_GDI_PALETTE_CAPACITY)return PW_ERR_LIMIT;
+    uint32_t handle;int status=next_handle(gdi,&handle);if(status!=PW_OK)return status;
+    PwGdiPalette value={.handle=handle,.version=version,.count=count,.used=1};
+    memcpy(value.entries,entries,(size_t)count*4);gdi->palettes[slot]=value;
+    *palette=handle;return PW_OK;
+}
+int pw_gdi_set_palette_entries(PwGdi *gdi,uint32_t handle,uint32_t start,
+                               uint32_t count,const uint8_t entries[][4],uint32_t *written)
+{
+    if(!gdi || !entries || !written)return PW_ERR_PRECONDITION;
+    PwGdiPalette *palette=find_palette(gdi,handle);if(!palette)return PW_ERR_NOT_FOUND;
+    if(start>palette->count || count>palette->count-start)return PW_ERR_PRECONDITION;
+    memcpy(palette->entries+start,entries,(size_t)count*4);*written=count;return PW_OK;
+}
+int pw_gdi_stock_object(uint32_t index,uint32_t *object)
+{
+    if(!object)return PW_ERR_PRECONDITION;
+    if(index>19 || index==9)return PW_ERR_NOT_FOUND;
+    *object=PW_GDI_STOCK_OBJECT_BASE+index;return PW_OK;
+}
 int pw_gdi_select_bitmap(PwGdi *gdi,uint32_t handle,uint32_t bitmap,uint32_t *previous)
 {
     if(!gdi || !previous)return PW_ERR_PRECONDITION;
@@ -207,14 +244,21 @@ int pw_gdi_delete_dc(PwGdi *gdi,uint32_t handle)
     if(dc->kind!=PW_GDI_MEMORY_DC)return PW_ERR_STATE;
     PwGdiSurface *selected=find_bitmap(gdi,dc->selected_bitmap);
     if(selected)selected->selected_by--;
+    PwGdiPalette *palette=find_palette(gdi,dc->selected_palette);
+    if(palette)palette->selected_by--;
     memset(dc,0,sizeof(*dc));return PW_OK;
 }
 int pw_gdi_delete_object(PwGdi *gdi,uint32_t object)
 {
-    PwGdiSurface *surface=find_bitmap(gdi,object);if(!surface)return PW_ERR_NOT_FOUND;
-    if(surface->selected_by)return PW_ERR_STATE;
-    memset(gdi->pixels+surface->offset,0,surface->bytes);
-    memset(surface,0,sizeof(*surface));return PW_OK;
+    PwGdiSurface *surface=find_bitmap(gdi,object);
+    if(surface) {
+        if(surface->selected_by)return PW_ERR_STATE;
+        memset(gdi->pixels+surface->offset,0,surface->bytes);
+        memset(surface,0,sizeof(*surface));return PW_OK;
+    }
+    PwGdiPalette *palette=find_palette(gdi,object);if(!palette)return PW_ERR_NOT_FOUND;
+    if(palette->selected_by)return PW_ERR_STATE;
+    memset(palette,0,sizeof(*palette));return PW_OK;
 }
 int pw_gdi_get_layout(PwGdi *gdi,uint32_t handle,uint32_t *layout)
 {
@@ -267,12 +311,14 @@ int pw_gdi_select_palette(PwGdi *gdi,uint32_t handle,uint32_t palette,uint32_t b
 {
     if(!gdi || !previous)return PW_ERR_PRECONDITION;
     if(background>1)return PW_ERR_PRECONDITION;
-    if(!find_dc(gdi,handle))return PW_ERR_NOT_FOUND;
-    /* This true-color package does not create logical palettes.  A null
-     * palette is therefore a deterministic no-op; every non-null value is an
-     * invalid GDI handle and must fail without changing DC ownership. */
-    if(palette)return PW_ERR_NOT_FOUND;
-    *previous=0;return PW_OK; /* true-color profile has no logical palette */
+    PwGdiDc *dc=find_dc(gdi,handle);if(!dc)return PW_ERR_NOT_FOUND;
+    PwGdiPalette *next=palette?find_palette(gdi,palette):NULL;
+    if(palette && !next)return PW_ERR_NOT_FOUND;
+    PwGdiPalette *old=find_palette(gdi,dc->selected_palette);
+    *previous=dc->selected_palette;
+    if(old && old!=next)old->selected_by--;
+    if(next && old!=next)next->selected_by++;
+    dc->selected_palette=palette;return PW_OK;
 }
 int pw_gdi_realize_palette(PwGdi *gdi,uint32_t handle,uint32_t *changed)
 {
@@ -344,6 +390,7 @@ int pw_gdi_counts(const PwGdi *gdi,PwGdiCounts *counts)
         if(gdi->surfaces[i].kind==PW_GDI_TARGET_SURFACE)counts->target_surfaces++;
         else if(gdi->surfaces[i].kind==PW_GDI_BITMAP)counts->bitmaps++;
     }
+    for(uint32_t i=0;i<PW_GDI_PALETTE_CAPACITY;i++)if(gdi->palettes[i].used)counts->palettes++;
     return PW_OK;
 }
 int pw_gdi_validate(const PwGdi *gdi)
@@ -377,6 +424,16 @@ int pw_gdi_validate(const PwGdi *gdi)
             } else if(dc->surface>=gdi->surface_capacity || !gdi->surfaces[dc->surface].used ||
                       gdi->surfaces[dc->surface].handle!=dc->selected_bitmap)return PW_ERR_STATE;
         } else return PW_ERR_STATE;
+        if(dc->selected_palette && !find_palette((PwGdi *)gdi,dc->selected_palette))
+            return PW_ERR_STATE;
+    }
+    for(uint32_t i=0;i<PW_GDI_PALETTE_CAPACITY;i++)if(gdi->palettes[i].used) {
+        const PwGdiPalette *palette=&gdi->palettes[i];uint32_t selected=0;
+        if(palette->version!=0x300 || !palette->count || palette->count>PW_GDI_PALETTE_ENTRIES)
+            return PW_ERR_STATE;
+        for(uint32_t j=0;j<gdi->dc_capacity;j++)
+            if(gdi->dcs[j].used && gdi->dcs[j].selected_palette==palette->handle)selected++;
+        if(selected!=palette->selected_by)return PW_ERR_STATE;
     }
     return PW_OK;
 }
@@ -385,6 +442,7 @@ int pw_gdi_reset(PwGdi *gdi)
     if(!gdi || !gdi->dcs || !gdi->surfaces || !gdi->pixels)return PW_ERR_PRECONDITION;
     memset(gdi->dcs,0,sizeof(*gdi->dcs)*gdi->dc_capacity);
     memset(gdi->surfaces,0,sizeof(*gdi->surfaces)*gdi->surface_capacity);
+    memset(gdi->palettes,0,sizeof(gdi->palettes));
     memset(gdi->pixels,0,gdi->pixel_capacity);gdi->next_handle=PW_GDI_HANDLE_FIRST;
     return PW_OK;
 }

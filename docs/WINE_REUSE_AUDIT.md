@@ -41,7 +41,7 @@ review. No result here authorizes automatic extraction of a source file.
 | SetSystemPaletteUse | gdi32 alias to win32u/palette.c | GDI palette/device state and a platform presentation boundary, not just a function rename |
 | GetDC/ReleaseDC, compatible DC/bitmap, SelectObject/DeleteObject/DeleteDC | win32u DC and bitmap object paths | Process-owned typed handles, DC/bitmap selection exclusivity, balanced release/delete and transactional failure. The initial fixed-capacity model is implemented and tested; it is not Wine's complete GDI object manager |
 | BitBlt, GetDeviceCaps, Get/SetLayout, GetObjectA | win32u drawing/DC paths | Checked surface geometry, clipping, raster-op semantics and exact PE32 structures. The splash path supports `SRCCOPY`, `BLACKNESS` and a deterministic true-color profile; other raster operations and device profiles stop explicitly |
-| SelectPalette, RealizePalette | win32u palette paths | Logical-palette ownership and realization. The current true-color profile models null selection plus invalid-handle failure; palette creation/entries remain pending |
+| CreatePalette, SetPaletteEntries, SelectPalette, RealizePalette | win32u palette paths | Fixed-capacity logical palettes, checked entry mutation, selection ownership and deterministic true-color realization are implemented and tested |
 | MessageBeep | user32 alias to win32u/sysparams.c | User/audio service integration; do not assume the alias is implemented inside user32 |
 | DefWindowProcA | user32 forward to ntdll; ntdll/rtl.c macros | Registered user-procedure dispatch; source name is constructed by token-pasting macros |
 

@@ -27,7 +27,7 @@ static void enter_create(PwWin32 *runtime,PwX86State *state,uint32_t token,
     state->eip=token;state->gpr[4]=state->stack_high-sizeof(frame);
     memcpy((void *)(uintptr_t)state->gpr[4],frame,sizeof(frame));
     assert(pw_win32_dispatch(runtime,state)==PW_OK && runtime->callback_pending &&
-           runtime->create.active && state->eip==0x01002000);
+           runtime->create[0].active && runtime->create_depth==1 && state->eip==0x01002000);
 }
 int main(void)
 {
@@ -64,9 +64,9 @@ int main(void)
            create[8]==0x80000000u && create[9]==title && create[10]==class_name);
     assert(invoke(code.exec_base,&state)==0 && state.eip==PW_WIN32_WINDOW_CALLBACK);
     assert(pw_win32_dispatch(&runtime,&state)==PW_OK && runtime.callback_pending &&
-           runtime.create.phase==2 && state.eip==0x01002000);
+           runtime.create[0].phase==2 && state.eip==0x01002000);
     assert(invoke(code.exec_base,&state)==0 && state.eip==PW_WIN32_WINDOW_CALLBACK);
-    assert(pw_win32_dispatch(&runtime,&state)==PW_OK && !runtime.create.active &&
+    assert(pw_win32_dispatch(&runtime,&state)==PW_OK && !runtime.create[0].active && !runtime.create_depth &&
            state.eip==0x01003000 && state.gpr[4]==state.stack_high && state.gpr[0]==0x10000 &&
            windows[0].used && !windows[0].creating && runtime.calls==1);
 
@@ -105,7 +105,7 @@ int main(void)
 
     callback_code(&vm,&code,0);enter_create(&runtime,&state,create_token,class_name,title);
     assert(invoke(code.exec_base,&state)==0 && state.eip==PW_WIN32_WINDOW_CALLBACK);
-    assert(pw_win32_dispatch(&runtime,&state)==PW_OK && !runtime.create.active &&
+    assert(pw_win32_dispatch(&runtime,&state)==PW_OK && !runtime.create[0].active && !runtime.create_depth &&
            !state.gpr[0] && !windows[1].used && user.next_object==0x10001 && runtime.calls==6);
     assert(vm.release(NULL,&code)==PW_OK);assert(vm.release(NULL,&memory)==PW_OK);return 0;
 }

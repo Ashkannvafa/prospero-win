@@ -26,6 +26,34 @@ static int code_fixture(void *opaque,uint32_t address)
 {
     (void)opaque;return address==0x01002000?PW_OK:PW_ERR_NOT_FOUND;
 }
+static int profile_fixture(void *opaque,const char *section,const char *key,
+                           uint32_t fallback,const char *filename,uint32_t *value)
+{
+    (void)opaque;
+    if(strcmp(section,"WinNT:default") || strcmp(key,"WaveBlocks") ||
+       strcmp(filename,"C:\\game\\wavemix.inf") || fallback!=3)return PW_ERR_MALFORMED;
+    *value=5;return PW_OK;
+}
+static void profile_tests(PwWin32 *r,PwX86State *s)
+{
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"GetPrivateProfileIntA");
+    assert(pw_win32_resolve(r,"kernel32.dll",&symbol,&target)==PW_OK);
+    uint32_t text=s->stack_low+256;
+    strcpy((char *)(uintptr_t)text,"WinNT:default");
+    strcpy((char *)(uintptr_t)(text+32),"WaveBlocks");
+    strcpy((char *)(uintptr_t)(text+64),"C:\\game\\wavemix.inf");
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-20;s->eflags=0xad7;
+    uint32_t frame[]={0x01001234,text,text+32,3,text+64};
+    memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));
+    PwX86State before=*s;unsigned calls=r->calls;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_STATE && !memcmp(s,&before,sizeof(before)) && r->calls==calls);
+    r->services.profile_int=profile_fixture;
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==5 && s->eip==frame[0] &&
+           s->gpr[4]==s->stack_high && s->eflags==0xad7 && r->calls==calls+1);
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-20;frame[1]=0;
+    memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));before=*s;calls=r->calls;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_VM && !memcmp(s,&before,sizeof(before)) && r->calls==calls);
+}
 static void resource_tests(PwWin32 *r,PwX86State *s)
 {
     PeImportSymbol symbol={0};PwImportTarget target;
@@ -287,6 +315,23 @@ static void search_tests(PwWin32 *r,PwX86State *s,PwVmBackend *vm)
                s->eip==frame[0] && s->eflags==0xad7);
         assert(s->gpr[4]==s->stack_high-(i<2?8:0));
     }
+    PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"_strnicmp");
+    assert(pw_win32_resolve(r,"msvcrt.dll",&symbol,&target)==PW_OK);
+    strcpy((char *)(uintptr_t)0x03400400,"Right Shift");
+    strcpy((char *)(uintptr_t)0x03400500,"right shift");
+    const uint32_t counts[]={5,11,4,0};const uint32_t expected_case[]={0,0,0,0};
+    for(unsigned i=0;i<4;i++) {
+        s->gpr[4]=s->stack_high-16;s->eip=(uint32_t)target.address;s->eflags=0xad7;
+        uint32_t frame[]={0x01001234,0x03400400,0x03400500,counts[i]};
+        memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));
+        assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==expected_case[i] &&
+               s->gpr[4]==s->stack_high-12 && s->eip==frame[0] && s->eflags==0xad7);
+    }
+    *(char *)(uintptr_t)0x03400504='x';
+    s->gpr[4]=s->stack_high-16;s->eip=(uint32_t)target.address;
+    uint32_t mismatch[]={0x01001234,0x03400400,0x03400500,5};
+    memcpy((void *)(uintptr_t)s->gpr[4],mismatch,sizeof(mismatch));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==UINT32_MAX);
     assert(vm->release(NULL,&text)==PW_OK);s->memory_count=0;
 }
 static void user32_tests(PwWin32 *r,PwX86State *s)
@@ -315,6 +360,33 @@ static void user32_tests(PwWin32 *r,PwX86State *s)
     memcpy((void *)(uintptr_t)s->gpr[4],find_frame,sizeof(find_frame));
     assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==0x10001);
     r->user32->windows[0]=(PwUser32Window){0};
+
+    strcpy(symbol.name,"MapVirtualKeyA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    const uint32_t scans[]={0x29,0x2a,0x2b,0x36,0x37};
+    const uint32_t keys[]={0xc0,0x10,0xdc,0x10,0x6a};
+    for(unsigned i=0;i<sizeof(scans)/sizeof(scans[0]);i++) {
+        s->gpr[4]=s->stack_high-12;s->eip=(uint32_t)target.address;s->eflags=0xad7;
+        uint32_t frame[]={0x01001234,scans[i],1};
+        memcpy((void *)(uintptr_t)s->gpr[4],frame,sizeof(frame));
+        assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==keys[i] &&
+               s->gpr[4]==s->stack_high && s->eip==frame[0] && s->eflags==0xad7);
+    }
+    strcpy(symbol.name,"GetKeyNameTextA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    uint32_t output=s->stack_low+384;
+    memset((void *)(uintptr_t)output,0xcc,20);
+    s->gpr[4]=s->stack_high-16;s->eip=(uint32_t)target.address;s->eflags=0xad7;
+    uint32_t key_frame[]={0x01001234,0x00360000,output,19};
+    memcpy((void *)(uintptr_t)s->gpr[4],key_frame,sizeof(key_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==11 &&
+           !strcmp((char *)(uintptr_t)output,"Right Shift") &&
+           s->gpr[4]==s->stack_high && s->eip==key_frame[0] && s->eflags==0xad7);
+    s->gpr[4]=s->stack_high-16;s->eip=(uint32_t)target.address;
+    key_frame[2]=s->stack_high-2;memcpy((void *)(uintptr_t)s->gpr[4],key_frame,sizeof(key_frame));
+    PwX86State before=*s;unsigned calls=r->calls;
+    assert(pw_win32_dispatch(r,s)==PW_ERR_VM && !memcmp(s,&before,sizeof(before)) &&
+           r->calls==calls);
 }
 static int registry_call(PwWin32 *r,PwX86State *s,const char *name,
                          const uint32_t *args,unsigned count)
@@ -531,6 +603,7 @@ int main(void)
     symbol.by_ordinal=1;symbol.ordinal=42;
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
     string_tests(&runtime,&state);
+    profile_tests(&runtime,&state);
     length_tests(&runtime,&state,&vm);
     copy_tests(&runtime,&state,&vm);
     search_tests(&runtime,&state,&vm);

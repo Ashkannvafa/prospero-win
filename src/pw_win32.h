@@ -10,8 +10,10 @@
 #include "pw_gdi.h"
 enum { PW_WIN32_TOKEN_BASE=0xe0000000u, PW_WIN32_CALLBACK_BASE=0xe1000000u,
        PW_WIN32_INIT_DEPTH=8, PW_WIN32_INIT_ENTRIES=1024,
-       PW_WIN32_WINDOW_CALLBACK=PW_WIN32_CALLBACK_BASE+PW_WIN32_INIT_DEPTH*16,
-       PW_WIN32_UPDATE_CALLBACK=PW_WIN32_WINDOW_CALLBACK+16 };
+       PW_WIN32_CREATE_DEPTH=8,
+       PW_WIN32_CREATE_CALLBACK_BASE=PW_WIN32_CALLBACK_BASE+PW_WIN32_INIT_DEPTH*16,
+       PW_WIN32_WINDOW_CALLBACK=PW_WIN32_CREATE_CALLBACK_BASE,
+       PW_WIN32_UPDATE_CALLBACK=PW_WIN32_CREATE_CALLBACK_BASE+PW_WIN32_CREATE_DEPTH*16 };
 typedef struct PwWin32Init {
     PwGuestCall call;
     PwGuestCallback callback;
@@ -48,6 +50,14 @@ typedef struct PwWin32Services {
     unsigned ansi_codepage; /* currently exact CP1252 conversion only */
     /* Stable guest-visible DOS path for the main image, never a host path. */
     const char *main_module_filename;
+    /* CRT stream handles are provider-owned opaque 32-bit tokens. Paths are
+     * guest DOS paths; providers must confine translation to the title root. */
+    int (*file_open)(void *,const char *,const char *,uint32_t *);
+    int (*file_close)(void *,uint32_t);
+    /* Provider-confined INI lookup used by GetPrivateProfileIntA. The
+     * provider owns DOS-path translation and returns the default for a
+     * missing file, section, key, or nonnumeric value. */
+    int (*profile_int)(void *,const char *,const char *,uint32_t,const char *,uint32_t *);
 } PwWin32Services;
 typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
@@ -65,7 +75,8 @@ typedef struct PwWin32 {
     unsigned calls;
     unsigned callback_pending,init_depth;
     PwWin32Init init[PW_WIN32_INIT_DEPTH];
-    PwWin32Create create;
+    PwWin32Create create[PW_WIN32_CREATE_DEPTH];
+    unsigned create_depth;
     PwWin32Update update;
 } PwWin32;
 /* Caller supplies a live RW, identity-mapped CRT region of at least 4096

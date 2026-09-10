@@ -56,18 +56,19 @@ GDI counts and a post-reset cleanup record.
 A bounded local run of the privately owned, hash-identified executable reaches
 the public-PDB-verified application entry and then:
 
-- retires 2,287 translated instructions;
-- completes 151 adapter calls across 58 distinct DLL/API pairs;
-- records 522 DBT dispatches, 298 cache hits, 224 misses/publications and
-  72,464 emitted bytes in generation 1;
+- retires 37,925 translated instructions;
+- completes 241 adapter calls across 67 distinct DLL/API pairs;
+- records 3,807 DBT dispatches, 3,469 cache hits, 338 misses/publications and
+  107,008 emitted bytes in generation 1;
 - completes splash bitmap construction, synchronous `WM_PAINT`, `BLACKNESS`
   clearing, centered `SRCCOPY`, DC release and `UpdateWindow` return;
 - reports a valid live model with two DCs, three surfaces, one bitmap and
   16,872,960 owned pixel bytes;
 - resets to zero DCs, surfaces, bitmaps and pixel bytes with validation intact.
 
-The next classified stop is `user32!MapVirtualKeyA`, called from the keyboard
-scan-code discovery routine after the splash package. This is host integration
+Keyboard discovery, main-window setup, logical palette creation and the nested
+WaveMix helper-window callback now also complete. The next classified stop is
+`winmm!waveOutGetNumDevs`. This is host integration
 evidence only: it is not a visible-window, gameplay, PS5 execution or hardware
 presentation claim. Private binaries, resource bytes, decompiler output and raw
 captures remain outside the repository.

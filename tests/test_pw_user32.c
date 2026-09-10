@@ -35,6 +35,12 @@ int main(void)
                               icon,sizeof(icon),&same_icon)==PW_OK && same_icon==value);
     assert(pw_user32_resource(&user,PW_USER32_SYSTEM_CURSOR,0,0,NULL,32512,NULL,0,
                               &value)==PW_OK && value==0x10001);
+    uint32_t previous_cursor=99;
+    assert(pw_user32_set_cursor(&user,value,&previous_cursor)==PW_OK && !previous_cursor &&
+           user.cursor==value);
+    assert(pw_user32_set_cursor(&user,0,&previous_cursor)==PW_OK &&
+           previous_cursor==value && !user.cursor);
+    assert(pw_user32_set_cursor(&user,0xdeadbeef,&previous_cursor)==PW_ERR_NOT_FOUND);
     assert(pw_user32_resource(&user,PW_USER32_SYSTEM_CURSOR,0,0,NULL,32650,NULL,0,
                               &value)==PW_ERR_LIMIT);
     PwUser32Class descriptor={.style=4104,.wndproc=0x01002000,.module=0x01000000,
@@ -93,5 +99,19 @@ int main(void)
     assert(pw_user32_register_class(&user,&descriptor,&atom)==PW_ERR_STATE);
     strcpy(descriptor.class_name,"Other");
     assert(pw_user32_register_class(&user,&descriptor,&atom)==PW_ERR_LIMIT);
+    uint32_t mapped=99,length=99;char key_name[20];
+    assert(pw_user32_map_virtual_key(0x2a,1,&mapped)==PW_OK && mapped==0x10);
+    assert(pw_user32_map_virtual_key(0x36,1,&mapped)==PW_OK && mapped==0x10);
+    assert(pw_user32_map_virtual_key(0x10,0,&mapped)==PW_OK && mapped==0x2a);
+    assert(pw_user32_map_virtual_key('Z',0,&mapped)==PW_OK && mapped==0x2c);
+    assert(pw_user32_map_virtual_key('Z',2,&mapped)==PW_OK && mapped=='Z');
+    assert(pw_user32_map_virtual_key(0xff,1,&mapped)==PW_OK && !mapped);
+    assert(pw_user32_map_virtual_key(0,4,&mapped)==PW_ERR_UNSUPPORTED);
+    assert(pw_user32_get_key_name(0x002a0000,key_name,sizeof(key_name),&length)==PW_OK &&
+           length==10 && !strcmp(key_name,"Left Shift"));
+    assert(pw_user32_get_key_name(0x00360000,key_name,6,&length)==PW_OK &&
+           length==5 && !strcmp(key_name,"Right"));
+    assert(pw_user32_get_key_name(0x00ff0000,key_name,sizeof(key_name),&length)==PW_OK &&
+           !length && !key_name[0]);
     return 0;
 }
