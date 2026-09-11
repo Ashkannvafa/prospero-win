@@ -132,7 +132,8 @@ module unload, DBT destruction, PE release and all four guest VM releases.
 ## Physical gameplay follow-up
 
 The owner subsequently confirmed Cross plunger control, L1/R1 flippers,
-scoring and a complete ball-loss/new-ball cycle. An initially suspected stale
+scoring, a complete ball-loss/new-ball cycle, Options pause/resume and Square
+new-game restart. An initially suspected stale
 ball at the drain was disproved rather than patched: synchronized Remote Play
 inspection showed the actual ball moving and later waiting in the right-hand
 launcher, while live renderer state contained exactly one ball sprite. The
@@ -144,8 +145,17 @@ The same play session exposed an actual missing x87 register-store form,
 `FST ST(i)` (`DD D0+i`). Supporting that non-popping transfer prevented the
 classified execute abort reached during flipper-adjacent physics. Unit tests
 cover the instruction decode, register-stack semantics and captured
-`FST ST(1); FSTP ST(0); FSTP m32real` sequence. Final P5/P6 acceptance still
-requires the owner to exercise pause/resume and new-game restart.
+`FST ST(1); FSTP ST(0); FSTP m32real` sequence.
+
+The clean post-fix production candidate has linked ELF SHA-256
+`b5071e1ed0cab2fb64a4fe280d82b0059fc305ebfd95ac3681610cb25715a6cc`
+and deployed fSELF SHA-256
+`baed8c4fc70d10c7c63fba9822611df1e9edd241db2c885eb1d025701e1f7782`.
+It launched as run
+`20260911T080302217Z_PPSA99995_prospero-win_0x1d780c2f70b6d`; structured
+telemetry established the expected DBT, GDI/AGC, AudioOut, Pad and persistent
+state paths before the complete physical checklist passed. This closes P5 and
+P6 for the original Pinball target.
 VideoOut unregister returned `0x80290009`, the measured resource-busy result;
 closing VideoOut completed the observed deferred-release path and all later
 resource releases succeeded. A title-manager kill cannot execute in-process

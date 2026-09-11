@@ -33,15 +33,15 @@ renderer or audio proof.
   signed 16-bit stereo blocks. A correlated 1080p60/AAC Remote Play capture,
   artifact hash and telemetry are recorded in HARDWARE_VALIDATION.md.
 
-## Next milestones
+## Completed first target
 
-- [ ] **P5 — playable (implementation complete; final physical acceptance pending).**
+- [x] **P5 — playable.**
   The ScePad/Win32 adapter maps plunger, both flippers, three nudges,
   pause/resume and new game with exact key transitions and neutralization.
-  `Create` posts `WM_QUIT` directly for an orderly guest/runtime exit. The
-  Hardware play has confirmed Cross launch, both shoulder flippers, scoring
-  and ball loss without a runtime exit. Pause/resume and new-game restart are
-  the remaining owner checks. A silver circle between the flippers was
+  `Create` posts `WM_QUIT` directly for an orderly guest/runtime exit.
+  Hardware play has confirmed Cross launch, both shoulder flippers, scoring,
+  ball loss, Options pause/resume and Square new-game restart without an
+  unintended runtime exit. A silver circle between the flippers was
   compared against both live `TBall` state and the original game reference;
   it is fixed table artwork, not a retained ball sprite.
 - [x] **P5.5 — presentation fidelity and pacing.** Bottom-up DIB subrects use
@@ -49,7 +49,7 @@ renderer or audio proof.
   focused top-level owner wins presentation; the visible-owner scan is only a
   fallback. Empty PeekMessage iterations yield rather than busy-spin, with
   counters in every heartbeat. Corrected output is hardware-observed.
-- [ ] **P6 — complete Pinball runtime (physical acceptance pending).**
+- [x] **P6 — complete Pinball runtime.**
   Registry preferences and scores use a versioned checksummed format and
   atomic `/download0` replacement; a second hardware launch reloaded 473
   bytes. `wavemix.inf` uses a bounded parser and confined file route. The
@@ -57,8 +57,11 @@ renderer or audio proof.
   `MCI_OPEN`; WaveMix PCM is the required active audio route. Two complete
   validation-deadline launch/teardown cycles are proven. The exact production
   candidate passed its strict continuous soak beyond ten minutes, including
-  8,733 changing-frame flips and 901 audio blocks. Only owner gameplay
-  acceptance of pause/resume and new-game restart remains.
+  8,733 changing-frame flips and 901 audio blocks. The complete physical
+  gameplay checklist passed on the production candidate.
+
+## Next milestones
+
 - [ ] **P7 — reusable compatibility expansion.** Select a second title and
   measure which CRT/User32/GDI/WinMM contracts generalize. Add compatibility
   by subsystem with fixtures, never by title-name hacks.

@@ -20,9 +20,10 @@ The accepted fSELF hash, telemetry and private audiovisual evidence are in
 [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). DualSense translation,
 corrected GDI composition, persistent registry reload, bounded INI parsing and
 ordered teardown are implemented and hardware-observed. Physical play has
-confirmed launch, both flippers, scoring and ball loss without a runtime exit;
-pause/resume and new-game restart remain open. The continuous path has already
-crossed ten minutes without an abort. MIDI is optional in this target:
+confirmed launch, both flippers, scoring, ball loss, pause/resume and new-game
+restart without an unintended runtime exit. P5/P6 acceptance is complete. The
+continuous path has already crossed ten minutes without an abort. MIDI is
+optional in this target:
 music defaults off and the sole startup `MCI_OPEN` disables its menu item when
 the runtime reports no sequencer; original PCM effects remain available.
 
@@ -41,8 +42,8 @@ The gameplay keys match the defaults in the pinned public semantic source.
 Every input sample is consumed chronologically and held keys are released on
 disconnect, interception, controller-generation change and shutdown. The
 manual acceptance sequence is Cross to launch, both shoulders, scoring and
-ball loss, Options twice, then Square; the first four checks have passed on
-hardware. Create is tested last because it exits.
+ball loss, Options twice, then Square; every check has passed on hardware.
+Create is tested last because it exits.
 
 The file's SHA-1 is
 `2a5b525e0f631bb6107639e2a69df15986fb0d05`, exactly the Windows XP target

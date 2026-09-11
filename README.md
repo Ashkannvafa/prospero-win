@@ -32,14 +32,13 @@ The P5/P6 gameplay candidate is running on an owned PS5 with FW 12.02:
   AudioOut, GDI, VideoOut, AGC direct memory, DBT, PE image and guest VM.
 
 The current production fSELF SHA-256 is
-`a71688d0c95ddb07fc2b86be16cbc5fb6705208e2df8078d5449843c3e972458`.
+`baed8c4fc70d10c7c63fba9822611df1e9edd241db2c885eb1d025701e1f7782`.
 See [HARDWARE_VALIDATION.md](docs/HARDWARE_VALIDATION.md) for correlated
 continuous and orderly-exit evidence and its limitations.
 
-Automated and hardware-side implementation is complete for the current P5/P6
-candidate. Physical gameplay has now confirmed plunger launch, both flippers,
-scoring and ball loss without a runtime exit. Pause/resume and manual new-game
-restart remain on the owner acceptance checklist.
+P5 and P6 are complete for the first target. Physical gameplay has confirmed
+plunger launch, both flippers, scoring, ball loss, pause/resume and manual
+new-game restart without an unintended runtime exit.
 The original game defaults music off; its single optional `MCI_OPEN` request is
 reported honestly as no MIDI device, while its required WaveMix PCM effects
 remain active. Broad Win32 compatibility and a general D3D backend are later
