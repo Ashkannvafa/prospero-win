@@ -17,7 +17,8 @@ int pw_registry_init(PwRegistry *r,PwRegistryKey *keys,uint32_t key_capacity,
 {
     if(!r || !keys || !key_capacity || !values || !value_capacity)return PW_ERR_PRECONDITION;
     memset(keys,0,sizeof(*keys)*key_capacity);memset(values,0,sizeof(*values)*value_capacity);
-    *r=(PwRegistry){keys,values,key_capacity,value_capacity};return PW_OK;
+    *r=(PwRegistry){.keys=keys,.values=values,.key_capacity=key_capacity,
+        .value_capacity=value_capacity};return PW_OK;
 }
 
 static int key_index(const PwRegistry *r,uint32_t handle,uint32_t *index)
@@ -69,6 +70,7 @@ uint32_t pw_registry_create(PwRegistry *r,uint32_t parent,const char *subkey,
     if(index==r->key_capacity)return PW_REG_ERROR_ACCESS_DENIED;
     PwRegistryKey *key=&r->keys[index];memcpy(key->path,path,strlen(path)+1);
     key->handle=HANDLE_BASE+index*HANDLE_STEP;key->open_count=1;key->used=1;
+    r->generation++;
     *handle=key->handle;*disposition=PW_REG_CREATED_NEW_KEY;return 0;
 }
 
@@ -120,9 +122,13 @@ uint32_t pw_registry_set(PwRegistry *r,uint32_t handle,const char *name,uint32_t
         if(slot==r->value_capacity && !r->values[i].used)slot=i;
     }
     if(slot==r->value_capacity)return PW_REG_ERROR_ACCESS_DENIED;
-    PwRegistryValue *value=&r->values[slot];memset(value,0,sizeof(*value));
+    PwRegistryValue *value=&r->values[slot];
+    if(value->used && value->type==type && value->size==size &&
+       (!size || !memcmp(value->data,data,size)))return 0;
+    memset(value,0,sizeof(*value));
     memcpy(value->name,name,strlen(name)+1);if(size)memcpy(value->data,data,size);
-    value->size=size;value->type=type;value->key_index=key;value->used=1;return 0;
+    value->size=size;value->type=type;value->key_index=key;value->used=1;
+    r->generation++;return 0;
 }
 
 uint32_t pw_registry_query(const PwRegistry *r,uint32_t handle,const char *name,

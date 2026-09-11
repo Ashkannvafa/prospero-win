@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+from __future__ import annotations
+import importlib.util
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("validator", ROOT / "tools/validate_runtime_evidence.py")
+MODULE = importlib.util.module_from_spec(SPEC); assert SPEC and SPEC.loader; SPEC.loader.exec_module(MODULE)
+
+
+def transcript(end: bool = False) -> str:
+    lines = ["HELLO ps5log/1 title=PPSA99995 app=prospero-win boot=0x1 tag=test",
+             "1\t1000000000\tINFO\tPW_RUNTIME_BEGIN schema=1",
+             "2\t1100000000\tINFO\tPW_STATE_LOAD status=ok bytes=473",
+             "3\t1200000000\tINFO\tPW_PAD_OPEN handle=7 read=scePadRead",
+             "4\t1300000000\tINFO\tPW_RUNTIME_READY imports=207",
+             "5\t3000000000\tINFO\tPW_RUNTIME_HEARTBEAT retired=10 calls=2 flips=3 audio_blocks=4 pad_samples=5 pad_connected=5 pad_events=5 pad_read_errors=0 profile_lookups=2 profile_missing=0 profile_errors=0 profile_bytes=10 idle_yields=1"]
+    if end:
+        lines += ["6\t3050000000\tINFO\tPW_PAD_QUIT source=create action=WM_QUIT",
+                  "7\t3100000000\tINFO\tPW_RUNTIME_TEARDOWN state=ok pad=ok audio=ok gdi=ok video=ok agc=ok dbt=ok image=ok stack=ok thread=ok crt=ok heap=ok",
+                  "8\t3200000000\tINFO\tPW_RUNTIME_END reason=validation-deadline flips=5 audio_blocks=6",
+                  "BYE seq=8 reason=validation-deadline"]
+    return "\n".join(lines) + "\n"
+
+
+def check(text: str, continuous: bool, accepted: bool) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "run.log"; path.write_text(text)
+        try:
+            MODULE.validate(path, continuous, 1, 2, 2)
+        except ValueError:
+            assert not accepted
+        else:
+            assert accepted
+
+
+def main() -> int:
+    check(transcript(), True, True); check(transcript(True), False, True)
+    check(transcript().replace("profile_errors=0", "profile_errors=1"), True, False)
+    check(transcript().replace("3\t", "4\t", 1), True, False)
+    check(transcript(True).replace("pad=ok", "pad=state"), False, False)
+    check(transcript(True).replace("flips=5", "flips=1"), False, False)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "gameplay.log"; path.write_text(transcript(True))
+        MODULE.validate(path, False, 1, 2, 2, 5, True)
+        path.write_text(transcript(True).replace("PW_PAD_QUIT", "PW_PAD_OTHER"))
+        try:
+            MODULE.validate(path, False, 1, 2, 2, 5, True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("missing physical quit evidence was accepted")
+    check(transcript(True).replace("\nBYE", "\nPW_RUNTIME_ABORT bad=1\nBYE"), False, False)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

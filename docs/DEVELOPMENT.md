@@ -34,9 +34,22 @@ git status --short
 
 Native changes additionally require a clean `make native-release`, the
 artifact hashes it prints, and one hardware launch whose `ps5log/1` manifest
-`tools/validate_pe_map_evidence.py` accepts. A change to the memory contract,
+the matching validator accepts: `validate_pe_map_evidence.py` for the mapping
+gate or `validate_runtime_evidence.py` for the game runner. A change to the memory contract,
 the mapping order or the protection logic requires a longer run before it is
 called done.
+
+For an orderly resource-release gate without changing production behavior:
+
+```sh
+PW_TEST_EXIT_AFTER_MS=18000 PW_FOUNDATION_READY=1 \
+PW_STAGE_INPUT=/private/path/pinball_xp PW_ROOT_MODULE=pinball.exe \
+tools/build_native.sh
+```
+
+The default is zero (continuous). A finite test artifact must never be
+mistaken for the production candidate; record both hashes and the runtime
+mode in hardware evidence.
 
 ## Working with real binaries
 

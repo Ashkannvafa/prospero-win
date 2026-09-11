@@ -48,6 +48,8 @@ typedef struct PwUser32 {
     uint32_t class_capacity,next_atom;
     uint32_t desktop_width,desktop_height;
     uint32_t focus_window,cursor;
+    uint32_t quit_code;
+    unsigned quit_pending;
     PwUser32MenuItem menu_items[256];
     PwUser32QueueEntry queue[PW_USER32_QUEUE_CAPACITY];
     uint32_t queue_count;
@@ -88,6 +90,10 @@ int pw_user32_show_window(PwUser32 *,uint32_t handle,uint32_t command,uint32_t *
 int pw_user32_destroy_window(PwUser32 *,uint32_t handle);
 int pw_user32_window_proc(const PwUser32 *,uint32_t handle,uint32_t *wndproc);
 int pw_user32_post_message(PwUser32 *,const PwUser32QueueEntry *);
+int pw_user32_post_quit(PwUser32 *,uint32_t exit_code);
+int pw_user32_post_key(PwUser32 *,uint32_t window,uint32_t virtual_key,
+                       uint32_t scan_code,unsigned extended,unsigned down,
+                       uint32_t time_ms);
 int pw_user32_peek_message(PwUser32 *,uint32_t window,uint32_t minimum,uint32_t maximum,
                            unsigned remove,PwUser32QueueEntry *,uint32_t *found);
 int pw_user32_set_focus(PwUser32 *,uint32_t handle,uint32_t *previous);

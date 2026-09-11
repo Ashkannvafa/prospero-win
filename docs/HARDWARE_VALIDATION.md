@@ -70,3 +70,67 @@ operator delete complete the subsequent observed path.
 `SOUND59.WAV` is not present in the original asset set. That optional missing
 plunger sample is reported as not found; other effects, including the two
 flipper mappings, supplied the PCM validated above.
+
+## P5/P6 candidate evidence (2026-09-11)
+
+The final production candidate uses linked ELF SHA-256
+`3e858b04cdd576bbf27f404793871bb84d7846d1ba947b5507929f2251df3cc6`
+and fSELF SHA-256
+`a71688d0c95ddb07fc2b86be16cbc5fb6705208e2df8078d5449843c3e972458`.
+Its continuous run is
+`20260911T010344392Z_PPSA99995_prospero-win_0x1c09f53a24a2b`.
+The corrected image shows the complete 600×416 table and both right-side
+panels without the former duplicated source bands. The defect was a reversed
+bottom-up DIB subrect formula: source Y already names a bottom-origin row, so
+subtracting it from the full DIB height sampled an unrelated band. A focused
+synthetic regression now distinguishes the two formulas; target telemetry
+records the observed 600×416 source `(405,25,165,88)` case.
+
+At startup this candidate loaded 473 bytes of persistent registry state. It
+performed 16 confined `wavemix.inf` lookups with zero missing files/errors and
+read 42,992 aggregate bytes. MCI telemetry recorded exactly one command,
+`MCI_OPEN` (`0x803`); the game's default-off music capability then remained
+disabled. Pad telemetry proves successful SceUserService/ScePad ownership,
+connected chronological samples and zero synthetic events while the operator
+was absent. `Create` is kept outside the keyboard map and posts an orderly
+`WM_QUIT` on its raw physical press edge. It does not replace physical gameplay
+acceptance.
+
+The exact production run above passed the strict continuous validator beyond
+ten minutes: 628,127,226 retired guest instructions, 2,876,256 adapter calls,
+8,733 changing-frame flips, 901 audio blocks and 3,074 connected pad samples,
+with no abort, signal, pad read error, missing profile or parse error. It was
+then closed externally so the exact same source could undergo the independent
+bounded teardown gate below. The immediately preceding run
+`20260911T004134217Z_PPSA99995_prospero-win_0x1bf69a01a2f6c` supplied a second
+strict ten-minute result with more than 700 million retired instructions and
+7,600 flips, but predates the isolated Create-to-WM_QUIT lifecycle mapping.
+
+Two bounded validation builds prove persistence and shutdown independently of
+the continuous candidate:
+
+- `20260911T003339056Z_PPSA99995_prospero-win_0x1befafea70a60` atomically
+  wrote 473 bytes to title-owned `/download0` storage and ended with a clean
+  `BYE`.
+- `20260911T003421759Z_PPSA99995_prospero-win_0x1bf04efe9891e` loaded those
+  same 473 bytes, then repeated the clean `BYE` cycle.
+
+Both teardown records report successful Pad neutralize/close and user-service
+termination, AudioOut close, GDI reset, VideoOut close, framebuffer unmap and
+direct-memory release, AGC batch unmap/direct-memory release/virtual unmap/
+module unload, DBT destruction, PE release and all four guest VM releases.
+VideoOut unregister returned `0x80290009`, the measured resource-busy result;
+closing VideoOut completed the observed deferred-release path and all later
+resource releases succeeded. A title-manager kill cannot execute in-process
+teardown and is classified separately from these orderly exits.
+
+The exact current source also passed a fresh 18-second bounded gate as run
+`20260911T011502976Z_PPSA99995_prospero-win_0x1c13d51ccd468`, linked ELF
+SHA-256 `1bbf0feb14fff05350fc315277c45967b9a5ac171b2b9a4a213501bce42fe207`
+and fSELF SHA-256
+`3056195f1eb7f957c5134c572c04c08d566cb72ae438e4a46cee2d5a2cdbacd0`.
+It loaded 473 state bytes, retired 13,784,396 guest instructions, presented
+10 changing frames, emitted 878 complete audio blocks and ended gap-free with
+the same all-subsystem teardown plus `BYE reason=validation-deadline`. The
+runtime-evidence validator accepts its final `PW_RUNTIME_END` counters, which
+include work after the last five-second heartbeat.

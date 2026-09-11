@@ -27,6 +27,10 @@ native/pw_agc_ps5.c
 native/pw_agc_ps5.h
 native/pw_audio_ps5.c
 native/pw_audio_ps5.h
+native/pw_pad_ps5.c
+native/pw_pad_ps5.h
+native/pw_state_ps5.c
+native/pw_state_ps5.h
 native/pw_videoout_ps5.c
 native/pw_videoout_ps5.h
 native/stubs/libSceAgc.c
@@ -89,6 +93,10 @@ src/pw_user32.c
 src/pw_user32.h
 src/pw_gdi.c
 src/pw_gdi.h
+src/pw_ini.c
+src/pw_ini.h
+src/pw_pad.c
+src/pw_pad.h
 src/pw_guest_call.c
 src/pw_guest_call.h
 src/pw_import_bind.c
@@ -99,6 +107,9 @@ src/pw_win32_catalog.h
 tools/make_win32_catalog.py
 tests/test_pw_win32.c
 tests/test_pw_audio_ps5.c
+tests/test_pw_ini.c
+tests/test_pw_pad.c
+tests/test_pw_pad_ps5.c
 tests/test_win32_catalog.py
 tests/test_classify_x86.py
 tests/test_startup_x87_contract.py
@@ -134,6 +145,7 @@ tests/test_pw_vm.c
 tests/test_pw_win64.c
 tests/test_title_identity.py
 tests/test_validate_pe_map_evidence.py
+tests/test_validate_runtime_evidence.py
 tools/audit_publication.py
 tools/classify_x86.c
 tools/build_native.sh
@@ -148,6 +160,7 @@ tests/test_trace_x86_entry.py
 tools/make_icon.py
 tools/make_test_pe.py
 tools/validate_pe_map_evidence.py
+tools/validate_runtime_evidence.py
 src/pw_guest_fp.c
 src/pw_guest_fp.h
 tests/test_pw_guest_fp.c
@@ -171,3 +184,7 @@ tests/test_pw_guest_heap.c
 src/pw_registry.c
 src/pw_registry.h
 tests/test_pw_registry.c
+src/pw_registry_store.c
+src/pw_registry_store.h
+tests/test_pw_registry_store.c
+tests/test_pw_state_ps5.c

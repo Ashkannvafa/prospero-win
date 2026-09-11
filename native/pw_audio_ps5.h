@@ -31,6 +31,7 @@ int pw_audio_ps5_init(PwAudioPs5 *,const PwAudioPs5Ops *);
 int pw_audio_ps5_open(void *,uint32_t,uint16_t,uint16_t);
 int pw_audio_ps5_submit(void *,const void *,uint32_t);
 int pw_audio_ps5_control(void *,PwAudioControl);
+int pw_audio_ps5_close(PwAudioPs5 *);
 int pw_audio_ps5_platform_ops(PwAudioPs5Ops *);
 
 #endif

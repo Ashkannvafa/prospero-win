@@ -123,5 +123,23 @@ int main(void)
            length==5 && !strcmp(key_name,"Right"));
     assert(pw_user32_get_key_name(0x00ff0000,key_name,sizeof(key_name),&length)==PW_OK &&
            !length && !key_name[0]);
+    user.queue_count=0;
+    assert(pw_user32_post_key(&user,0x10001,'Z',0,0,1,123)==PW_OK);
+    assert(user.queue[0].message==0x100 && user.queue[0].wparam=='Z' &&
+           user.queue[0].lparam==(1u|(0x2cu<<16)) && user.queue[0].time==123);
+    assert(pw_user32_post_key(&user,0x10001,'Z',0,0,0,124)==PW_OK);
+    assert(user.queue[1].message==0x101 && user.queue[1].lparam==
+           (1u|(0x2cu<<16)|0xc0000000u));
+    assert(pw_user32_post_key(&user,0x10001,0x26,0x48,1,1,125)==PW_OK);
+    assert(user.queue[2].lparam==(1u|(0x48u<<16)|(1u<<24)));
+    PwUser32QueueEntry quit;uint32_t message_found=0;
+    assert(pw_user32_post_quit(&user,37)==PW_OK && user.quit_pending);
+    /* WM_QUIT ignores HWND and range filters and a no-remove peek retains it. */
+    assert(pw_user32_peek_message(&user,0x10001,0x400,0x500,0,&quit,&message_found)==PW_OK &&
+           message_found && quit.message==0x12 && quit.wparam==37 && !quit.window && user.quit_pending);
+    assert(pw_user32_peek_message(&user,0,0,0,1,&quit,&message_found)==PW_OK && message_found &&
+           quit.message==0x12 && quit.wparam==37 && !user.quit_pending);
+    assert(pw_user32_peek_message(&user,0,0,0,1,&quit,&message_found)==PW_OK && message_found &&
+           quit.message==0x100); /* queued keys follow the removed WM_QUIT */
     return 0;
 }

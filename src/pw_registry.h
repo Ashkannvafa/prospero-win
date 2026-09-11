@@ -40,6 +40,7 @@ typedef struct PwRegistry {
     PwRegistryKey *keys;
     PwRegistryValue *values;
     uint32_t key_capacity,value_capacity;
+    uint64_t generation; /* material key/value mutations since init/load */
 } PwRegistry;
 
 int pw_registry_init(PwRegistry *,PwRegistryKey *,uint32_t,

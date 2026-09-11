@@ -13,12 +13,34 @@ MMIO and MCI. No static DirectDraw/Direct3D imports were found. LoadLibraryA
 and GetProcAddress require further dynamic dependency analysis. Runtime
 working set remains unverified.
 
-Current status: P4.5 is validated on FW 12.02. This exact executable now runs
+Current status: the P5/P6 candidate is active on FW 12.02. This exact executable now runs
 continuously through the native x86 DBT, displays changing board frames through
 AGC DMA/VideoOut and sends its original WaveMix effects through SceAudioOut.
 The accepted fSELF hash, telemetry and private audiovisual evidence are in
-[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). DualSense input, pixel-perfect
-GDI composition, MIDI/MCI, persistence and long-soak closure remain open.
+[HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). DualSense translation,
+corrected GDI composition, persistent registry reload, bounded INI parsing and
+ordered teardown are implemented and hardware-observed. Physical gameplay
+acceptance remains open; the continuous path has already crossed ten minutes
+without an abort. MIDI is optional in this target:
+music defaults off and the sole startup `MCI_OPEN` disables its menu item when
+the runtime reports no sequencer; original PCM effects remain available.
+
+## DualSense gameplay profile
+
+| DualSense | Original Win32 action |
+| --- | --- |
+| L1 / R1 | left (`Z`) / right (`VK_OEM_2`) flipper |
+| Cross | plunger (`Space`) |
+| D-pad left / right / up | table nudge (`X`, `.`, extended `Up`) |
+| Options | pause/resume (`F3`) |
+| Square | new game (`F2`) |
+| Create | orderly runtime exit (`WM_QUIT`, not a fabricated key) |
+
+The gameplay keys match the defaults in the pinned public semantic source.
+Every input sample is consumed chronologically and held keys are released on
+disconnect, interception, controller-generation change and shutdown. The
+manual acceptance sequence is Cross to launch, both shoulders, scoring and
+ball loss, Options twice, then Square; Create is tested last because it exits.
 
 The file's SHA-1 is
 `2a5b525e0f631bb6107639e2a69df15986fb0d05`, exactly the Windows XP target
@@ -166,8 +188,10 @@ SCEPAD_PHASE5.md and HARDWARE_VALIDATION.md document FW 12.02 evidence.
   Copying PCM out of the producer ring is not proof it has played; preserve
   buffer lifetime and completion semantics. Route guest callbacks through
   the runtime rather than executing guest code on the AudioOut worker.
-- MCI/MIDI and MMIO remain additional work; PCM output does not synthesize
-  MIDI or implement Windows multimedia commands.
+- MMIO and WaveOut are implemented for the target's required PCM route. MIDI
+  synthesis is not fabricated: the target makes one optional `MCI_OPEN`, gets
+  `MCIERR_DEVICE_NOT_INSTALLED` and continues with music disabled, matching its
+  own capability fallback.
 - Input: reuse chronological ScePad batches, press/release transitions,
   neutralisation on disconnect/interception/generation change and exact
   close ownership. Adapt events to Win32 key/mouse messages and window

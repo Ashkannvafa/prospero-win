@@ -96,6 +96,8 @@ typedef struct PwWin32Services {
 } PwWin32Services;
 typedef struct PwWin32 {
     uint32_t main_base,crt_data,app_type;
+    uint32_t mci_last_command;
+    uint64_t mci_calls;
     PwGuestArgs args;
     uint32_t new_mode;
     int32_t thread_priority; /* logical Win32 priority for the single guest thread */
@@ -113,6 +115,12 @@ typedef struct PwWin32 {
     PwWin32Services services;
     const char *last_dll,*last_name;
     unsigned calls;
+    /* One-dispatch scheduling hint: the guest completed a nonblocking
+     * PeekMessage with no matching work.  Providers may yield after the call;
+     * the core never sleeps or changes guest-visible time itself. */
+    unsigned idle_hint;
+    uint32_t exit_code;
+    unsigned exit_requested;
     unsigned callback_pending,init_depth;
     PwWin32Init init[PW_WIN32_INIT_DEPTH];
     PwWin32Create create[PW_WIN32_CREATE_DEPTH];

@@ -11,8 +11,7 @@ drivers are out of scope.
 
 ## Current milestone
 
-The visible-and-audible milestone is validated on an owned PS5 running FW
-12.02:
+The P5/P6 gameplay candidate is running on an owned PS5 with FW 12.02:
 
 - the original PE32 image executes continuously through the x86 DBT;
 - its main window and animated table are composed by the GDI compatibility
@@ -22,15 +21,28 @@ The visible-and-audible milestone is validated on an owned PS5 running FW
   PCM bytes/frames/hash and any classified abort;
 - Remote Play evidence contains 1080p60 H.264 video and captured AAC audio;
 - close and relaunch work without rebooting the console.
+- the reusable ScePad adapter translates chronological DualSense samples into
+  Win32 key-down/up messages and neutralizes held keys on disconnect, input
+  interception, controller-generation changes and shutdown; `Create` posts an
+  orderly `WM_QUIT` instead of masquerading as a guest keyboard key;
+- versioned, checksummed registry state is atomically saved under the title's
+  persistent `/download0` storage and has been reloaded on a later launch;
+- the target's `wavemix.inf` is parsed through the confined file provider;
+- a bounded validation build has demonstrated an orderly teardown of Pad,
+  AudioOut, GDI, VideoOut, AGC direct memory, DBT, PE image and guest VM.
 
-The validated fSELF SHA-256 is
-`b755b0bd5ded13e944b7fd2262c5b7e5004a7af9af102454d43603b4bc26a824`.
-See [HARDWARE_VALIDATION.md](docs/HARDWARE_VALIDATION.md) for the correlated
-run and its limitations.
+The current production fSELF SHA-256 is
+`a71688d0c95ddb07fc2b86be16cbc5fb6705208e2df8078d5449843c3e972458`.
+See [HARDWARE_VALIDATION.md](docs/HARDWARE_VALIDATION.md) for correlated
+continuous and orderly-exit evidence and its limitations.
 
-This is not yet playable: DualSense input is deliberately deferred. GDI
-fidelity also has known composition defects, and MIDI/MCI, broad Win32
-compatibility and a general D3D backend remain future work.
+Automated and hardware-side implementation is complete for the current P5/P6
+candidate. Physical gameplay acceptance remains pending: the owner must launch
+the ball, operate both flippers, score, lose a ball, pause/resume and restart.
+The original game defaults music off; its single optional `MCI_OPEN` request is
+reported honestly as no MIDI device, while its required WaveMix PCM effects
+remain active. Broad Win32 compatibility and a general D3D backend are later
+work.
 
 ## Build and inspect
 

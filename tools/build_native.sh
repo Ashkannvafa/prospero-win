@@ -22,6 +22,7 @@
 #                          its dependencies, which would mutate a tree the
 #                          laboratory's other projects share (default 0)
 #   PW_NATIVE_MODE         runtime (default) or gate
+#   PW_TEST_EXIT_AFTER_MS  validation-only orderly runtime exit; 0 disables it
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -34,6 +35,7 @@ root_module=${PW_ROOT_MODULE:-sample.exe}
 use_sample=${PW_SAMPLE:-0}
 compat32_transfer=${PW_COMPAT32_TRANSFER:-0}
 native_mode=${PW_NATIVE_MODE:-runtime}
+test_exit_after_ms=${PW_TEST_EXIT_AFTER_MS:-0}
 
 [[ $use_sample == 0 || $use_sample == 1 ]] || {
     echo "PW_SAMPLE must be 0 or 1" >&2; exit 2; }
@@ -41,6 +43,8 @@ native_mode=${PW_NATIVE_MODE:-runtime}
     echo "PW_COMPAT32_TRANSFER must be 0 or 1" >&2; exit 2; }
 [[ $native_mode == runtime || $native_mode == gate ]] || {
     echo "PW_NATIVE_MODE must be runtime or gate" >&2; exit 2; }
+[[ $test_exit_after_ms =~ ^[0-9]+$ && $test_exit_after_ms -le 600000 ]] || {
+    echo "PW_TEST_EXIT_AFTER_MS must be an integer from 0 to 600000" >&2; exit 2; }
 [[ $root_module =~ ^[A-Za-z0-9_.-]+$ ]] || {
     echo "PW_ROOT_MODULE must be a bare file name" >&2; exit 2; }
 if [[ $use_sample == 0 && -z $stage_input ]]; then
@@ -114,17 +118,18 @@ common=(-O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections
         -I"$root/native/ps5log"
         -DPW_STAGE_DIR='"/app0/win"'
         -DPW_ROOT_MODULE="\"$root_module\""
+        -DPW_TEST_EXIT_AFTER_MS="$test_exit_after_ms"
         -DPW_COMPAT32_TRANSFER="$compat32_transfer")
 
 entry=native/runtime_main.c
 [[ $native_mode == gate ]] && entry=native/main.c
 sources=(
-    "$entry" native/pw_file_ps5.c native/pw_audio_ps5.c native/pw_agc_ps5.c native/pw_videoout_ps5.c native/pw_compat32_ps5.c
+    "$entry" native/pw_file_ps5.c native/pw_audio_ps5.c native/pw_pad_ps5.c native/pw_state_ps5.c native/pw_agc_ps5.c native/pw_videoout_ps5.c native/pw_compat32_ps5.c
     native/pw_lowmem_ps5.c
     src/pe_image.c src/pe_import.c src/pe_layout.c src/pe_reloc.c src/pw_guest_heap.c
     src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
-    src/pw_module_name.c src/pw_result.c src/pw_segment.c src/pw_vm.c
-    src/pw_vm_posix.c src/pw_exec_probe.c src/pw_x86_block.c src/pw_x86_cache.c src/pw_x86_engine.c src/pw_x87.c src/pw_guest_call.c src/pw_import_bind.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_fp.c src/pw_guest_args.c src/pe_resource.c
+    src/pw_module_name.c src/pw_result.c src/pw_segment.c src/pw_vm.c src/pw_ini.c
+    src/pw_vm_posix.c src/pw_exec_probe.c src/pw_x86_block.c src/pw_x86_cache.c src/pw_x86_engine.c src/pw_x87.c src/pw_guest_call.c src/pw_import_bind.c src/pw_win32.c src/pw_user32.c src/pw_pad.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_registry_store.c src/pw_guest_fp.c src/pw_guest_args.c src/pe_resource.c
 )
 objects=()
 for source in "${sources[@]}"; do

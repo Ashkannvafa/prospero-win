@@ -668,6 +668,7 @@ static int waveout_dispatch(PwWin32 *r,PwX86State *state)
         /* The first backend exposes PCM only. Reporting the sequencer as
          * unavailable is an ordinary MCI capability result, not a fabricated
          * successful MIDI device. Callers can continue with waveform audio. */
+        r->mci_calls++;r->mci_last_command=a[1];
         result=0x107; /* MCIERR_DEVICE_NOT_INSTALLED */
     }
     else if(play) {
@@ -809,7 +810,7 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
 {
     if(!r || !state)return PW_ERR_PRECONDITION;
     if(!r->main_base || !r->crt_data)return PW_ERR_STATE;
-    r->callback_pending=0;
+    r->callback_pending=0;r->idle_hint=0;
     if(state->eip==PW_WIN32_DISPATCH_CALLBACK) {
         r->last_dll="user32.dll";r->last_name="DispatchMessageA";
         return message_dispatch_return(r,state);
@@ -893,10 +894,24 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
                 return PW_ERR_STATE;
             found=result=1;
         }
+        if(!peek && found && message.message==0x0012u)result=0; /* GetMessage(WM_QUIT) */
         PwX86State after=*state;call.state=&after;
         if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
         if(found)memcpy((void *)(uintptr_t)a[0],&message,sizeof(message));
-        *state=after;if(error)r->last_error=error;r->calls++;return PW_OK;
+        *state=after;if(error)r->last_error=error;
+        if(peek && !found)r->idle_hint=1;
+        r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"PostQuitMessage")) {
+        if(!r->user32)return PW_ERR_STATE;
+        PwGuestCall call={0};uint32_t code;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_STDCALL,4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&code))!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,0,0))!=PW_OK)return status;
+        if((status=pw_user32_post_quit(r->user32,code))!=PW_OK)return status;
+        *state=after;r->calls++;return PW_OK;
     }
     if(!strcmp(r->last_dll,"user32.dll") && !strcmp(r->last_name,"PostMessageA")) {
         if(!r->user32)return PW_ERR_STATE;
@@ -1887,6 +1902,16 @@ int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
         if((status=r->services.sleep_ms(r->services.opaque,milliseconds))!=PW_OK)return status;
         if((status=pw_guest_call_finish(&call,0,0))!=PW_OK)return status;
         r->calls++;return PW_OK;
+    }
+    if(!strcmp(r->last_dll,"msvcrt.dll") &&
+       (!strcmp(r->last_name,"exit") || !strcmp(r->last_name,"_exit"))) {
+        PwGuestCall call={0};uint32_t code;
+        int status=pw_guest_call_begin(&call,state,PW_GUEST_CDECL,4,0);
+        if(status!=PW_OK)return status;
+        if((status=pw_guest_call_u32(&call,0,&code))!=PW_OK)return status;
+        PwX86State after=*state;call.state=&after;
+        if((status=pw_guest_call_finish(&call,0,0))!=PW_OK)return status;
+        r->exit_code=code;r->exit_requested=1;*state=after;r->calls++;return PW_OK;
     }
     if(kernel && !strcmp(r->last_name,"SetThreadPriority")) {
         PwGuestCall call={0};uint32_t handle,raw_priority;

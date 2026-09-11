@@ -347,12 +347,40 @@ int pw_user32_post_message(PwUser32 *user,const PwUser32QueueEntry *message)
     if(user->queue_count==PW_USER32_QUEUE_CAPACITY)return PW_ERR_LIMIT;
     user->queue[user->queue_count++]=*message;return PW_OK;
 }
+int pw_user32_post_quit(PwUser32 *user,uint32_t exit_code)
+{
+    if(!user || !user->messages || !user->windows)return PW_ERR_PRECONDITION;
+    user->quit_code=exit_code;user->quit_pending=1;return PW_OK;
+}
+int pw_user32_post_key(PwUser32 *user,uint32_t window,uint32_t virtual_key,
+                       uint32_t scan_code,unsigned extended,unsigned down,
+                       uint32_t time_ms)
+{
+    if(!user || !window || !virtual_key || scan_code>0xff || extended>1 || down>1)
+        return PW_ERR_PRECONDITION;
+    if(!scan_code) {
+        int status=pw_user32_map_virtual_key(virtual_key,0,&scan_code);
+        if(status!=PW_OK)return status;
+    }
+    if(!scan_code)return PW_ERR_UNSUPPORTED;
+    uint32_t lparam=1u|(scan_code<<16)|(extended<<24);
+    if(!down)lparam|=UINT32_C(0xc0000000);
+    PwUser32QueueEntry entry={.window=window,.message=down?0x0100u:0x0101u,
+        .wparam=virtual_key,.lparam=lparam,.time=time_ms};
+    return pw_user32_post_message(user,&entry);
+}
 int pw_user32_peek_message(PwUser32 *user,uint32_t window,uint32_t minimum,uint32_t maximum,
                            unsigned remove,PwUser32QueueEntry *message,uint32_t *found)
 {
     if(!user || !message || !found || remove>1 || minimum>maximum)return PW_ERR_PRECONDITION;
     if(window) { uint32_t ignored;int status=pw_user32_window_proc(user,window,&ignored);
         if(status!=PW_OK)return status; }
+    /* Win32 delivers WM_QUIT independent of the window and range filters. */
+    if(user->quit_pending) {
+        *message=(PwUser32QueueEntry){.message=0x0012u,.wparam=user->quit_code};*found=1;
+        if(remove)user->quit_pending=0;
+        return PW_OK;
+    }
     for(uint32_t i=0;i<user->queue_count;i++) {
         PwUser32QueueEntry *candidate=&user->queue[i];
         if(window && candidate->window!=window)continue;

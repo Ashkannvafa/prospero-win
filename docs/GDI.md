@@ -72,9 +72,16 @@ the public-PDB-verified application entry and then:
 
 The historical bounded trace above was the splash-era host checkpoint. The
 current runtime proceeds through main-window setup, WaveMix, the message loop
-and changing game frames. FW 12.02 evidence records 101+ AGC DMA flips and an
-independent 1080p60 Remote Play observation of the board. Known fidelity work
-remains: presentation target selection is currently size-based and some
-auxiliary-panel regions can be duplicated or stale. See
+and changing game frames. The active focused target owns presentation; a scan
+of visible owned targets is used only when focus is absent. FW 12.02 evidence
+records changing AGC DMA flips and an independent 1080p60 Remote Play
+observation of the corrected board.
+
+The former duplicated auxiliary-panel regions came from interpreting a
+bottom-up DIB source rectangle as though its Y coordinate were top-origin.
+For a source row within a bottom-up DIB the storage row is now
+`source_y + source_height - 1 - relative_y`; the full DIB height does not
+participate. The exact hardware-observed 600×416 DIB and
+`(405,25,165,88)` subrect has a permanent pixel-level regression. See
 [HARDWARE_VALIDATION.md](HARDWARE_VALIDATION.md). Private binaries, resource
 bytes, decompiler output and raw captures remain outside the repository.

@@ -27,9 +27,12 @@ _Static_assert(sizeof(BatchMapEntry)==0x20,"BatchMap ABI");
 _Static_assert(sizeof(AgcSubmit)==0x10,"AGC submit ABI");
 
 extern int sceSysmoduleLoadModuleInternal(unsigned int,...);
+extern int sceSysmoduleUnloadModuleInternal(unsigned int,...);
 extern int sceKernelReserveVirtualRange(void **,size_t,int,size_t);
 extern int sceKernelAllocateMainDirectMemory(size_t,size_t,int,int64_t *);
 extern int sceKernelBatchMap(void *,int,int *);
+extern int sceKernelMunmap(void *,size_t);
+extern int sceKernelReleaseDirectMemory(int64_t,size_t);
 extern int32_t sceAgcInit(void *,uint32_t);
 extern uint32_t *sceAgcDcbDmaData(void *,uint32_t,uint32_t,uint32_t,uint64_t,
                                   uint32_t,uint32_t,uint64_t,uint32_t,uint32_t,
@@ -70,18 +73,49 @@ int pw_agc_ps5_open(PwAgcPs5 *agc)
     if(!agc)return PW_ERR_PRECONDITION;memset(agc,0,sizeof(*agc));agc->physical=-1;
     int result=sceSysmoduleLoadModuleInternal(AGC_MODULE);if(result)return PW_ERR_STATE;
     agc->module_loaded=1;uint64_t state=0;
-    if(sceAgcInit(&state,sizeof(state)))return PW_ERR_STATE;
+    if(sceAgcInit(&state,sizeof(state)))goto state_failed;
     if(sceKernelReserveVirtualRange(&agc->command,COMMAND_BYTES,0,COMMAND_ALIGNMENT) ||
-       !agc->command)return PW_ERR_VM;
+       !agc->command)goto vm_failed;
+    agc->reserved=1;
     if(sceKernelAllocateMainDirectMemory(COMMAND_BYTES,COMMAND_ALIGNMENT,0x0c,
-                                         &agc->physical))return PW_ERR_VM;
+                                         &agc->physical))goto vm_failed;
+    agc->allocated=1;
     BatchMapEntry entry={agc->command,agc->physical,COMMAND_BYTES,0xf2,0x0c,0,0};
     int processed=-1;
-    if(sceKernelBatchMap(&entry,1,&processed) || processed!=1)return PW_ERR_VM;
+    if(sceKernelBatchMap(&entry,1,&processed) || processed!=1)goto vm_failed;
     agc->mapped=1;agc->bytes=COMMAND_BYTES;
     memset(agc->command,0,COMMAND_BYTES);
     agc->fence=(volatile uint64_t *)((uint8_t *)agc->command+FENCE_OFFSET);
     return PW_OK;
+vm_failed:
+    (void)pw_agc_ps5_close(agc);return PW_ERR_VM;
+state_failed:
+    (void)pw_agc_ps5_close(agc);return PW_ERR_STATE;
+}
+int pw_agc_ps5_close(PwAgcPs5 *agc)
+{
+    if(!agc)return PW_ERR_PRECONDITION;
+    int status=PW_OK;agc->unmap_rc=agc->release_rc=agc->munmap_rc=agc->unload_rc=0;
+    if(agc->mapped) {
+        BatchMapEntry entry={agc->command,0,COMMAND_BYTES,0xf2,0x0c,0,1};
+        int processed=-1;agc->unmap_rc=sceKernelBatchMap(&entry,1,&processed);
+        if(agc->unmap_rc || processed!=1)status=PW_ERR_STATE;
+        else agc->mapped=0;
+    }
+    if(agc->allocated) {
+        agc->release_rc=sceKernelReleaseDirectMemory(agc->physical,COMMAND_BYTES);
+        if(agc->release_rc)status=PW_ERR_STATE;else agc->allocated=0;
+    }
+    if(agc->reserved) {
+        agc->munmap_rc=sceKernelMunmap(agc->command,COMMAND_BYTES);
+        if(agc->munmap_rc)status=PW_ERR_STATE;else agc->reserved=0;
+    }
+    if(agc->module_loaded) {
+        agc->unload_rc=sceSysmoduleUnloadModuleInternal(AGC_MODULE);
+        if(agc->unload_rc)status=PW_ERR_STATE;else agc->module_loaded=0;
+    }
+    agc->command=NULL;agc->fence=NULL;agc->physical=-1;agc->bytes=0;
+    return status;
 }
 int pw_agc_ps5_copy_flip(PwAgcPs5 *agc,int video_handle,int buffer_index,
                          const void *source,void *destination,uint32_t bytes,

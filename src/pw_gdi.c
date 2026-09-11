@@ -453,6 +453,13 @@ int pw_gdi_stretch_dibits(PwGdi *gdi,uint32_t destination_handle,
             return PW_ERR_TRUNCATED;
     }
     PwGdiSurface *dst;int status=dc_surface(gdi,destination,&dst);if(status!=PW_OK)return status;
+    gdi->stretch_calls++;
+    gdi->stretch_owner=destination->owner_window;
+    gdi->stretch_bits=(uint32_t)(uintptr_t)bits;gdi->stretch_info=(uint32_t)(uintptr_t)info;
+    gdi->stretch_dib_width=(uint32_t)dib_width;gdi->stretch_dib_height=rows;
+    gdi->stretch_x=x;gdi->stretch_y=y;gdi->stretch_width=width;gdi->stretch_height=height;
+    gdi->stretch_source_x=source_x;gdi->stretch_source_y=source_y;
+    gdi->stretch_source_width=source_width;gdi->stretch_source_height=source_height;
     int64_t dx0=x,dy0=y,dx1=(int64_t)x+width,dy1=(int64_t)y+height;
     if(dx0<0)dx0=0;
     if(dy0<0)dy0=0;
@@ -462,8 +469,17 @@ int pw_gdi_stretch_dibits(PwGdi *gdi,uint32_t destination_handle,
         uint8_t *destination_pixels=gdi->pixels+dst->offset;
         for(int64_t dy=dy0;dy<dy1;dy++) {
             uint32_t relative_y=(uint32_t)(dy-y);
-            uint32_t sy=(uint32_t)source_y+(uint32_t)((uint64_t)relative_y*(uint32_t)source_height/(uint32_t)height);
-            uint32_t storage_y=dib_height>0?rows-1-sy:sy;
+            uint32_t source_row_index=(uint32_t)((uint64_t)relative_y*(uint32_t)source_height/
+                                                 (uint32_t)height);
+            /* StretchDIBits expresses the Y origin of a bottom-up DIB from
+             * the lower-left corner.  The first destination scanline is the
+             * upper scanline of that source rectangle, not rows-1-source_y.
+             * The distinction disappears for a whole-image blit, which is
+             * why the old formula passed the splash test but vertically
+             * mirrored subrect selection in Pinball's text panels. */
+            uint32_t storage_y=dib_height>0?
+                (uint32_t)source_y+(uint32_t)source_height-1-source_row_index:
+                (uint32_t)source_y+source_row_index;
             const uint8_t *source_row=bits+(uint64_t)storage_y*(uint32_t)stride64;
             uint8_t *destination_row=destination_pixels+(uint32_t)dy*dst->stride;
             for(int64_t dx=dx0;dx<dx1;dx++) {

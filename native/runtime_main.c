@@ -4,11 +4,14 @@
 #include "../src/pe_image.h"
 #include "../src/pe_resource.h"
 #include "../src/pw_map.h"
+#include "../src/pw_ini.h"
 #include "../src/pw_x86_engine.h"
 #include "../src/pw_vm_posix.h"
 #include "../src/pw_win32.h"
 #include "pw_audio_ps5.h"
 #include "pw_file_ps5.h"
+#include "pw_pad_ps5.h"
+#include "pw_state_ps5.h"
 #include "pw_videoout_ps5.h"
 #include "ps5log/ps5log.h"
 #include <errno.h>
@@ -24,11 +27,15 @@
 #endif
 #define PW_TITLE_ID "PPSA99995"
 #define PW_APP_NAME "prospero-win"
+#define PW_REGISTRY_PATH "/download0/prospero-win-registry.pwrg"
 #ifndef PW_STAGE_DIR
 #define PW_STAGE_DIR "/app0/win"
 #endif
 #ifndef PW_ROOT_MODULE
 #define PW_ROOT_MODULE "pinball.exe"
+#endif
+#ifndef PW_TEST_EXIT_AFTER_MS
+#define PW_TEST_EXIT_AFTER_MS 0
 #endif
 
 typedef struct NativeServices {
@@ -37,8 +44,13 @@ typedef struct NativeServices {
     PwFilePs5 *files;
     PwAudioPs5 *audio;
     PwUser32 *user32;
+    uint8_t *profile_buffer;
+    uint32_t profile_capacity;
     uint64_t waits;
+    uint64_t profile_lookups,profile_missing,profile_errors,profile_bytes;
 } NativeServices;
+
+static volatile sig_atomic_t shutdown_requested;
 
 static void *scratch(size_t bytes)
 {
@@ -60,6 +72,10 @@ static void fatal_signal(int number,siginfo_t *info,void *context)
         uc?(void *)(uintptr_t)uc->uc_mcontext.mc_rsp:NULL);
     ps5log_close("runtime-signal");_exit(1);
 }
+static void shutdown_signal(int number)
+{
+    (void)number;shutdown_requested=1;
+}
 static void install_signals(void)
 {
     static const int values[]={SIGSEGV,SIGBUS,SIGILL,SIGFPE,SIGABRT,SIGTRAP,SIGSYS};
@@ -67,6 +83,9 @@ static void install_signals(void)
     action.sa_sigaction=fatal_signal;action.sa_flags=SA_SIGINFO|SA_RESETHAND;
     for(unsigned i=0;i<sizeof(values)/sizeof(values[0]);i++)
         (void)sigaction(values[i],&action,NULL);
+    struct sigaction orderly;memset(&orderly,0,sizeof(orderly));
+    orderly.sa_handler=shutdown_signal;
+    (void)sigaction(SIGINT,&orderly,NULL);(void)sigaction(SIGTERM,&orderly,NULL);
 }
 static int source_view(void *opaque,uint32_t pc,const uint8_t **source,size_t *bytes)
 {
@@ -128,8 +147,31 @@ static int file_seek(void *opaque,uint32_t handle,int32_t offset,uint32_t origin
 static int profile_int(void *opaque,const char *section,const char *key,uint32_t fallback,
                        const char *filename,uint32_t *value)
 {
-    (void)opaque;(void)section;(void)key;(void)filename;
-    if(!value)return PW_ERR_PRECONDITION;*value=fallback;return PW_OK;
+    NativeServices *services=opaque;if(!services || !section || !key || !filename || !value)
+        return PW_ERR_PRECONDITION;
+    services->profile_lookups++;*value=fallback;uint32_t handle=0;
+    int status=pw_file_ps5_stream_open(services->files,filename,"rb",&handle);
+    if(status==PW_ERR_NOT_FOUND){services->profile_missing++;return PW_OK;}
+    if(status!=PW_OK){services->profile_errors++;return status;}
+    uint32_t total=0;
+    while(total<services->profile_capacity) {
+        uint32_t got=0;status=pw_file_ps5_stream_read(services->files,handle,
+            services->profile_buffer+total,services->profile_capacity-total,&got);
+        if(status!=PW_OK || !got)break;total+=got;
+    }
+    if(status==PW_OK && total==services->profile_capacity) {
+        uint8_t extra;uint32_t got=0;
+        status=pw_file_ps5_stream_read(services->files,handle,&extra,1,&got);
+        if(status==PW_OK && got)status=PW_ERR_LIMIT;
+    }
+    int close_status=pw_file_ps5_stream_close(services->files,handle);
+    if(status==PW_OK && close_status!=PW_OK)status=close_status;
+    if(status==PW_OK) {
+        services->profile_bytes+=total;
+        status=pw_ini_get_int(services->profile_buffer,total,section,key,fallback,value);
+    }
+    if(status!=PW_OK)services->profile_errors++;
+    return status;
 }
 static int message_wait(void *opaque,uint32_t window,PwUser32QueueEntry *message)
 {
@@ -137,26 +179,11 @@ static int message_wait(void *opaque,uint32_t window,PwUser32QueueEntry *message
     (void)usleep(16667);uint64_t phase=services->waits++;
     *message=(PwUser32QueueEntry){.window=window};
     if(phase==0) {
-        /* A shown top-level window gains focus on Win32.  Deliver that
-         * lifecycle transition before deterministic demo commands so the
-         * original title enters its active simulation loop. */
+        /* A shown top-level window gains focus on Win32. Start a normal game,
+         * but leave every gameplay edge to the physical input adapter. */
         message->message=0x0007; /* WM_SETFOCUS */
         PwUser32QueueEntry new_game={.window=window,.message=0x0111,.wparam=101};
-        PwUser32QueueEntry launch_ball={.window=window,.message=0x0111,.wparam=401};
-        PwUser32QueueEntry plunger_down={.window=window,.message=0x0100,.wparam=0x20};
-        PwUser32QueueEntry plunger_up={.window=window,.message=0x0101,.wparam=0x20};
-        PwUser32QueueEntry left_down={.window=window,.message=0x0100,.wparam=0x5a};
-        PwUser32QueueEntry left_up={.window=window,.message=0x0101,.wparam=0x5a};
-        PwUser32QueueEntry right_down={.window=window,.message=0x0100,.wparam=0xbf};
-        PwUser32QueueEntry right_up={.window=window,.message=0x0101,.wparam=0xbf};
         int status=pw_user32_post_message(services->user32,&new_game);
-        if(status==PW_OK)status=pw_user32_post_message(services->user32,&launch_ball);
-        if(status==PW_OK)status=pw_user32_post_message(services->user32,&left_down);
-        if(status==PW_OK)status=pw_user32_post_message(services->user32,&left_up);
-        if(status==PW_OK)status=pw_user32_post_message(services->user32,&right_down);
-        if(status==PW_OK)status=pw_user32_post_message(services->user32,&right_up);
-        if(status==PW_OK)status=pw_user32_post_message(services->user32,&plunger_down);
-        if(status==PW_OK)status=pw_user32_post_message(services->user32,&plunger_up);
         if(status!=PW_OK)return status;
     }
     return PW_OK;
@@ -196,6 +223,39 @@ static void abort_runtime(const char *stage,int status)
 {
     PS5LOG_LOG("PW_RUNTIME_ABORT stage=%s status=%s",stage,pw_result_name(status));
     ps5log_close(stage);_exit(1);
+}
+
+enum { PAD_CREATE=0x00000001u,PAD_OPTIONS=0x00000008u,PAD_UP=0x00000010u,
+       PAD_RIGHT=0x00000020u,PAD_LEFT=0x00000080u,PAD_L1=0x00000400u,
+       PAD_R1=0x00000800u,PAD_CROSS=0x00004000u,PAD_SQUARE=0x00008000u };
+static const PwPadKeyMap pinball_pad_map[]={
+    {PAD_L1,'Z',0,0,"left-flipper"},
+    {PAD_R1,0xbf,0,0,"right-flipper"},
+    {PAD_CROSS,0x20,0,0,"plunger"},
+    {PAD_LEFT,'X',0,0,"nudge-left"},
+    {PAD_RIGHT,0xbe,0,0,"nudge-right"},
+    {PAD_UP,0x26,0x48,1,"nudge-up"},
+    {PAD_OPTIONS,0x72,0,0,"pause"},
+    {PAD_SQUARE,0x71,0,0,"new-game"},
+};
+
+static uint32_t presentation_window(const PwUser32 *user,const PwGdi *gdi,
+                                    PwGdiTargetView *view)
+{
+    if(user->focus_window &&
+       pw_gdi_target_view(gdi,user->focus_window,view)==PW_OK &&
+       view->width>=600 && view->height>=400)return user->focus_window;
+    uint32_t owner=0;memset(view,0,sizeof(*view));
+    for(uint32_t i=0;i<user->window_capacity;i++)if(user->windows[i].used &&
+       !user->windows[i].creating && user->windows[i].visible) {
+        PwGdiTargetView candidate;
+        if(pw_gdi_target_view(gdi,user->windows[i].handle,&candidate)==PW_OK &&
+           candidate.width>=600 && candidate.height>=400 &&
+           candidate.width*candidate.height>view->width*view->height) {
+            *view=candidate;owner=user->windows[i].handle;
+        }
+    }
+    return owner;
 }
 
 int main(int argc,char **argv)
@@ -239,6 +299,8 @@ int main(int argc,char **argv)
     PwHeapBlock *heap_blocks=scratch(131072u*sizeof(*heap_blocks));
     PwRegistryKey *registry_keys=scratch(32u*sizeof(*registry_keys));
     PwRegistryValue *registry_values=scratch(128u*sizeof(*registry_values));
+    uint8_t *state_buffer=scratch(PW_STATE_PS5_MAX_BYTES);
+    uint8_t *profile_buffer=scratch(64u*1024u);
     PwUser32Message *messages=scratch(128u*sizeof(*messages));
     PwUser32Window *windows=scratch(128u*sizeof(*windows));
     PwUser32Resource *resources=scratch(128u*sizeof(*resources));
@@ -246,7 +308,7 @@ int main(int argc,char **argv)
     PwGdiDc *dcs=scratch(128u*sizeof(*dcs));PwGdiSurface *surfaces=scratch(128u*sizeof(*surfaces));
     uint8_t *pixels=scratch(32u*1024u*1024u);
     PwX86CacheEntry *cache=scratch(8192u*sizeof(*cache));
-    if(!heap_blocks||!registry_keys||!registry_values||!messages||!windows||!resources||
+    if(!heap_blocks||!registry_keys||!registry_values||!state_buffer||!profile_buffer||!messages||!windows||!resources||
        !classes||!dcs||!surfaces||!pixels||!cache)abort_runtime("runtime-scratch",PW_ERR_VM);
     PwGuestHeap heap;PwRegistry registry;PwUser32 user32;PwGdi gdi;
     if((status=pw_guest_heap_init(&heap,0x03400000,0x4000000,heap_blocks,131072))!=PW_OK ||
@@ -257,12 +319,26 @@ int main(int argc,char **argv)
        (status=pw_user32_configure_desktop(&user32,1920,1080))!=PW_OK ||
        (status=pw_gdi_init(&gdi,dcs,128,surfaces,128,pixels,32u*1024u*1024u))!=PW_OK)
         abort_runtime("win32-state",status);
+    uint32_t state_loaded=0;
+    status=pw_state_ps5_load_registry(&registry,PW_REGISTRY_PATH,state_buffer,
+                                      PW_STATE_PS5_MAX_BYTES,&state_loaded);
+    PS5LOG_LOG("PW_STATE_LOAD schema=1 status=%s bytes=%u storage=download0",
+               pw_result_name(status),state_loaded);
+    if(status!=PW_OK)abort_runtime("state-load",status);
 
     PwAudioPs5 audio;PwAudioPs5Ops audio_ops;
     if((status=pw_audio_ps5_platform_ops(&audio_ops))!=PW_OK ||
        (status=pw_audio_ps5_init(&audio,&audio_ops))!=PW_OK)abort_runtime("audio",status);
+    PwPadPs5 pad;PwPadPs5Ops pad_ops;
+    if((status=pw_pad_ps5_platform_ops(&pad_ops))!=PW_OK ||
+       (status=pw_pad_ps5_open(&pad,&pad_ops,pinball_pad_map,
+        sizeof(pinball_pad_map)/sizeof(pinball_pad_map[0])))!=PW_OK)
+        abort_runtime("pad",status);
+    PS5LOG_LOG("PW_PAD_OPEN schema=1 user_service_rc=%d owns_user_service=%u user=%d pad_init_rc=%d handle=%d read=scePadRead batch=%u",
+        pad.user_initialize_rc,pad.owns_user_service,pad.user_id,pad.pad_init_rc,
+        pad.pad_handle,PW_PAD_PS5_BATCH);
     NativeServices services={.image=&image,.layout=&layout,.files=files,.audio=&audio,
-        .user32=&user32};
+        .user32=&user32,.profile_buffer=profile_buffer,.profile_capacity=64u*1024u};
     PwWin32 runtime;char commandline[64]="\"C:\\game\\" PW_ROOT_MODULE "\"";
     if((status=pw_win32_init(&runtime,(uint32_t)mapped.actual_base,0x03300000,commandline))!=PW_OK)
         abort_runtime("win32-init",status);
@@ -303,21 +379,69 @@ int main(int argc,char **argv)
     if((status=pw_videoout_ps5_open(&video))!=PW_OK)abort_runtime("videoout",status);
     PS5LOG_LOG("PW_RUNTIME_READY imports=%u entry=0x%08x image_bytes=%u",
                binding.total,state.eip,image.size_of_image);
-    uint64_t events=0,last_heartbeat=now_ns(),last_present=0;uint32_t last_frame_hash=0;
+    uint64_t events=0,last_heartbeat=now_ns(),last_present=0,last_pad_poll=0;
+    uint64_t idle_yields=0,idle_yield_ns=0;
+    uint64_t saved_generation=registry.generation,last_save_attempt=0;
+    unsigned window_inventory_logged=0;
+    uint32_t last_frame_hash=0;
+    const uint64_t validation_deadline=PW_TEST_EXIT_AFTER_MS?
+        now_ns()+(uint64_t)PW_TEST_EXIT_AFTER_MS*1000000ull:0;
+    const char *exit_reason="guest-return";uint32_t exit_code=0;
     for(;;events++) {
+        if(shutdown_requested){exit_reason="host-signal";break;}
+        if(validation_deadline && now_ns()>=validation_deadline) {
+            exit_reason="validation-deadline";break;
+        }
+        if(!state.eip){exit_reason="guest-return";break;}
         status=pw_win32_dispatch(&runtime,&state);
         if(status==PW_ERR_NOT_FOUND) {
             PwX86StepReport report;status=pw_x86_engine_step(&engine,&state,&report);
         }
         if(status!=PW_OK)abort_runtime("execute",status);
+        if(runtime.exit_requested) {
+            exit_reason="crt-exit";exit_code=runtime.exit_code;break;
+        }
+        if(runtime.idle_hint) {
+            const uint32_t yield_us=500;
+            if(usleep(yield_us) && errno!=EINTR)abort_runtime("idle-yield",PW_ERR_STATE);
+            idle_yields++;idle_yield_ns+=(uint64_t)yield_us*1000u;
+        }
         uint64_t now=now_ns();
-        if(now-last_present>=33333333ull) {
-            PwGdiTargetView best={0};
-            for(unsigned i=0;i<128;i++)if(windows[i].used) {
-                PwGdiTargetView candidate;
-                if(pw_gdi_target_view(&gdi,windows[i].handle,&candidate)==PW_OK &&
-                   candidate.width*candidate.height>best.width*best.height)best=candidate;
+        if(registry.generation!=saved_generation && now-last_save_attempt>=1000000000ull) {
+            uint32_t state_written=0;PwStatePs5Report save_report;last_save_attempt=now;
+            int save_status=pw_state_ps5_save_registry_ex(&registry,PW_REGISTRY_PATH,state_buffer,
+                PW_STATE_PS5_MAX_BYTES,&state_written,&save_report);
+            PS5LOG_LOG("PW_STATE_SAVE schema=1 status=%s generation=%llu bytes=%u storage=download0 "
+                "encoded=%u open_rc=0x%08x write_rc=%d written=%u fsync_rc=0x%08x "
+                "close_rc=0x%08x rename_rc=0x%08x unlink_rc=0x%08x",
+                pw_result_name(save_status),(unsigned long long)registry.generation,state_written,
+                save_report.encoded_bytes,(uint32_t)save_report.open_rc,save_report.write_rc,
+                save_report.written_bytes,(uint32_t)save_report.fsync_rc,
+                (uint32_t)save_report.close_rc,(uint32_t)save_report.rename_rc,
+                (uint32_t)save_report.unlink_rc);
+            if(save_status==PW_OK)saved_generation=registry.generation;
+        }
+        if(now-last_pad_poll>=4166667ull) {
+            PwGdiTargetView input_view;uint32_t input_window=presentation_window(&user32,&gdi,&input_view);
+            if(input_window) {
+                uint64_t before=pad.core.stats.events;
+                if((status=pw_pad_ps5_poll(&pad,&user32,input_window))!=PW_OK)
+                    abort_runtime("pad-read",status);
+                if(pad.core.pressed_edges&PAD_CREATE) {
+                    if((status=pw_user32_post_quit(&user32,0))!=PW_OK)
+                        abort_runtime("pad-quit",status);
+                    PS5LOG_LOG("PW_PAD_QUIT schema=1 source=create action=WM_QUIT");
+                }
+                if(pad.core.stats.events!=before)
+                    PS5LOG_LOG("PW_PAD_EVENT schema=1 events=%llu presses=%llu releases=%llu generation=%u timestamp_source=scePadRead",
+                        (unsigned long long)pad.core.stats.events,
+                        (unsigned long long)pad.core.stats.presses,
+                        (unsigned long long)pad.core.stats.releases,pad.core.generation);
             }
+            last_pad_poll=now;
+        }
+        if(now-last_present>=33333333ull) {
+            PwGdiTargetView best;uint32_t owner=presentation_window(&user32,&gdi,&best);
             if(best.pixels && best.width>=600 && best.height>=400) {
                 uint32_t hash=2166136261u;
                 for(uint32_t y=0;y<best.height;y++) {
@@ -329,8 +453,8 @@ int main(int argc,char **argv)
                         abort_runtime("present",status);
                     last_frame_hash=hash;
                     if(video.flips==1 || !(video.flips%120))
-                        PS5LOG_LOG("PW_VIDEO_FRAME flips=%llu width=%u height=%u hash=0x%08x backend=agc-dma submits=%llu fence=zero",
-                            (unsigned long long)video.flips,best.width,best.height,hash,
+                        PS5LOG_LOG("PW_VIDEO_FRAME flips=%llu width=%u height=%u owner=0x%08x focus=0x%08x hash=0x%08x backend=agc-dma submits=%llu fence=zero",
+                            (unsigned long long)video.flips,best.width,best.height,owner,user32.focus_window,hash,
                             (unsigned long long)video.agc.submits);
                 }
             }
@@ -343,16 +467,104 @@ int main(int argc,char **argv)
                 window_count++;
                 if(pw_gdi_target_view(&gdi,windows[i].handle,&view)==PW_OK && view.width>=600)
                     presented=1;
+                if(!window_inventory_logged) {
+                    int target=pw_gdi_target_view(&gdi,windows[i].handle,&view)==PW_OK;
+                    PS5LOG_LOG("PW_WINDOW schema=1 handle=0x%08x focus=%u visible=%u class=%s title=%s x=%d y=%d width=%u height=%u target=%u target_width=%u target_height=%u",
+                        windows[i].handle,windows[i].handle==user32.focus_window,windows[i].visible,
+                        windows[i].class_name,windows[i].title,(int32_t)windows[i].x,
+                        (int32_t)windows[i].y,windows[i].width,windows[i].height,target,
+                        target?view.width:0,target?view.height:0);
+                }
             }
+            if(!window_inventory_logged)
+                for(unsigned i=0;i<128;i++)if(surfaces[i].used &&
+                   surfaces[i].kind==PW_GDI_TARGET_SURFACE)
+                    PS5LOG_LOG("PW_GDI_TARGET schema=1 slot=%u owner=0x%08x width=%u height=%u bytes=%u",
+                        i,surfaces[i].target,surfaces[i].width,surfaces[i].height,surfaces[i].bytes);
+            window_inventory_logged=1;
             PS5LOG_LOG("PW_RUNTIME_HEARTBEAT events=%llu retired=%llu calls=%u waits=%llu "
                 "windows=%u targets=%u visible_source=%u flips=%llu audio_blocks=%llu "
-                "audio_bytes=%llu audio_frames=%llu audio_hash=0x%08x",
+                "audio_bytes=%llu audio_frames=%llu audio_hash=0x%08x "
+                "pad_polls=%llu pad_samples=%llu pad_events=%llu pad_connected=%llu "
+                "pad_intercepted=%llu pad_read_errors=%llu profile_lookups=%llu "
+                "profile_missing=%llu profile_errors=%llu profile_bytes=%llu "
+                "mci_calls=%llu mci_last_command=0x%08x "
+                "idle_yields=%llu idle_yield_ns=%llu",
                 (unsigned long long)events,(unsigned long long)engine.retired_instructions,
                 runtime.calls,(unsigned long long)services.waits,window_count,
                 counts.target_surfaces,presented,(unsigned long long)video.flips,
                 (unsigned long long)audio.blocks,(unsigned long long)audio.input_bytes,
-                (unsigned long long)audio.output_frames,audio.input_hash);
+                (unsigned long long)audio.output_frames,audio.input_hash,
+                (unsigned long long)pad.polls,(unsigned long long)pad.core.stats.samples,
+                (unsigned long long)pad.core.stats.events,(unsigned long long)pad.connected_samples,
+                (unsigned long long)pad.intercepted_samples,(unsigned long long)pad.read_errors,
+                (unsigned long long)services.profile_lookups,
+                (unsigned long long)services.profile_missing,
+                (unsigned long long)services.profile_errors,
+                (unsigned long long)services.profile_bytes,
+                (unsigned long long)runtime.mci_calls,runtime.mci_last_command,
+                (unsigned long long)idle_yields,(unsigned long long)idle_yield_ns);
+            PS5LOG_LOG("PW_GDI_STRETCH schema=1 calls=%llu owner=0x%08x dst=%d,%d,%d,%d src=%d,%d,%d,%d dib=%ux%u bits=0x%08x info=0x%08x",
+                (unsigned long long)gdi.stretch_calls,gdi.stretch_owner,
+                gdi.stretch_x,gdi.stretch_y,gdi.stretch_width,gdi.stretch_height,
+                gdi.stretch_source_x,gdi.stretch_source_y,gdi.stretch_source_width,
+                gdi.stretch_source_height,gdi.stretch_dib_width,gdi.stretch_dib_height,
+                gdi.stretch_bits,gdi.stretch_info);
             last_heartbeat=now;
         }
     }
+
+    /* Normal shutdown is best-effort but exhaustive.  Preserve every result
+     * in one record so a later launch can distinguish a clean guest exit from
+     * a title-manager kill, which cannot run process cleanup code. */
+    const uint64_t final_retired=engine.retired_instructions,final_flips=video.flips;
+    const uint64_t final_audio_blocks=audio.blocks;
+    uint32_t final_state_written=0;int state_close=PW_OK;
+    if(registry.generation!=saved_generation)
+        state_close=pw_state_ps5_save_registry(&registry,PW_REGISTRY_PATH,state_buffer,
+            PW_STATE_PS5_MAX_BYTES,&final_state_written);
+    PwGdiTargetView close_view;uint32_t close_window=presentation_window(&user32,&gdi,&close_view);
+    int pad_close=pw_pad_ps5_close(&pad,&user32,close_window);
+    int audio_close=pw_audio_ps5_close(&audio);
+    int gdi_close=pw_gdi_reset(&gdi);
+    int video_close=pw_videoout_ps5_close(&video);
+    int dbt_close=pw_x86_engine_destroy(&engine);
+    int image_close=pw_map_release(&mapped,&vm);
+    provider.close(provider.context,&root);
+    int stack_close=vm.release(vm.context,&stack);
+    int thread_close=vm.release(vm.context,&thread);
+    int crt_close=vm.release(vm.context,&crt);
+    int heap_close=vm.release(vm.context,&heap_region);
+    for(uint32_t handle=0x0d000001u;handle<=0x0d000008u;handle++)
+        (void)pw_file_ps5_stream_close(files,handle);
+    PS5LOG_LOG("PW_RUNTIME_TEARDOWN schema=1 reason=%s exit_code=%u state=%s state_bytes=%u "
+        "pad=%s pad_close_rc=%d user_terminate_rc=%d audio=%s gdi=%s "
+        "video=%s unregister_rc=0x%08x video_close_rc=0x%08x video_munmap_rc=0x%08x "
+        "video_release_rc=0x%08x agc=%s agc_unmap_rc=0x%08x agc_release_rc=0x%08x "
+        "agc_munmap_rc=0x%08x agc_unload_rc=0x%08x dbt=%s image=%s stack=%s thread=%s crt=%s heap=%s",
+        exit_reason,exit_code,pw_result_name(state_close),final_state_written,
+        pw_result_name(pad_close),pad.close_rc,pad.terminate_rc,pw_result_name(audio_close),
+        pw_result_name(gdi_close),pw_result_name(video_close),(uint32_t)video.unregister_rc,
+        (uint32_t)video.close_rc,(uint32_t)video.munmap_rc,(uint32_t)video.release_rc,
+        pw_result_name(video.agc_close_rc),(uint32_t)video.agc.unmap_rc,
+        (uint32_t)video.agc.release_rc,(uint32_t)video.agc.munmap_rc,
+        (uint32_t)video.agc.unload_rc,pw_result_name(dbt_close),pw_result_name(image_close),
+        pw_result_name(stack_close),pw_result_name(thread_close),pw_result_name(crt_close),
+        pw_result_name(heap_close));
+    PS5LOG_LOG("PW_RUNTIME_END schema=1 reason=%s exit_code=%u events=%llu retired=%llu flips=%llu audio_blocks=%llu",
+        exit_reason,exit_code,(unsigned long long)events,
+        (unsigned long long)final_retired,(unsigned long long)final_flips,
+        (unsigned long long)final_audio_blocks);
+    (void)munmap(workspace,sizeof(*workspace));
+    (void)munmap(cache,8192u*sizeof(*cache));
+    (void)munmap(pixels,32u*1024u*1024u);
+    (void)munmap(surfaces,128u*sizeof(*surfaces));(void)munmap(dcs,128u*sizeof(*dcs));
+    (void)munmap(classes,128u*sizeof(*classes));(void)munmap(resources,128u*sizeof(*resources));
+    (void)munmap(windows,128u*sizeof(*windows));(void)munmap(messages,128u*sizeof(*messages));
+    (void)munmap(state_buffer,PW_STATE_PS5_MAX_BYTES);
+    (void)munmap(profile_buffer,64u*1024u);
+    (void)munmap(registry_values,128u*sizeof(*registry_values));
+    (void)munmap(registry_keys,32u*sizeof(*registry_keys));
+    (void)munmap(heap_blocks,131072u*sizeof(*heap_blocks));(void)munmap(files,sizeof(*files));
+    ps5log_close(exit_reason);return (int)exit_code;
 }

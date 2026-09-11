@@ -122,7 +122,8 @@ static void waveout_tests(PwWin32 *r,PwX86State *s)
     s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-20;s->eflags=0xad7;
     memcpy((void *)(uintptr_t)s->gpr[4],mci,sizeof(mci));
     assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==0x107 &&
-           s->eip==ret && s->gpr[4]==s->stack_high && s->eflags==0xad7);
+           s->eip==ret && s->gpr[4]==s->stack_high && s->eflags==0xad7 &&
+           r->mci_calls==1 && r->mci_last_command==0x803);
 
     /* mmioClose has exactly two stdcall arguments.  An earlier three-argument
      * model silently consumed the caller's saved ESI and nulled every loaded
@@ -524,19 +525,41 @@ static void user32_tests(PwWin32 *r,PwX86State *s)
            r->user32->queue[0].message==0x400 && r->user32->queue[0].wparam==0x55 &&
            r->user32->queue[0].lparam==0x03400100);
     r->user32->queue_count=0;
+    strcpy(symbol.name,"PeekMessageA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    uint32_t message_output=s->stack_low+384;
+    uint32_t peek_frame[]={0x01001234,message_output,0x10001,0,0,1};
+    s->gpr[4]=s->stack_high-sizeof(peek_frame);s->eip=(uint32_t)target.address;
+    memcpy((void *)(uintptr_t)s->gpr[4],peek_frame,sizeof(peek_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] && r->idle_hint);
+
     r->services.message_wait=null_message_fixture;
     strcpy(symbol.name,"GetMessageA");
     assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
-    uint32_t message_output=s->stack_low+384;
     memset((void *)(uintptr_t)message_output,0xcc,sizeof(PwUser32QueueEntry));
     uint32_t get_frame[]={0x01001234,message_output,0x10001,0,0};
     s->gpr[4]=s->stack_high-20;s->eip=(uint32_t)target.address;
     memcpy((void *)(uintptr_t)s->gpr[4],get_frame,sizeof(get_frame));
     assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==1 &&
-           s->gpr[4]==s->stack_high && s->eip==get_frame[0]);
+           s->gpr[4]==s->stack_high && s->eip==get_frame[0] && !r->idle_hint);
     PwUser32QueueEntry received;memcpy(&received,(void *)(uintptr_t)message_output,sizeof(received));
     assert(received.window==0x10001 && received.message==0);
     r->services.message_wait=NULL;
+
+    strcpy(symbol.name,"PostQuitMessage");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    uint32_t quit_frame[]={0x01001234,73};
+    s->gpr[4]=s->stack_high-sizeof(quit_frame);s->eip=(uint32_t)target.address;
+    memcpy((void *)(uintptr_t)s->gpr[4],quit_frame,sizeof(quit_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && r->user32->quit_pending &&
+           r->user32->quit_code==73 && s->gpr[4]==s->stack_high);
+    strcpy(symbol.name,"GetMessageA");
+    assert(pw_win32_resolve(r,"user32.dll",&symbol,&target)==PW_OK);
+    s->gpr[4]=s->stack_high-sizeof(get_frame);s->eip=(uint32_t)target.address;
+    memcpy((void *)(uintptr_t)s->gpr[4],get_frame,sizeof(get_frame));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] && !r->user32->quit_pending);
+    memcpy(&received,(void *)(uintptr_t)message_output,sizeof(received));
+    assert(received.message==0x12 && received.wparam==73 && !received.window);
     r->user32->windows[0]=(PwUser32Window){0};
 
     strcpy(symbol.name,"MapVirtualKeyA");
@@ -780,6 +803,15 @@ int main(void)
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_NOT_FOUND);
     symbol.by_ordinal=1;symbol.ordinal=42;
     assert(pw_win32_resolve(&runtime,"kernel32.dll",&symbol,&target)==PW_ERR_UNSUPPORTED);
+    symbol.by_ordinal=0;strcpy(symbol.name,"exit");
+    assert(pw_win32_resolve(&runtime,"msvcrt.dll",&symbol,&target)==PW_OK);
+    uint32_t exit_frame[]={0x01001234,29};
+    state.gpr[4]=state.stack_high-sizeof(exit_frame);state.eip=(uint32_t)target.address;
+    memcpy((void *)(uintptr_t)state.gpr[4],exit_frame,sizeof(exit_frame));
+    assert(pw_win32_dispatch(&runtime,&state)==PW_OK && runtime.exit_requested &&
+           runtime.exit_code==29 && state.eip==exit_frame[0] &&
+           state.gpr[4]==state.stack_high-4); /* cdecl leaves the argument */
+    runtime.exit_requested=0;runtime.exit_code=0;
     string_tests(&runtime,&state);
     itoa_tests(&runtime,&state);
     profile_tests(&runtime,&state);

@@ -14,7 +14,11 @@ typedef struct VideoAttribute {uint8_t bytes[80];} VideoAttribute;
 extern size_t sceKernelGetDirectMemorySize(void);
 extern int sceKernelAllocateDirectMemory(int64_t,int64_t,size_t,size_t,int,int64_t *);
 extern int sceKernelMapDirectMemory(void **,size_t,int,int,int64_t,size_t);
+extern int sceKernelMunmap(void *,size_t);
+extern int sceKernelReleaseDirectMemory(int64_t,size_t);
 extern int sceVideoOutOpen(int32_t,int32_t,int32_t,const void *);
+extern int sceVideoOutClose(int32_t);
+extern int sceVideoOutUnregisterBuffers(int32_t,int32_t);
 extern int sceVideoOutSetFlipRate(int32_t,int32_t);
 extern void sceVideoOutSetBufferAttribute2(void *,uint64_t,uint32_t,uint32_t,uint32_t,
                                             uint64_t,uint32_t,uint64_t);
@@ -37,14 +41,17 @@ static size_t tile_pixel(uint32_t x,uint32_t y)
 }
 int pw_videoout_ps5_open(PwVideoOutPs5 *video)
 {
-    if(!video)return PW_ERR_PRECONDITION;memset(video,0,sizeof(*video));video->handle=-1;
+    if(!video)return PW_ERR_PRECONDITION;memset(video,0,sizeof(*video));
+    video->handle=-1;video->physical=-1;
     int status=pw_agc_ps5_open(&video->agc);if(status!=PW_OK)return status;
-    video->handle=sceVideoOutOpen(0xff,0,0,NULL);if(video->handle<0)return PW_ERR_STATE;
-    size_t pool=sceKernelGetDirectMemorySize();if(pool<MEMORY_BYTES)return PW_ERR_LIMIT;
+    video->handle=sceVideoOutOpen(0xff,0,0,NULL);if(video->handle<0)goto state_failed;
+    size_t pool=sceKernelGetDirectMemorySize();if(pool<MEMORY_BYTES)goto limit_failed;
     if(sceKernelAllocateDirectMemory(0,(int64_t)pool,MEMORY_BYTES,0x200000,3,
-                                     &video->physical)<0)return PW_ERR_VM;
+                                     &video->physical)<0)goto vm_failed;
+    video->allocated=1;
     if(sceKernelMapDirectMemory(&video->memory,MEMORY_BYTES,0x33,0,video->physical,0x200000)<0)
-        return PW_ERR_VM;
+        goto vm_failed;
+    video->mapped=1;
     video->bytes=MEMORY_BYTES;video->frame_bytes=FRAME_BYTES;
     VideoBuffer buffers[2]={{video->memory,0,0,0},
         {(uint8_t *)video->memory+FRAME_BYTES,0,0,0}};VideoAttribute attribute;
@@ -52,8 +59,47 @@ int pw_videoout_ps5_open(PwVideoOutPs5 *video)
     (void)sceVideoOutSetFlipRate(video->handle,0);
     sceVideoOutSetBufferAttribute2(&attribute,0x8000000022000000ull,0,WIDTH,HEIGHT,0,0,0);
     if(sceVideoOutRegisterBuffers2(video->handle,0,0,buffers,2,&attribute,0,NULL)<0)
-        return PW_ERR_STATE;
-    video->opened=1;(void)sceSystemServiceHideSplashScreen();return PW_OK;
+        goto state_failed;
+    video->buffers_registered=1;video->opened=1;
+    (void)sceSystemServiceHideSplashScreen();return PW_OK;
+limit_failed:
+    (void)pw_videoout_ps5_close(video);return PW_ERR_LIMIT;
+vm_failed:
+    (void)pw_videoout_ps5_close(video);return PW_ERR_VM;
+state_failed:
+    (void)pw_videoout_ps5_close(video);return PW_ERR_STATE;
+}
+int pw_videoout_ps5_close(PwVideoOutPs5 *video)
+{
+    if(!video)return PW_ERR_PRECONDITION;
+    int status=PW_OK;
+    video->unregister_rc=video->close_rc=video->munmap_rc=video->release_rc=0;
+    if(video->buffers_registered) {
+        video->unregister_rc=sceVideoOutUnregisterBuffers(video->handle,0);
+        /* On FW 12.02, 0x80290009 is followed by a successful handle close,
+         * unmap and direct-memory release. Preserve it as the measured
+         * deferred-close case; other unregister errors still fail closed. */
+        if(video->unregister_rc && (uint32_t)video->unregister_rc!=0x80290009u)
+            status=PW_ERR_STATE;
+        else video->buffers_registered=0;
+    }
+    if(video->handle>=0) {
+        video->close_rc=sceVideoOutClose(video->handle);
+        if(video->close_rc)status=PW_ERR_STATE;else video->handle=-1;
+    }
+    video->opened=0;
+    if(video->mapped) {
+        video->munmap_rc=sceKernelMunmap(video->memory,MEMORY_BYTES);
+        if(video->munmap_rc)status=PW_ERR_STATE;else video->mapped=0;
+    }
+    if(video->allocated) {
+        video->release_rc=sceKernelReleaseDirectMemory(video->physical,MEMORY_BYTES);
+        if(video->release_rc)status=PW_ERR_STATE;else video->allocated=0;
+    }
+    video->agc_close_rc=pw_agc_ps5_close(&video->agc);
+    if(video->agc_close_rc!=PW_OK)status=PW_ERR_STATE;
+    video->memory=NULL;video->physical=-1;video->bytes=video->frame_bytes=0;
+    return status;
 }
 int pw_videoout_ps5_present(PwVideoOutPs5 *video,const PwGdiTargetView *view)
 {

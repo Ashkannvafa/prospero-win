@@ -109,3 +109,8 @@ int pw_audio_ps5_control(void *opaque,PwAudioControl control)
     if(audio->ops.close(audio->handle)<0)return PW_ERR_STATE;
     audio->opened=0;audio->handle=-1;return PW_OK;
 }
+int pw_audio_ps5_close(PwAudioPs5 *audio)
+{
+    if(!audio)return PW_ERR_PRECONDITION;
+    return audio->opened?pw_audio_ps5_control(audio,PW_AUDIO_CLOSE):PW_OK;
+}

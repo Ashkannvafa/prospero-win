@@ -7,20 +7,55 @@ not write logs to console storage or USB. Its continuous-runtime records are:
 | --- | --- |
 | `PW_RUNTIME_BEGIN` | schema, title, private root basename and telemetry init status |
 | `PW_RUNTIME_READY` | bound import count, guest entry and mapped image bytes |
+| `PW_STATE_LOAD` / `PW_STATE_SAVE` | persistent registry bytes/generation and atomic-write syscall results |
+| `PW_PAD_OPEN` / `PW_PAD_EVENT` / `PW_PAD_QUIT` | native ownership, physical press/release counters and an explicit Create-to-WM_QUIT lifecycle edge; absence of events never implies simulated input |
 | `PW_VIDEO_FRAME` | changing frame hash, dimensions, flip/submit totals, `agc-dma` backend and completed fence state |
 | `PW_AUDIO_OPEN` | requested guest PCM format and native-open result |
 | `PW_AUDIO_PCM` | cumulative input bytes, output frames, complete SceAudioOut blocks and input hash |
-| `PW_RUNTIME_HEARTBEAT` | events, retired instructions, adapter calls, window/GDI ownership, AGC flips and complete audio counters |
+| `PW_RUNTIME_HEARTBEAT` | events, retired instructions, adapter calls, window/GDI ownership, AGC flips, audio, pad, INI, MCI and idle-yield counters |
+| `PW_GDI_STRETCH` | last observed StretchDIBits source/destination rectangle and DIB identity |
+| `PW_RUNTIME_TEARDOWN` | result of every ordered backend/resource release |
+| `PW_RUNTIME_END` | normal reason, guest exit code and final work counters |
 | `PW_RUNTIME_ABORT` | classified stage and status before fail-closed exit |
 | `PW_RUNTIME_SIGNAL` | signal, fault address and native register context before exit |
 
-The runner has no normal self-exit: it continues until operator closure.
+The production runner has no deadline and continues until the guest exits or
+the operator closes it. `PW_TEST_EXIT_AFTER_MS` builds are validation-only and
+exercise the same orderly teardown path with a bounded deadline.
 Absence of `PW_RUNTIME_ABORT`/`PW_RUNTIME_SIGNAL`, rising heartbeats and an
 external BigApp status are required to classify it as live. Audio acceptance
 requires nonzero bytes, frames, blocks and hash; a successful open alone is
 insufficient. Capture acceptance separately requires both a video and audio
 stream, while renderer/audio ownership remains grounded in telemetry. See
 HARDWARE_VALIDATION.md.
+
+Validate a live continuous transcript with:
+
+```sh
+python3 tools/validate_runtime_evidence.py <run.log> --continuous \
+  --min-seconds 600 --min-flips 1000 --min-audio-blocks 800
+```
+
+Omit `--continuous` for a bounded orderly-exit transcript. The validator
+requires exact title/app identity, contiguous sequence numbers, loaded
+persistent state, native pad ownership, nonzero DBT/adapter/presentation/audio/
+INI/pacing evidence, zero pad/profile errors and—on finite runs—successful
+teardown plus a matching `BYE`. Its mutation tests prevent a missing or broken
+field from passing silently. A bounded run takes its final flip/audio totals
+from `PW_RUNTIME_END`, so work after the last heartbeat is not discarded.
+
+After the owner's physical gameplay checklist, validate controller activity
+and the Create-to-WM_QUIT exit in the same transcript with:
+
+```sh
+python3 tools/validate_runtime_evidence.py <run.log> \
+  --min-seconds 60 --min-flips 100 --min-audio-blocks 800 \
+  --min-pad-events 12 --require-pad-quit
+```
+
+This proves physical edges crossed the adapter and the orderly exit ran; the
+owner's visual confirmation remains authoritative for scoring, ball loss and
+the semantic effect of each mapped control.
 
 The records below belong to the earlier finite PE mapping gate, which remains
 available as a separate synthetic validation path.

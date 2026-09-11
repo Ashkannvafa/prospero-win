@@ -40,6 +40,12 @@ typedef struct PwGdi {
     uint8_t *pixels;
     uint32_t dc_capacity,surface_capacity,pixel_capacity,next_handle;
     uint32_t system_palette_use;
+    /* Read-only diagnostics for the latest accepted StretchDIBits call.  The
+     * addresses are guest PE32 addresses and never imply ownership. */
+    uint64_t stretch_calls;
+    uint32_t stretch_owner,stretch_bits,stretch_info,stretch_dib_width,stretch_dib_height;
+    int32_t stretch_x,stretch_y,stretch_width,stretch_height;
+    int32_t stretch_source_x,stretch_source_y,stretch_source_width,stretch_source_height;
     PwGdiPalette palettes[PW_GDI_PALETTE_CAPACITY];
 } PwGdi;
 typedef struct PwGdiCounts {

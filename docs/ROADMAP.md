@@ -35,17 +35,28 @@ renderer or audio proof.
 
 ## Next milestones
 
-- [ ] **P5 — playable.** Adapt the already proven PS5 pad lifecycle into
-  reusable Win32 key/mouse messages. Launch a ball, operate both flippers,
-  score, lose a ball and restart with correct transitions and timing.
-- [ ] **P5.5 — presentation fidelity and pacing.** Correct remaining GDI
-  composition defects, select the actual top-level presentation target by
-  ownership rather than size, eliminate duplicated/stale regions and measure
-  frame pacing without busy-looping the guest.
-- [ ] **P6 — complete Pinball runtime.** Implement required persistence,
-  preferences and score storage; classify optional missing assets; add only
-  the MCI/MIDI behavior the target actually needs; perform repeated launch,
-  close and long soaks with stable ownership and no unhandled APIs.
+- [ ] **P5 — playable (implementation complete; physical acceptance pending).**
+  The ScePad/Win32 adapter maps plunger, both flippers, three nudges,
+  pause/resume and new game with exact key transitions and neutralization.
+  `Create` posts `WM_QUIT` directly for an orderly guest/runtime exit. The
+  remaining gate is the owner's gameplay checklist:
+  launch a ball, operate both flippers, score, lose a ball, pause/resume and
+  restart.
+- [x] **P5.5 — presentation fidelity and pacing.** Bottom-up DIB subrects use
+  the correct source origin, removing duplicated/stale auxiliary panels. The
+  focused top-level owner wins presentation; the visible-owner scan is only a
+  fallback. Empty PeekMessage iterations yield rather than busy-spin, with
+  counters in every heartbeat. Corrected output is hardware-observed.
+- [ ] **P6 — complete Pinball runtime (physical acceptance pending).**
+  Registry preferences and scores use a versioned checksummed format and
+  atomic `/download0` replacement; a second hardware launch reloaded 473
+  bytes. `wavemix.inf` uses a bounded parser and confined file route. The
+  default-off optional MIDI sequencer is explicitly unavailable after its one
+  `MCI_OPEN`; WaveMix PCM is the required active audio route. Two complete
+  validation-deadline launch/teardown cycles are proven. The exact production
+  candidate passed its strict continuous soak beyond ten minutes, including
+  8,733 changing-frame flips and 901 audio blocks. Only owner gameplay
+  acceptance remains.
 - [ ] **P7 — reusable compatibility expansion.** Select a second title and
   measure which CRT/User32/GDI/WinMM contracts generalize. Add compatibility
   by subsystem with fixtures, never by title-name hacks.

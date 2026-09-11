@@ -11,10 +11,12 @@ typedef struct PwAgcPs5 {
     size_t bytes;
     volatile uint64_t *fence;
     uint64_t submits;
-    unsigned module_loaded,mapped;
+    unsigned module_loaded,reserved,allocated,mapped;
+    int unmap_rc,release_rc,munmap_rc,unload_rc;
 } PwAgcPs5;
 
 int pw_agc_ps5_open(PwAgcPs5 *);
+int pw_agc_ps5_close(PwAgcPs5 *);
 int pw_agc_ps5_copy_flip(PwAgcPs5 *,int video_handle,int buffer_index,
                          const void *source,void *destination,uint32_t bytes,
                          uint64_t flip_arg);

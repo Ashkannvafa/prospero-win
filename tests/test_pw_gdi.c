@@ -78,6 +78,25 @@ int main(void)
     assert(pw_gdi_bitblt(&gdi,screen,-2,-2,4,4,memory,0,0,PW_GDI_ROP_SRCCOPY)==PW_OK);
     assert(pw_gdi_bitblt(&gdi,screen,0,0,100,100,memory,0,0,PW_GDI_ROP_BLACKNESS)==PW_OK);
     assert(pw_gdi_bitblt(&gdi,screen,0,0,1,1,memory,0,0,0x1234)==PW_ERR_UNSUPPORTED);
+
+    /* Bottom-up DIB source coordinates begin at the lower-left.  A source
+       subrectangle must preserve its own height when selecting storage rows;
+       whole-image tests cannot distinguish the incorrect rows-1-y formula. */
+    uint8_t stretch_info[40]={0},stretch_bits[4*4*4]={0};int32_t scan_lines=0;
+    stretch_info[0]=40;stretch_info[4]=4;stretch_info[8]=4;
+    stretch_info[12]=1;stretch_info[14]=32;
+    for(unsigned storage_y=0;storage_y<4;storage_y++)
+        for(unsigned x=0;x<4;x++) {
+            uint8_t *pixel=stretch_bits+(storage_y*4+x)*4;
+            pixel[0]=(uint8_t)(30-storage_y*10);pixel[3]=255;
+        }
+    assert(pw_gdi_stretch_dibits(&gdi,screen,0,0,4,2,0,1,4,2,
+        stretch_bits,sizeof(stretch_bits),stretch_info,sizeof(stretch_info),0,
+        PW_GDI_ROP_SRCCOPY,&scan_lines)==PW_OK && scan_lines==2);
+    for(unsigned x=0;x<4;x++) {
+        assert(pixels[screen_surface->offset+x*4]==10);
+        assert(pixels[screen_surface->offset+screen_surface->stride+x*4]==20);
+    }
     assert(pw_gdi_resize_target(&gdi,0x10000,4,4)==PW_OK && screen_surface->bytes==64);
     assert(pw_gdi_resize_target(&gdi,0x10000,8,8)==PW_OK && screen_surface->bytes==256);
 
