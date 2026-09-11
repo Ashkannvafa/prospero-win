@@ -106,6 +106,15 @@ bounded teardown gate below. The immediately preceding run
 strict ten-minute result with more than 700 million retired instructions and
 7,600 flips, but predates the isolated Create-to-WM_QUIT lifecycle mapping.
 
+After commit `ea1bc3e`, the deterministic production artifact was rebuilt,
+redeployed and relaunched as
+`20260911T012402917Z_PPSA99995_prospero-win_0x1c1bb08616b67`. The strict
+continuous validator accepted that exact run beyond ten minutes with
+649,958,605 retired instructions, 3,001,738 adapter calls, 7,122 changing-frame
+flips, 901 audio blocks and 2,975 connected pad samples at the acceptance
+point. It had zero aborts, signals, pad errors and profile errors, and remained
+active afterward for physical gameplay acceptance.
+
 Two bounded validation builds prove persistence and shutdown independently of
 the continuous candidate:
 
