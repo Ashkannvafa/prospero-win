@@ -225,6 +225,28 @@ static void abort_runtime(const char *stage,int status)
     ps5log_close(stage);_exit(1);
 }
 
+static void report_execute_abort(const NativeServices *services,
+                                 const PwX86State *state,int status)
+{
+    const uint8_t *source=NULL;size_t available=0;
+    int view_status=source_view((void *)services,state->eip,&source,&available);
+    uint8_t bytes[8]={0};size_t copied=0;
+    if(view_status==PW_OK && source) {
+        copied=available<sizeof(bytes)?available:sizeof(bytes);
+        memcpy(bytes,source,copied);
+    }
+    PS5LOG_LOG("PW_EXEC_ABORT schema=1 status=%s eip=0x%08x "
+        "eax=0x%08x ecx=0x%08x edx=0x%08x ebx=0x%08x "
+        "esp=0x%08x ebp=0x%08x esi=0x%08x edi=0x%08x eflags=0x%08x "
+        "view=%s available=%llu captured=%u "
+        "bytes=%02x%02x%02x%02x%02x%02x%02x%02x",
+        pw_result_name(status),state->eip,state->gpr[0],state->gpr[1],
+        state->gpr[2],state->gpr[3],state->gpr[4],state->gpr[5],
+        state->gpr[6],state->gpr[7],state->eflags,pw_result_name(view_status),
+        (unsigned long long)available,(unsigned)copied,bytes[0],bytes[1],bytes[2],
+        bytes[3],bytes[4],bytes[5],bytes[6],bytes[7]);
+}
+
 enum { PAD_CREATE=0x00000001u,PAD_OPTIONS=0x00000008u,PAD_UP=0x00000010u,
        PAD_RIGHT=0x00000020u,PAD_LEFT=0x00000080u,PAD_L1=0x00000400u,
        PAD_R1=0x00000800u,PAD_CROSS=0x00004000u,PAD_SQUARE=0x00008000u };
@@ -397,7 +419,10 @@ int main(int argc,char **argv)
         if(status==PW_ERR_NOT_FOUND) {
             PwX86StepReport report;status=pw_x86_engine_step(&engine,&state,&report);
         }
-        if(status!=PW_OK)abort_runtime("execute",status);
+        if(status!=PW_OK) {
+            report_execute_abort(&services,&state,status);
+            abort_runtime("execute",status);
+        }
         if(runtime.exit_requested) {
             exit_reason="crt-exit";exit_code=runtime.exit_code;break;
         }

@@ -128,6 +128,24 @@ Both teardown records report successful Pad neutralize/close and user-service
 termination, AudioOut close, GDI reset, VideoOut close, framebuffer unmap and
 direct-memory release, AGC batch unmap/direct-memory release/virtual unmap/
 module unload, DBT destruction, PE release and all four guest VM releases.
+
+## Physical gameplay follow-up
+
+The owner subsequently confirmed Cross plunger control, L1/R1 flippers,
+scoring and a complete ball-loss/new-ball cycle. An initially suspected stale
+ball at the drain was disproved rather than patched: synchronized Remote Play
+inspection showed the actual ball moving and later waiting in the right-hand
+launcher, while live renderer state contained exactly one ball sprite. The
+silver circle below the center lamp is also present in the original game
+reference and is fixed table artwork. Temporary target-specific tracing used
+for this classification was removed after the diagnosis.
+
+The same play session exposed an actual missing x87 register-store form,
+`FST ST(i)` (`DD D0+i`). Supporting that non-popping transfer prevented the
+classified execute abort reached during flipper-adjacent physics. Unit tests
+cover the instruction decode, register-stack semantics and captured
+`FST ST(1); FSTP ST(0); FSTP m32real` sequence. Final P5/P6 acceptance still
+requires the owner to exercise pause/resume and new-game restart.
 VideoOut unregister returned `0x80290009`, the measured resource-busy result;
 closing VideoOut completed the observed deferred-release path and all later
 resource releases succeeded. A title-manager kill cannot execute in-process

@@ -223,6 +223,21 @@ static void x87_transfer_tests(void)
     assert((state.gpr[0]&0xffff)==state.fp.x87_status);
     uint8_t discarded[10];assert(pw_guest_x87_pop(&state.fp,discarded)==PW_OK);
 
+    /* Captured Pinball physics sequence: FST ST(1), FSTP ST(0), then
+     * FSTP m32real [ESP+8]. It must collapse the duplicate and store once. */
+    bits=0x3f800000;memcpy((void *)(uintptr_t)address,&bits,4);
+    const uint8_t load_one[]={0xd9,0x05,(uint8_t)address,(uint8_t)(address>>8),
+        (uint8_t)(address>>16),(uint8_t)(address>>24)};
+    assert(run(load_one,sizeof(load_one),0xd434)==PW_OK);
+    const uint8_t duplicate_one[]={0xd9,0xc0};
+    assert(run(duplicate_one,sizeof(duplicate_one),0xd438)==PW_OK);
+    state.gpr[4]=state.stack_low+32;bits=0;
+    const uint8_t captured[]={0xdd,0xd1,0xdd,0xd8,0xd9,0x5c,0x24,0x08};
+    assert(run(captured,sizeof(captured),0xd43a)==PW_OK);
+    memcpy(&bits,(void *)(uintptr_t)(state.gpr[4]+8),4);
+    assert(bits==0x3f800000 &&
+           pw_guest_x87_peek(&state.fp,0,(uint8_t[10]){0})==PW_ERR_NOT_FOUND);
+
     uint32_t two=0x40000000u,six=0x40c00000u,third=0;
     memcpy((void *)(uintptr_t)address,&six,4);
     memcpy((void *)(uintptr_t)(address+4),&two,4);

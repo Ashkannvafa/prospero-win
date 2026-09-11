@@ -37,8 +37,9 @@ See [HARDWARE_VALIDATION.md](docs/HARDWARE_VALIDATION.md) for correlated
 continuous and orderly-exit evidence and its limitations.
 
 Automated and hardware-side implementation is complete for the current P5/P6
-candidate. Physical gameplay acceptance remains pending: the owner must launch
-the ball, operate both flippers, score, lose a ball, pause/resume and restart.
+candidate. Physical gameplay has now confirmed plunger launch, both flippers,
+scoring and ball loss without a runtime exit. Pause/resume and manual new-game
+restart remain on the owner acceptance checklist.
 The original game defaults music off; its single optional `MCI_OPEN` request is
 reported honestly as no MIDI device, while its required WaveMix PCM effects
 remain active. Broad Win32 compatibility and a general D3D backend are later

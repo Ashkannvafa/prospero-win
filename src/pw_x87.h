@@ -16,6 +16,7 @@ typedef enum PwX87Action {
     PW_X87_FSTP_F32,
     PW_X87_FST_F64,
     PW_X87_FSTP_F64,
+    PW_X87_FST_ST,
     PW_X87_FSTP_ST,
     PW_X87_FNSTSW_AX,
     PW_X87_FABS,

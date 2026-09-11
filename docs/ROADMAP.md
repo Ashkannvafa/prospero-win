@@ -35,13 +35,15 @@ renderer or audio proof.
 
 ## Next milestones
 
-- [ ] **P5 — playable (implementation complete; physical acceptance pending).**
+- [ ] **P5 — playable (implementation complete; final physical acceptance pending).**
   The ScePad/Win32 adapter maps plunger, both flippers, three nudges,
   pause/resume and new game with exact key transitions and neutralization.
   `Create` posts `WM_QUIT` directly for an orderly guest/runtime exit. The
-  remaining gate is the owner's gameplay checklist:
-  launch a ball, operate both flippers, score, lose a ball, pause/resume and
-  restart.
+  Hardware play has confirmed Cross launch, both shoulder flippers, scoring
+  and ball loss without a runtime exit. Pause/resume and new-game restart are
+  the remaining owner checks. A silver circle between the flippers was
+  compared against both live `TBall` state and the original game reference;
+  it is fixed table artwork, not a retained ball sprite.
 - [x] **P5.5 — presentation fidelity and pacing.** Bottom-up DIB subrects use
   the correct source origin, removing duplicated/stale auxiliary panels. The
   focused top-level owner wins presentation; the visible-owner scan is only a
@@ -56,7 +58,7 @@ renderer or audio proof.
   validation-deadline launch/teardown cycles are proven. The exact production
   candidate passed its strict continuous soak beyond ten minutes, including
   8,733 changing-frame flips and 901 audio blocks. Only owner gameplay
-  acceptance remains.
+  acceptance of pause/resume and new-game restart remains.
 - [ ] **P7 — reusable compatibility expansion.** Select a second title and
   measure which CRT/User32/GDI/WinMM contracts generalize. Add compatibility
   by subsystem with fixtures, never by title-name hacks.

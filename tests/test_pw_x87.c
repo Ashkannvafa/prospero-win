@@ -44,6 +44,9 @@ int main(void)
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F64,(uintptr_t)&stored64,NULL)==PW_OK && stored64==pi);
     assert(pw_x87_execute(&fp,PW_X87_FLD_F32,(uintptr_t)&negative,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FLD_ST,0,NULL)==PW_OK);
+    uint8_t duplicated[10];assert(pw_guest_x87_peek(&fp,0,duplicated)==PW_OK);
+    assert(pw_x87_execute(&fp,PW_X87_FST_ST,1,NULL)==PW_OK);
+    assert(pw_guest_x87_peek(&fp,1,got)==PW_OK && !memcmp(got,duplicated,10));
     assert(pw_x87_execute(&fp,PW_X87_FSTP_ST,1,NULL)==PW_OK);
     assert(pw_x87_execute(&fp,PW_X87_FSTP_F32,(uintptr_t)&stored,NULL)==PW_OK && stored==negative);
     int32_t minimum=INT32_MIN;

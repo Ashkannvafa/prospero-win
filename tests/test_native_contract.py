@@ -220,6 +220,8 @@ def test_runtime_entry_owns_execution_services() -> None:
     assert 'PAD_CREATE,0x1b' not in text
     assert "PW_RUNTIME_READY" in text
     assert "PW_RUNTIME_HEARTBEAT" in text
+    assert "PW_EXEC_ABORT schema=1" in text
+    assert "eip=0x%08x" in text and "bytes=%02x%02x%02x%02x" in text
     assert "for(;;events++)" in text
     assert "ps5log_close(\"runtime-signal\")" in text
 

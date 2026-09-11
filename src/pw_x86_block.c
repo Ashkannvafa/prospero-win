@@ -411,7 +411,9 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             else if(op==0xd9 && operand.reg==7 && operand.rm==2)x87=PW_X87_FSQRT+1;
             else if(op==0xd9 && operand.reg==7 && operand.rm==6)x87=PW_X87_FSIN+1;
             else if(op==0xd9 && operand.reg==7 && operand.rm==7)x87=PW_X87_FCOS+1;
-            else if(op==0xdd && operand.reg==3) {
+            else if(op==0xdd && operand.reg==2) {
+                x87=PW_X87_FST_ST+1;x87_register=operand.rm+1;
+            } else if(op==0xdd && operand.reg==3) {
                 x87=PW_X87_FSTP_ST+1;x87_register=operand.rm+1;
             } else if(op==0xdf && operand.reg==4 && operand.rm==0)x87=PW_X87_FNSTSW_AX+1;
             else if(op==0xd8 && (operand.reg==0 || operand.reg==1 || operand.reg==2 ||
