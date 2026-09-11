@@ -170,8 +170,9 @@ the new handler according to new_mode; failed allocation sets errno.
 realloc(NULL,n) delegates to malloc; realloc(p,0) frees and returns NULL.
 The allocator must preserve the old allocation on failed nonzero resize.
 The guest allocator family and cdecl adapters now support the default absent
-new-handler with logical errno. Registered handlers remain pending. Do not copy the Wine wrapper without its heap,
-errno and callback dependencies. Relevant Wine tests and the underlying heap
+new-handler with logical errno. Registered handlers remain pending. Do not
+copy the Wine wrapper without its heap, errno and callback dependencies.
+Relevant Wine tests and the underlying heap
 implementation still require a fuller review before claiming compatibility.
 
 ## Reproduce and next evidence

@@ -221,7 +221,9 @@ The IAT slot at RVA 0x10f0 resolves by its preserved import lookup table to
 address in the original file belongs to the old Windows image, not this
 host. The mapper's writable copy is now rebound; the original file remains
 unchanged. The GetModuleHandleA(NULL) response uses the mapped main-module
-base and the shared stdcall return service. Other API cases remain pending.
+base and the shared stdcall return service. That statement describes the
+historical first-IAT checkpoint; the production runtime now binds all 207
+static imports required by the Pinball target.
 
 The historical splash-era exact-binary trace retired 37,925 instructions and stopped at
 `waveOutGetNumDevs` in source-confirmed WaveMix initialization. Its cache totals

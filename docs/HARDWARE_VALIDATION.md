@@ -71,7 +71,7 @@ operator delete complete the subsequent observed path.
 plunger sample is reported as not found; other effects, including the two
 flipper mappings, supplied the PCM validated above.
 
-## P5/P6 candidate evidence (2026-09-11)
+## P5/P6 production evidence (2026-09-11)
 
 The final production candidate uses linked ELF SHA-256
 `3e858b04cdd576bbf27f404793871bb84d7846d1ba947b5507929f2251df3cc6`

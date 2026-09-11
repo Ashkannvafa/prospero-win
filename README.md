@@ -11,7 +11,7 @@ drivers are out of scope.
 
 ## Current milestone
 
-The P5/P6 gameplay candidate is running on an owned PS5 with FW 12.02:
+The completed P5/P6 Pinball runtime is running on an owned PS5 with FW 12.02:
 
 - the original PE32 image executes continuously through the x86 DBT;
 - its main window and animated table are composed by the GDI compatibility

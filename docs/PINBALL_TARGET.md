@@ -13,7 +13,7 @@ MMIO and MCI. No static DirectDraw/Direct3D imports were found. LoadLibraryA
 and GetProcAddress require further dynamic dependency analysis. Runtime
 working set remains unverified.
 
-Current status: the P5/P6 candidate is active on FW 12.02. This exact executable now runs
+Current status: P5/P6 is complete on FW 12.02. This exact executable now runs
 continuously through the native x86 DBT, displays changing board frames through
 AGC DMA/VideoOut and sends its original WaveMix effects through SceAudioOut.
 The accepted fSELF hash, telemetry and private audiovisual evidence are in

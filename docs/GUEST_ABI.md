@@ -170,7 +170,10 @@ remain pending. The host tracer reserves an 8 MiB RW arena at 0x03400000 with
 4096 metadata slots, registers it, and releases it even after a classified stop.
 It reports live blocks/requested bytes before release; that is not evidence
 that guest code freed every allocation or completed normal application teardown.
-One original malloc now returns 0x03400000. PS5 runtime integration is pending.
+One original malloc now returns 0x03400000. The production PS5 runtime
+supersedes that historical host-only boundary: it owns a 64 MiB guest heap at
+0x03400000, routes the CRT allocation family through it and releases the
+complete VM region during ordered teardown.
 
 ## Guest string lengths
 
@@ -234,8 +237,10 @@ copies the 40-byte PE32 `WNDCLASSA`, validates its callback against executable
 image storage and preserves its resource ownership links and class metadata.
 Its first exact-binary use is the source-confirmed splash class. Return-frame
 validation precedes every object or class mutation.
-Best-fit/default-character conversion, additional modules, larger capacities,
-LastError reporting and PS5 resource-provider wiring remain pending.
+The production PS5 resource provider now supplies string, named and integer
+resources from the mapped image, and the Win32 runtime owns per-guest-thread
+LastError state. Best-fit/default-character conversion, additional dynamic
+modules and larger capacities remain outside the completed Pinball target.
 The provider's UTF-16 span must remain live through dispatch; raw source bytes
 remain live for the host trace. No Windows DLL is used for this service.
 
@@ -321,10 +326,11 @@ callee-saved register returns. Pinball's first observed `_initterm` returns
 without scheduling callbacks, so actual-game callbacks are not yet proven.
 The subsequent original-game initializer now schedules a callback, executes
 its clock/identity calls and returns through the guest ABI bridge, allowing
-the enclosing `_initterm` to finish. This is completed original-game callback
-evidence on the host only; nested callback evidence remains synthetic.
-Host telemetry labels scheduled work `host-callback-enter` separately from
-the API-return records. No PS5 callback execution is claimed.
+the enclosing `_initterm` to finish. This was the initial host proof. The
+production PS5 runtime now executes the original callback/message-loop graph
+continuously; deeply nested callback edge cases beyond the target remain
+synthetic. Host telemetry labels scheduled work `host-callback-enter`
+separately from the API-return records.
 
 ## Arguments and environment
 
@@ -354,7 +360,9 @@ pointer packing, storage/argument limits, and API failure atomicity.
 services stop explicitly; shared runtime code never assumes host process IDs.
 The Linux tracer connects UTC to CLOCK_REALTIME, uptime to CLOCK_BOOTTIME
 (including suspend), and the counter to CLOCK_MONOTONIC, with guest IDs 1/2.
-PS5 clock bindings and a multi-process/thread ID registry remain pending.
+The PS5 runtime binds these domains to native `clock_gettime` and uses stable
+guest IDs for its single guest process/thread model. A general multi-process
+and multi-thread ID registry remains future compatibility work.
 
 - `GetSystemTimeAsFileTime`: stdcall pointer output, void return; converts
   nonnegative Unix nanoseconds to 100 ns ticks using the 1601 UTC epoch offset.
