@@ -1,4 +1,4 @@
-# First game: Windows Space Cadet Pinball
+# First playable title: Windows Space Cadet Pinball
 
 Target: execute the owner's original x86 PINBALL.EXE through prospero-win
 without recompilation, display through the PS5 GPU, accept DualSense input
@@ -13,7 +13,7 @@ MMIO and MCI. No static DirectDraw/Direct3D imports were found. LoadLibraryA
 and GetProcAddress require further dynamic dependency analysis. Runtime
 working set remains unverified.
 
-Current status: P5/P6 is complete on FW 12.02. This exact executable now runs
+Current status: **first playable** on FW 12.02. This exact executable now runs
 continuously through the native x86 DBT, displays changing board frames through
 AGC DMA/VideoOut and sends its original WaveMix effects through SceAudioOut.
 The accepted fSELF hash, telemetry and private audiovisual evidence are in
@@ -21,9 +21,11 @@ The accepted fSELF hash, telemetry and private audiovisual evidence are in
 corrected GDI composition, persistent registry reload, bounded INI parsing and
 ordered teardown are implemented and hardware-observed. Physical play has
 confirmed launch, both flippers, scoring, ball loss, pause/resume and new-game
-restart without an unintended runtime exit. P5/P6 acceptance is complete. The
-continuous path has already crossed ten minutes without an abort. MIDI is
-optional in this target:
+restart without an unintended runtime exit. This proves the first working game
+for prospero-win; it does not make Pinball the scope of the project or claim
+broad Windows compatibility. Intermittent pacing and presentation polish
+remain. The continuous path has already crossed ten minutes without an abort.
+MIDI is optional in this target:
 music defaults off and the sole startup `MCI_OPEN` disables its menu item when
 the runtime reports no sequencer; original PCM effects remain available.
 
@@ -136,12 +138,13 @@ inspector does not enumerate those yet. Imports are not a full runtime trace.
 
 ## Acceptance and reference
 
-Follow P0–P8 in ROADMAP.md. First output comes from the original executable.
-P4.5 means simultaneous changing graphics and original PCM; it does not mean
-playability. Playability means operator control of ball launch, both flippers,
-scoring and restart with correct timing. Completion additionally requires
-persistence, stable sessions and structured lifecycle evidence. Video alone
-does not prove artifact identity, renderer completion, audio or cleanup.
+Follow the named compatibility stages in ROADMAP.md. First output comes from
+the original executable. **In-game** means simultaneous changing graphics and
+original PCM; it does not mean playability. **First playable** additionally
+requires operator control of ball launch, both flippers, scoring and restart
+with usable timing, plus persistence, stable sessions and structured lifecycle
+evidence. Video alone does not prove artifact identity, renderer completion,
+audio or cleanup.
 
 [SpaceCadetPinball](https://github.com/k4zmu2a/SpaceCadetPinball) provides
 MIT-licensed reconstructed source, the public PDB dump and a modern SDL

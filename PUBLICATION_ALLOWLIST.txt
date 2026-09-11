@@ -111,6 +111,7 @@ tests/test_pw_ini.c
 tests/test_pw_pad.c
 tests/test_pw_pad_ps5.c
 tests/test_win32_catalog.py
+tests/test_status_vocabulary.py
 tests/test_classify_x86.py
 tests/test_startup_x87_contract.py
 tests/test_pw_import_bind.c

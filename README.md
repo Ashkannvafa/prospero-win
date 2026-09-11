@@ -5,13 +5,15 @@ Windows PE images, translates 32-bit x86 code to x86-64, supplies reviewed
 Win32/CRT services and connects guest graphics and audio to native PS5
 backends.
 
-The first target is the owner's original Windows XP Space Cadet
-`PINBALL.EXE`, executed without recompilation. DRM, anti-cheat and kernel
-drivers are out of scope.
+The first compatibility target is the owner's original Windows XP Space Cadet
+`PINBALL.EXE`, executed without recompilation. It is a bring-up target for the
+general runtime, not a project-specific architecture. DRM, anti-cheat and
+kernel drivers are out of scope.
 
 ## Current milestone
 
-The completed P5/P6 Pinball runtime is running on an owned PS5 with FW 12.02:
+prospero-win has reached its **first playable title** on an owned PS5 with FW
+12.02:
 
 - the original PE32 image executes continuously through the x86 DBT;
 - its main window and animated table are composed by the GDI compatibility
@@ -36,13 +38,16 @@ The current production fSELF SHA-256 is
 See [HARDWARE_VALIDATION.md](docs/HARDWARE_VALIDATION.md) for correlated
 continuous and orderly-exit evidence and its limitations.
 
-P5 and P6 are complete for the first target. Physical gameplay has confirmed
-plunger launch, both flippers, scoring, ball loss, pause/resume and manual
-new-game restart without an unintended runtime exit.
+Physical gameplay has confirmed plunger launch, both flippers, scoring, ball
+loss, pause/resume and manual new-game restart without an unintended runtime
+exit. This establishes a first-playable compatibility result, not a finished
+Pinball port or broad Windows compatibility; intermittent pacing and
+presentation polish remain open.
 The original game defaults music off; its single optional `MCI_OPEN` request is
 reported honestly as no MIDI device, while its required WaveMix PCM effects
-remain active. Broad Win32 compatibility and a general D3D backend are later
-work.
+remain active. The next compatibility milestone is a second independent
+Windows title that exposes and removes target-specific assumptions. Broad
+Win32 compatibility and a general D3D backend are later work.
 
 ## Build and inspect
 

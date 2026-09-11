@@ -40,8 +40,8 @@ repository inputs.
 
 The board is visible and changes over time. Remaining GDI fidelity defects are
 also visible: some auxiliary-panel regions are duplicated or stale. Therefore
-this evidence closes visible-and-audible P4.5, not pixel-perfect rendering or
-playability.
+this evidence established the **in-game / visible-and-audible** status, not
+pixel-perfect rendering or playability.
 
 ## Repeatability and lifecycle
 
@@ -71,7 +71,7 @@ operator delete complete the subsequent observed path.
 plunger sample is reported as not found; other effects, including the two
 flipper mappings, supplied the PCM validated above.
 
-## P5/P6 production evidence (2026-09-11)
+## First-playable production evidence (2026-09-11)
 
 The final production candidate uses linked ELF SHA-256
 `3e858b04cdd576bbf27f404793871bb84d7846d1ba947b5507929f2251df3cc6`
@@ -154,8 +154,9 @@ and deployed fSELF SHA-256
 It launched as run
 `20260911T080302217Z_PPSA99995_prospero-win_0x1d780c2f70b6d`; structured
 telemetry established the expected DBT, GDI/AGC, AudioOut, Pad and persistent
-state paths before the complete physical checklist passed. This closes P5 and
-P6 for the original Pinball target.
+state paths before the physical gameplay checklist passed. This establishes
+Pinball as prospero-win's first playable compatibility target. It does not
+claim a finished general runtime; pacing and presentation polish remain.
 VideoOut unregister returned `0x80290009`, the measured resource-busy result;
 closing VideoOut completed the observed deferred-release path and all later
 resource releases succeeded. A title-manager kill cannot execute in-process

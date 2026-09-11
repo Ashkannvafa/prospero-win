@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Keep public compatibility status independent of numbered project phases."""
+
+from pathlib import Path
+import re
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PUBLIC_STATUS_DOCS = (
+    ROOT / "README.md",
+    ROOT / "docs" / "ROADMAP.md",
+    ROOT / "docs" / "PINBALL_TARGET.md",
+    ROOT / "docs" / "HARDWARE_VALIDATION.md",
+)
+NUMBERED_STATUS = re.compile(r"\bP[0-9](?:\.[0-9])?\b")
+
+
+for path in PUBLIC_STATUS_DOCS:
+    text = path.read_text(encoding="utf-8")
+    match = NUMBERED_STATUS.search(text)
+    assert match is None, f"{path}: legacy numbered status {match.group(0)!r}"
+
+roadmap = (ROOT / "docs" / "ROADMAP.md").read_text(encoding="utf-8")
+for status in ("Bring-up", "First frame", "In-game", "First playable"):
+    assert status in roadmap, f"ROADMAP.md: missing named status {status!r}"
+
+readme = (ROOT / "README.md").read_text(encoding="utf-8")
+assert "first playable title" in readme
+assert "not a project-specific architecture" in readme
+
+print("prospero-win status vocabulary: PASS")

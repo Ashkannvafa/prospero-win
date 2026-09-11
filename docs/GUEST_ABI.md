@@ -2,7 +2,7 @@
 
 `src/pw_guest_call.c` provides integer-stack marshalling for Win32 adapters.
 It does not resolve imports or implement a Win32 API. These services are
-shared prerequisites identified by the complete Pinball import inventory.
+shared prerequisites identified by Pinball's complete static import inventory.
 
 ## Function/data IAT binding
 
@@ -240,7 +240,8 @@ validation precedes every object or class mutation.
 The production PS5 resource provider now supplies string, named and integer
 resources from the mapped image, and the Win32 runtime owns per-guest-thread
 LastError state. Best-fit/default-character conversion, additional dynamic
-modules and larger capacities remain outside the completed Pinball target.
+modules and larger capacities remain outside the currently validated Pinball
+compatibility surface.
 The provider's UTF-16 span must remain live through dispatch; raw source bytes
 remain live for the host trace. No Windows DLL is used for this service.
 
