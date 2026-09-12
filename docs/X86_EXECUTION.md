@@ -243,3 +243,10 @@ directional `C1`; unmasked x87 exceptions produce a distinct pending guest trap
 with precise PC/retirement and no destination publication. Guest
 exception-handler delivery, SSE, cache eviction,
 a full memory model and scheduling remain.
+
+Current cache lookup is open-addressed by guest PC, so hot dispatch is O(1) on
+average and exposes total/max probe counts. Cold publication preserves W^X but
+transitions only the generated block's host pages, rather than all 4 MiB of the
+arena. The engine remains deliberately single-dispatcher: native audio and I/O
+workers increase runtime concurrency without racing guest registers, flags,
+memory ownership or translated-code publication.

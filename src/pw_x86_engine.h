@@ -24,12 +24,14 @@ typedef struct PwX86Engine {
     PwX86Cache cache;
     PwX86SourceView source_view;
     void *source_opaque;
-    uint64_t dispatches,retired_instructions;
+    uint64_t dispatches,retired_instructions,compiles;
+    uint64_t protection_calls,protection_bytes;
     unsigned sealed,failed,initialized;
 } PwX86Engine;
 
 /* The engine owns its code region but not entries or source memory. It is a
- * single-dispatcher object: reset/destroy require no executing block. */
+ * single-dispatcher object: reset/destroy require no executing block. Code
+ * publication changes protection only on pages touched by the new block. */
 int pw_x86_engine_init(PwX86Engine *,const PwVmBackend *,
                        PwX86CacheEntry *,uint32_t,size_t,uint32_t,
                        PwX86SourceView,void *);

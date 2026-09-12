@@ -73,6 +73,22 @@ capture alone is not renderer or audio proof.
 - [ ] Intermittent motion/pacing and remaining presentation details need
   profiling and polish. They do not invalidate the first-playable result.
 
+## Active: runtime performance foundation
+
+- [x] Replace linear translated-block lookup with a generation-scoped,
+  open-addressed guest-PC cache.
+- [x] Restrict every DBT W^X publication transition to the pages containing
+  newly generated code rather than the complete executable arena.
+- [x] Define asynchronous WinMM ownership: copied PCM queue, dedicated
+  SceAudioOut worker, deferred `WHDR_DONE`/`WOM_DONE`, bounded backpressure and
+  synchronized telemetry.
+- [ ] Validate the exact asynchronous candidate on hardware with collision
+  audio, zero queue-full/output-error events and materially reduced main-loop
+  gaps. Until that A/B run, the implementation is host-verified, not a claimed
+  pacing fix.
+- [ ] Move CPU presentation work behind a separate ownership boundary after
+  measuring hashing, tiling, DMA submission and vblank wait independently.
+
 ## Active: compatibility expansion
 
 - [ ] Select a second independent Windows program or game using objective
@@ -111,6 +127,9 @@ capture alone is not renderer or audio proof.
 
 - `make test audit` before project commits and `make check` before lab commits.
 - ASan/UBSan after loader, DBT, ABI, GDI or audio ownership changes.
+- Threaded audio changes additionally require the blocking-output regression:
+  submit must return while the synthetic device is held, and completion must
+  remain absent until the worker releases the final block.
 - Exact stdcall/cdecl stack-balance tests for every adapter. The `mmioClose`
   regression is permanent because its two-argument ABI previously consumed a
   saved guest register and silently disconnected valid WaveMix buffers.

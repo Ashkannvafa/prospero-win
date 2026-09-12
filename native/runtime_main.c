@@ -204,18 +204,12 @@ static int audio_open(void *opaque,uint32_t rate,uint16_t channels,uint16_t bits
     PS5LOG_LOG("PW_AUDIO_OPEN status=%s rate=%u channels=%u bits=%u",
                pw_result_name(status),rate,channels,bits);return status;
 }
-static int audio_submit(void *opaque,const void *pcm,uint32_t bytes)
+static int audio_submit(void *opaque,const void *pcm,uint32_t bytes,uint32_t token)
 {
-    NativeServices *services=opaque;uint64_t before=services->audio->blocks;
-    int status=pw_audio_ps5_submit(services->audio,pcm,bytes);
-    if(status==PW_OK && services->audio->blocks!=before &&
-       (!before || before/120!=services->audio->blocks/120))
-        PS5LOG_LOG("PW_AUDIO_PCM input_bytes=%llu output_frames=%llu blocks=%llu hash=0x%08x",
-            (unsigned long long)services->audio->input_bytes,
-            (unsigned long long)services->audio->output_frames,
-            (unsigned long long)services->audio->blocks,services->audio->input_hash);
-    return status;
+    return pw_audio_ps5_submit(((NativeServices *)opaque)->audio,pcm,bytes,token);
 }
+static int audio_poll(void *opaque,uint32_t *token,uint32_t *bytes)
+{return pw_audio_ps5_poll(((NativeServices *)opaque)->audio,token,bytes);}
 static int audio_control(void *opaque,PwAudioControl control)
 {return pw_audio_ps5_control(((NativeServices *)opaque)->audio,control);}
 
@@ -349,8 +343,12 @@ int main(int argc,char **argv)
     if(status!=PW_OK)abort_runtime("state-load",status);
 
     PwAudioPs5 audio;PwAudioPs5Ops audio_ops;
+    PwAudioPs5Block *audio_queue=scratch(PW_AUDIO_PS5_QUEUE_BLOCKS*sizeof(*audio_queue));
+    if(!audio_queue)abort_runtime("audio-queue",PW_ERR_VM);
     if((status=pw_audio_ps5_platform_ops(&audio_ops))!=PW_OK ||
-       (status=pw_audio_ps5_init(&audio,&audio_ops))!=PW_OK)abort_runtime("audio",status);
+       (status=pw_audio_ps5_init(&audio,&audio_ops,audio_queue,
+                                 PW_AUDIO_PS5_QUEUE_BLOCKS))!=PW_OK)
+        abort_runtime("audio",status);
     PwPadPs5 pad;PwPadPs5Ops pad_ops;
     if((status=pw_pad_ps5_platform_ops(&pad_ops))!=PW_OK ||
        (status=pw_pad_ps5_open(&pad,&pad_ops,pinball_pad_map,
@@ -372,7 +370,7 @@ int main(int argc,char **argv)
         .main_module_filename="C:\\game\\" PW_ROOT_MODULE,
         .file_open=file_open,.file_close=file_close,.file_read=file_read,.file_seek=file_seek,
         .profile_int=profile_int,.message_wait=message_wait,.sleep_ms=sleep_ms,.audio_open=audio_open,
-        .audio_submit=audio_submit,.audio_control=audio_control};
+        .audio_submit=audio_submit,.audio_poll=audio_poll,.audio_control=audio_control};
     PwImportBindWorkspace *workspace=scratch(sizeof(*workspace));PwImportBindReport binding;
     if(!workspace || (status=pw_import_bind32(&image,&mapped,pw_win32_resolve,&runtime,
        workspace,&binding))!=PW_OK)abort_runtime("imports",status);
@@ -402,6 +400,8 @@ int main(int argc,char **argv)
     PS5LOG_LOG("PW_RUNTIME_READY imports=%u entry=0x%08x image_bytes=%u",
                binding.total,state.eip,image.size_of_image);
     uint64_t events=0,last_heartbeat=now_ns(),last_present=0,last_pad_poll=0;
+    uint64_t audio_completion_events=0;
+    uint64_t last_loop=0,loop_gap_max_ns=0,loop_gaps_16ms=0,loop_gaps_33ms=0;
     uint64_t idle_yields=0,idle_yield_ns=0;
     uint64_t saved_generation=registry.generation,last_save_attempt=0;
     unsigned window_inventory_logged=0;
@@ -410,11 +410,23 @@ int main(int argc,char **argv)
         now_ns()+(uint64_t)PW_TEST_EXIT_AFTER_MS*1000000ull:0;
     const char *exit_reason="guest-return";uint32_t exit_code=0;
     for(;;events++) {
+        uint64_t loop_now=now_ns();
+        if(last_loop) {
+            uint64_t gap=loop_now-last_loop;
+            if(gap>loop_gap_max_ns)loop_gap_max_ns=gap;
+            if(gap>=16666667ull)loop_gaps_16ms++;
+            if(gap>=33333333ull)loop_gaps_33ms++;
+        }
+        last_loop=loop_now;
         if(shutdown_requested){exit_reason="host-signal";break;}
         if(validation_deadline && now_ns()>=validation_deadline) {
             exit_reason="validation-deadline";break;
         }
         if(!state.eip){exit_reason="guest-return";break;}
+        uint32_t audio_completed=0;
+        if((status=pw_win32_pump_audio(&runtime,&state,&audio_completed))!=PW_OK)
+            abort_runtime("audio-completion",status);
+        audio_completion_events+=audio_completed;
         status=pw_win32_dispatch(&runtime,&state);
         if(status==PW_ERR_NOT_FOUND) {
             PwX86StepReport report;status=pw_x86_engine_step(&engine,&state,&report);
@@ -487,6 +499,9 @@ int main(int argc,char **argv)
         }
         if(now-last_heartbeat>=5000000000ull) {
             PwGdiCounts counts;PwGdiTargetView view;unsigned presented=0,window_count=0;
+            PwAudioPs5Stats audio_stats;
+            if(pw_audio_ps5_stats(&audio,&audio_stats)!=PW_OK)
+                abort_runtime("audio-stats",PW_ERR_STATE);
             (void)pw_gdi_counts(&gdi,&counts);
             for(unsigned i=0;i<128;i++)if(windows[i].used) {
                 window_count++;
@@ -507,19 +522,34 @@ int main(int argc,char **argv)
                     PS5LOG_LOG("PW_GDI_TARGET schema=1 slot=%u owner=0x%08x width=%u height=%u bytes=%u",
                         i,surfaces[i].target,surfaces[i].width,surfaces[i].height,surfaces[i].bytes);
             window_inventory_logged=1;
-            PS5LOG_LOG("PW_RUNTIME_HEARTBEAT events=%llu retired=%llu calls=%u waits=%llu "
+            PS5LOG_LOG("PW_RUNTIME_HEARTBEAT schema=2 events=%llu retired=%llu calls=%u waits=%llu "
+                "dbt_dispatches=%llu dbt_compiles=%llu dbt_hits=%llu dbt_misses=%llu "
+                "dbt_lookup_probes=%llu dbt_max_probe=%u dbt_protect_calls=%llu dbt_protect_bytes=%llu "
                 "windows=%u targets=%u visible_source=%u flips=%llu audio_blocks=%llu "
                 "audio_bytes=%llu audio_frames=%llu audio_hash=0x%08x "
+                "audio_enqueues=%llu audio_completions=%llu audio_queue=%u "
+                "audio_queue_high_water=%u audio_queue_full=%llu audio_errors=%llu "
                 "pad_polls=%llu pad_samples=%llu pad_events=%llu pad_connected=%llu "
                 "pad_intercepted=%llu pad_read_errors=%llu profile_lookups=%llu "
                 "profile_missing=%llu profile_errors=%llu profile_bytes=%llu "
                 "mci_calls=%llu mci_last_command=0x%08x "
-                "idle_yields=%llu idle_yield_ns=%llu",
+                "idle_yields=%llu idle_yield_ns=%llu loop_gap_max_ns=%llu "
+                "loop_gaps_16ms=%llu loop_gaps_33ms=%llu",
                 (unsigned long long)events,(unsigned long long)engine.retired_instructions,
-                runtime.calls,(unsigned long long)services.waits,window_count,
+                runtime.calls,(unsigned long long)services.waits,
+                (unsigned long long)engine.dispatches,(unsigned long long)engine.compiles,
+                (unsigned long long)engine.cache.hits,(unsigned long long)engine.cache.misses,
+                (unsigned long long)engine.cache.lookup_probes,engine.cache.max_probe,
+                (unsigned long long)engine.protection_calls,
+                (unsigned long long)engine.protection_bytes,window_count,
                 counts.target_surfaces,presented,(unsigned long long)video.flips,
-                (unsigned long long)audio.blocks,(unsigned long long)audio.input_bytes,
-                (unsigned long long)audio.output_frames,audio.input_hash,
+                (unsigned long long)audio_stats.blocks,
+                (unsigned long long)audio_stats.input_bytes,
+                (unsigned long long)audio_stats.output_frames,audio_stats.input_hash,
+                (unsigned long long)audio_stats.enqueues,
+                (unsigned long long)audio_completion_events,audio_stats.queue_depth,
+                audio_stats.queue_high_water,(unsigned long long)audio_stats.queue_full,
+                (unsigned long long)audio_stats.output_errors,
                 (unsigned long long)pad.polls,(unsigned long long)pad.core.stats.samples,
                 (unsigned long long)pad.core.stats.events,(unsigned long long)pad.connected_samples,
                 (unsigned long long)pad.intercepted_samples,(unsigned long long)pad.read_errors,
@@ -528,7 +558,16 @@ int main(int argc,char **argv)
                 (unsigned long long)services.profile_errors,
                 (unsigned long long)services.profile_bytes,
                 (unsigned long long)runtime.mci_calls,runtime.mci_last_command,
-                (unsigned long long)idle_yields,(unsigned long long)idle_yield_ns);
+                (unsigned long long)idle_yields,(unsigned long long)idle_yield_ns,
+                (unsigned long long)loop_gap_max_ns,(unsigned long long)loop_gaps_16ms,
+                (unsigned long long)loop_gaps_33ms);
+            PS5LOG_LOG("PW_AUDIO_QUEUE schema=1 worker=%u enqueues=%llu completions=%llu "
+                "depth=%u high_water=%u full=%llu blocks=%llu output_errors=%llu",
+                audio_stats.worker_running,(unsigned long long)audio_stats.enqueues,
+                (unsigned long long)audio_completion_events,audio_stats.queue_depth,
+                audio_stats.queue_high_water,(unsigned long long)audio_stats.queue_full,
+                (unsigned long long)audio_stats.blocks,
+                (unsigned long long)audio_stats.output_errors);
             PS5LOG_LOG("PW_GDI_STRETCH schema=1 calls=%llu owner=0x%08x dst=%d,%d,%d,%d src=%d,%d,%d,%d dib=%ux%u bits=0x%08x info=0x%08x",
                 (unsigned long long)gdi.stretch_calls,gdi.stretch_owner,
                 gdi.stretch_x,gdi.stretch_y,gdi.stretch_width,gdi.stretch_height,
@@ -543,7 +582,10 @@ int main(int argc,char **argv)
      * in one record so a later launch can distinguish a clean guest exit from
      * a title-manager kill, which cannot run process cleanup code. */
     const uint64_t final_retired=engine.retired_instructions,final_flips=video.flips;
-    const uint64_t final_audio_blocks=audio.blocks;
+    PwAudioPs5Stats final_audio_stats;
+    if(pw_audio_ps5_stats(&audio,&final_audio_stats)!=PW_OK)
+        abort_runtime("audio-final-stats",PW_ERR_STATE);
+    const uint64_t final_audio_blocks=final_audio_stats.blocks;
     uint32_t final_state_written=0;int state_close=PW_OK;
     if(registry.generation!=saved_generation)
         state_close=pw_state_ps5_save_registry(&registry,PW_REGISTRY_PATH,state_buffer,
@@ -581,6 +623,7 @@ int main(int argc,char **argv)
         (unsigned long long)final_retired,(unsigned long long)final_flips,
         (unsigned long long)final_audio_blocks);
     (void)munmap(workspace,sizeof(*workspace));
+    (void)munmap(audio_queue,PW_AUDIO_PS5_QUEUE_BLOCKS*sizeof(*audio_queue));
     (void)munmap(cache,8192u*sizeof(*cache));
     (void)munmap(pixels,32u*1024u*1024u);
     (void)munmap(surfaces,128u*sizeof(*surfaces));(void)munmap(dcs,128u*sizeof(*dcs));

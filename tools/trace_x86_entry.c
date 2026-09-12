@@ -154,9 +154,10 @@ static int host_sleep_ms(void *opaque,uint32_t milliseconds)
 {
     (void)opaque;(void)milliseconds;return PW_OK;
 }
-static int host_audio_submit(void *opaque,const void *pcm,uint32_t bytes)
+static int host_audio_submit(void *opaque,const void *pcm,uint32_t bytes,uint32_t token)
 {
     TraceSource *view=opaque;const uint8_t *input=pcm;
+    (void)token;
     if(!view || !input || !bytes)return PW_ERR_PRECONDITION;
     uint32_t hash=view->audio_hash?view->audio_hash:2166136261u;
     for(uint32_t i=0;i<bytes;i++){hash^=input[i];hash*=16777619u;}
@@ -477,11 +478,15 @@ int main(int argc,char **argv)
            state.gpr[0],state.gpr[1],state.gpr[2],state.gpr[3],state.gpr[4],state.gpr[5],
            state.gpr[6],state.gpr[7],*(uint32_t *)thread.write_base,state.eflags);
     printf("kind=host-dbt-cache dispatches=%llu hits=%llu misses=%llu publishes=%llu "
-           "retired=%llu code_bytes=%zu generation=%u\n",
+           "retired=%llu code_bytes=%zu generation=%u lookup_probes=%llu max_probe=%u "
+           "compiles=%llu protect_calls=%llu protect_bytes=%llu\n",
            (unsigned long long)engine.dispatches,(unsigned long long)engine.cache.hits,
            (unsigned long long)engine.cache.misses,(unsigned long long)engine.cache.publishes,
            (unsigned long long)engine.retired_instructions,engine.cache.cursor,
-           engine.cache.generation);
+           engine.cache.generation,(unsigned long long)engine.cache.lookup_probes,
+           engine.cache.max_probe,(unsigned long long)engine.compiles,
+           (unsigned long long)engine.protection_calls,
+           (unsigned long long)engine.protection_bytes);
     if(milestone)printf("kind=host-pc-milestone-summary pc=0x%08x seen=%u\n",
                         milestone,milestone_seen);
     if(inspect_address) {

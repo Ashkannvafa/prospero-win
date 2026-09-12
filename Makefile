@@ -50,7 +50,7 @@ $(eval $(call test_rule,test_pw_guest_args,tests/test_pw_guest_args.c src/pw_gue
 $(eval $(call test_rule,test_pw_time,tests/test_pw_time.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
 $(eval $(call test_rule,test_pw_guest_fp,tests/test_pw_guest_fp.c src/pw_guest_fp.c,))
 $(eval $(call test_rule,test_pw_x87,tests/test_pw_x87.c src/pw_x87.c src/pw_guest_fp.c,))
-$(eval $(call test_rule,test_pw_audio_ps5,tests/test_pw_audio_ps5.c native/pw_audio_ps5.c,-DPW_AUDIO_PS5_HOST_TEST))
+$(eval $(call test_rule,test_pw_audio_ps5,tests/test_pw_audio_ps5.c native/pw_audio_ps5.c,-DPW_AUDIO_PS5_HOST_TEST -pthread))
 $(eval $(call test_rule,test_pw_pad_ps5,tests/test_pw_pad_ps5.c native/pw_pad_ps5.c src/pw_pad.c src/pw_user32.c,-DPW_PAD_PS5_HOST_TEST))
 $(eval $(call test_rule,test_pw_state_ps5,tests/test_pw_state_ps5.c native/pw_state_ps5.c src/pw_registry_store.c src/pw_registry.c,-DPW_STATE_PS5_HOST_TEST))
 $(eval $(call test_rule,test_pw_initterm,tests/test_pw_initterm.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x86_block.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))

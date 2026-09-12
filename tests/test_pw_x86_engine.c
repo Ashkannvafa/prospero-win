@@ -21,10 +21,13 @@ int main(void)
     assert(pw_x86_engine_step(&engine,&state,&step)==PW_OK);
     assert(step.instructions==2 && step.retired==2 && !step.cache_hit);
     assert(state.eip==0x1000 && state.gpr[0]==1 && engine.cache.publishes==1);
+    assert(engine.compiles==1 && engine.protection_calls==2 &&
+           engine.protection_bytes==8192);
     assert(pw_x86_engine_step(&engine,&state,&step)==PW_OK);
     assert(step.instructions==2 && step.retired==2 && step.cache_hit);
     assert(state.eip==0x1000 && state.gpr[0]==2 && engine.cache.hits==1);
     assert(engine.dispatches==2 && engine.retired_instructions==4);
+    assert(engine.compiles==1 && engine.protection_calls==2);
 
     assert(pw_x86_engine_reset(&engine,2)==PW_OK);
     state.eip=0x1000;

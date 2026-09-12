@@ -10,11 +10,14 @@ static int invoke(void *entry,PwX86State *state)
     return ((int (*)(PwX86State *))entry)(state);
 }
 
-static int protection(PwX86Engine *engine,unsigned value)
+static int protection(PwX86Engine *engine,size_t offset,size_t bytes,unsigned value)
 {
     int status=engine->backend->protect(engine->backend->context,&engine->code,
-                                        0,engine->code.bytes,value);
-    if(status==PW_OK)engine->sealed=value==(PW_PROT_READ|PW_PROT_EXEC);
+                                        offset,bytes,value);
+    if(status==PW_OK) {
+        engine->protection_calls++;engine->protection_bytes+=bytes;
+        engine->sealed=value==(PW_PROT_READ|PW_PROT_EXEC);
+    }
     return status;
 }
 
@@ -59,17 +62,24 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
     }
     if(!best.instructions)return last==PW_ERR_TRUNCATED?PW_ERR_TRUNCATED:last;
     if(best.code_bytes>engine->cache.arena_bytes-engine->cache.cursor)return PW_ERR_LIMIT;
-    if(engine->sealed && protection(engine,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)return PW_ERR_VM;
+    size_t page=engine->backend->page_bytes;
+    size_t first=(engine->cache.cursor/page)*page;
+    size_t tail=engine->cache.cursor+best.code_bytes;
+    size_t end=((tail+page-1)/page)*page;
+    if(end>engine->code.bytes)end=engine->code.bytes;
+    if(protection(engine,first,end-first,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)
+        return PW_ERR_VM;
     memcpy((uint8_t *)engine->code.write_base+engine->cache.cursor,best_code,best.code_bytes);
     status=pw_x86_cache_publish(&engine->cache,pc,&best,engine->cache.cursor,entry);
     if(status!=PW_OK) {
-        if(protection(engine,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK)engine->failed=1;
+        if(protection(engine,first,end-first,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK)
+            engine->failed=1;
         return status;
     }
-    if(protection(engine,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK) {
+    if(protection(engine,first,end-first,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK) {
         engine->failed=1;return PW_ERR_VM;
     }
-    return PW_OK;
+    engine->compiles++;return PW_OK;
 }
 
 int pw_x86_engine_step(PwX86Engine *engine,PwX86State *state,PwX86StepReport *report)
@@ -103,10 +113,13 @@ int pw_x86_engine_reset(PwX86Engine *engine,uint32_t generation)
     if(!engine || !engine->initialized)return PW_ERR_PRECONDITION;
     unsigned was_sealed=engine->sealed;
     if((engine->sealed || engine->failed) &&
-       protection(engine,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)return PW_ERR_VM;
+       protection(engine,0,engine->code.bytes,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)
+        return PW_ERR_VM;
     int status=pw_x86_cache_reset(&engine->cache,generation);
     if(status!=PW_OK) {
-        if(was_sealed && protection(engine,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK)engine->failed=1;
+        if(was_sealed && protection(engine,0,engine->code.bytes,
+                                    PW_PROT_READ|PW_PROT_EXEC)!=PW_OK)
+            engine->failed=1;
         return status;
     }
     memset(engine->code.write_base,0xcc,engine->code.bytes);

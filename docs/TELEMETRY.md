@@ -11,8 +11,8 @@ not write logs to console storage or USB. Its continuous-runtime records are:
 | `PW_PAD_OPEN` / `PW_PAD_EVENT` / `PW_PAD_QUIT` | native ownership, physical press/release counters and an explicit Create-to-WM_QUIT lifecycle edge; absence of events never implies simulated input |
 | `PW_VIDEO_FRAME` | changing frame hash, dimensions, flip/submit totals, `agc-dma` backend and completed fence state |
 | `PW_AUDIO_OPEN` | requested guest PCM format and native-open result |
-| `PW_AUDIO_PCM` | cumulative input bytes, output frames, complete SceAudioOut blocks and input hash |
-| `PW_RUNTIME_HEARTBEAT` | events, retired instructions, adapter calls, window/GDI ownership, AGC flips, audio, pad, INI, MCI and idle-yield counters |
+| `PW_AUDIO_QUEUE` | worker state, enqueue/completion counts, live/high-water depth, queue-full events, consumed blocks and output errors |
+| `PW_RUNTIME_HEARTBEAT` | events, retired instructions, DBT cache/protection metrics, main-loop gap counters, adapter calls, window/GDI ownership, AGC flips, audio, pad, INI, MCI and idle-yield counters |
 | `PW_GDI_STRETCH` | last observed StretchDIBits source/destination rectangle and DIB identity |
 | `PW_RUNTIME_TEARDOWN` | result of every ordered backend/resource release |
 | `PW_RUNTIME_END` | normal reason, guest exit code and final work counters |
@@ -28,6 +28,14 @@ requires nonzero bytes, frames, blocks and hash; a successful open alone is
 insufficient. Capture acceptance separately requires both a video and audio
 stream, while renderer/audio ownership remains grounded in telemetry. See
 HARDWARE_VALIDATION.md.
+
+The asynchronous audio gate additionally requires `worker=1`, rising enqueue
+and completion counts, `full=0`, `output_errors=0`, and a bounded high-water
+mark. `loop_gap_max_ns`, `loop_gaps_16ms` and `loop_gaps_33ms` measure the
+guest-thread symptom directly. DBT telemetry reports dispatches, compiles,
+hits/misses, total/max hash probes and page-scoped protection calls/bytes. None
+of these counters alone is a performance claim; compare identical scripted
+workloads and exact artifacts.
 
 Validate a live continuous transcript with:
 

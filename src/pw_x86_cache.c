@@ -2,6 +2,19 @@
 #include "pw_x86_cache.h"
 #include <string.h>
 
+static uint32_t first_slot(const PwX86Cache *cache,uint32_t guest_pc)
+{
+    /* The final xor-fold avoids clustering on the aligned low PC bits. */
+    uint32_t hash=guest_pc*2654435761u;hash^=hash>>16;
+    return hash%cache->capacity;
+}
+
+static void record_probes(PwX86Cache *cache,uint32_t probes)
+{
+    cache->lookup_probes+=probes;
+    if(probes>cache->max_probe)cache->max_probe=probes;
+}
+
 int pw_x86_cache_init(PwX86Cache *cache,PwX86CacheEntry *entries,uint32_t capacity,
                       size_t arena_bytes,uint32_t generation)
 {
@@ -17,12 +30,20 @@ int pw_x86_cache_lookup(PwX86Cache *cache,uint32_t guest_pc,const PwX86CacheEntr
 {
     if(!cache || !cache->entries || !cache->generation || !entry)
         return PW_ERR_PRECONDITION;
-    for(uint32_t i=0;i<cache->capacity;i++)
-        if(cache->entries[i].used && cache->entries[i].generation==cache->generation &&
-           cache->entries[i].guest_pc==guest_pc) {
-            cache->hits++;*entry=&cache->entries[i];return PW_OK;
+    uint32_t slot=first_slot(cache,guest_pc);
+    for(uint32_t probe=1;probe<=cache->capacity;probe++) {
+        PwX86CacheEntry *candidate=&cache->entries[slot];
+        if(!candidate->used) {
+            record_probes(cache,probe);cache->misses++;*entry=NULL;
+            return PW_ERR_NOT_FOUND;
         }
-    cache->misses++;*entry=NULL;return PW_ERR_NOT_FOUND;
+        if(candidate->generation==cache->generation && candidate->guest_pc==guest_pc) {
+            record_probes(cache,probe);cache->hits++;*entry=candidate;return PW_OK;
+        }
+        slot=(slot+1)%cache->capacity;
+    }
+    record_probes(cache,cache->capacity);cache->misses++;*entry=NULL;
+    return PW_ERR_NOT_FOUND;
 }
 
 int pw_x86_cache_publish(PwX86Cache *cache,uint32_t guest_pc,const PwX86Block *block,
@@ -34,12 +55,15 @@ int pw_x86_cache_publish(PwX86Cache *cache,uint32_t guest_pc,const PwX86Block *b
     if(code_offset!=cache->cursor || code_offset>cache->arena_bytes ||
        block->code_bytes>cache->arena_bytes-code_offset)
         return PW_ERR_LIMIT;
-    for(uint32_t i=0;i<cache->capacity;i++)
-        if(cache->entries[i].used && cache->entries[i].generation==cache->generation &&
-           cache->entries[i].guest_pc==guest_pc)return PW_ERR_STATE;
-    uint32_t slot=cache->capacity;
-    for(uint32_t i=0;i<cache->capacity;i++)if(!cache->entries[i].used){slot=i;break;}
-    if(slot==cache->capacity)return PW_ERR_LIMIT;
+    uint32_t slot=first_slot(cache,guest_pc);unsigned available=0;
+    for(uint32_t probe=0;probe<cache->capacity;probe++) {
+        PwX86CacheEntry *candidate=&cache->entries[slot];
+        if(!candidate->used){available=1;break;}
+        if(candidate->generation==cache->generation && candidate->guest_pc==guest_pc)
+            return PW_ERR_STATE;
+        slot=(slot+1)%cache->capacity;
+    }
+    if(!available)return PW_ERR_LIMIT;
     cache->entries[slot]=(PwX86CacheEntry){
         .guest_pc=guest_pc,.generation=cache->generation,.code_offset=code_offset,
         .code_bytes=block->code_bytes,.source_bytes=block->source_bytes,

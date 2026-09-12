@@ -43,6 +43,12 @@ loss, pause/resume and manual new-game restart without an unintended runtime
 exit. This establishes a first-playable compatibility result, not a finished
 Pinball port or broad Windows compatibility; intermittent pacing and
 presentation polish remain open.
+The current performance candidate moves WinMM playback to a bounded,
+dedicated SceAudioOut worker, preserves deferred `WHDR_DONE`/`WOM_DONE`
+semantics, replaces linear DBT-cache scans with hashed lookup and limits W^X
+publication changes to the generated block's pages. Host, sanitizer and native
+build gates pass; hardware A/B pacing validation is still required before this
+is described as a measured fix.
 The original game defaults music off; its single optional `MCI_OPEN` request is
 reported honestly as no MIDI device, while its required WaveMix PCM effects
 remain active. The next compatibility milestone is a second independent

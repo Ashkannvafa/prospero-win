@@ -41,6 +41,25 @@ static int null_message_fixture(void *opaque,uint32_t window,PwUser32QueueEntry 
     *message=(PwUser32QueueEntry){.window=window,.message=0}; /* WM_NULL */
     return PW_OK;
 }
+typedef struct AudioFixture {
+    uint32_t token,bytes;
+    unsigned submissions,ready;
+    int result;
+} AudioFixture;
+static int audio_submit_fixture(void *opaque,const void *pcm,uint32_t bytes,uint32_t token)
+{
+    AudioFixture *audio=opaque;
+    if(!audio || !pcm || !bytes || !token)return PW_ERR_PRECONDITION;
+    if(audio->result)return audio->result;
+    audio->token=token;audio->bytes=bytes;audio->submissions++;return PW_OK;
+}
+static int audio_poll_fixture(void *opaque,uint32_t *token,uint32_t *bytes)
+{
+    AudioFixture *audio=opaque;
+    if(!audio || !token || !bytes)return PW_ERR_PRECONDITION;
+    if(!audio->ready)return PW_ERR_NOT_FOUND;
+    *token=audio->token;*bytes=audio->bytes;audio->ready=0;return PW_OK;
+}
 static void profile_tests(PwWin32 *r,PwX86State *s)
 {
     PeImportSymbol symbol={0};PwImportTarget target;strcpy(symbol.name,"GetPrivateProfileIntA");
@@ -97,8 +116,30 @@ static void waveout_tests(PwWin32 *r,PwX86State *s)
     memcpy((void *)(uintptr_t)s->gpr[4],prepare,sizeof(prepare));
     assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] &&
            *(uint32_t *)(uintptr_t)(header+16)==2 && r->wave_out.header_count==1);
+    AudioFixture audio={0};r->services.opaque=&audio;
+    r->services.audio_submit=audio_submit_fixture;r->services.audio_poll=audio_poll_fixture;
+    strcpy(symbol.name,"waveOutWrite");
+    assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
+    uint32_t write[]={ret,0x0e000001,header,32};
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-16;
+    memcpy((void *)(uintptr_t)s->gpr[4],write,sizeof(write));
+    assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] && audio.submissions==1 &&
+           audio.token==header && audio.bytes==64 &&
+           *(uint32_t *)(uintptr_t)(header+16)==0x12);
+    uint32_t completed=99;
+    assert(pw_win32_pump_audio(r,s,&completed)==PW_OK && !completed &&
+           *(uint32_t *)(uintptr_t)(header+16)==0x12);
+    audio.ready=1;
+    assert(pw_win32_pump_audio(r,s,&completed)==PW_OK && completed==1 &&
+           *(uint32_t *)(uintptr_t)(header+16)==3);
+    audio.result=PW_ERR_LIMIT;
+    s->eip=(uint32_t)target.address;s->gpr[4]=s->stack_high-16;
+    memcpy((void *)(uintptr_t)s->gpr[4],write,sizeof(write));
+    assert(pw_win32_dispatch(r,s)==PW_OK && s->gpr[0]==7 &&
+           *(uint32_t *)(uintptr_t)(header+16)==3);
+    r->services.opaque=NULL;r->services.audio_submit=NULL;r->services.audio_poll=NULL;
     uint32_t position=data+160;memset((void *)(uintptr_t)position,0xcc,12);
-    *(uint32_t *)(uintptr_t)position=4;r->wave_out.bytes_submitted=12345;
+    *(uint32_t *)(uintptr_t)position=4;r->wave_out.bytes_completed=12345;
     strcpy(symbol.name,"waveOutGetPosition");
     assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);
     uint32_t get_position[]={ret,0x0e000001,position,12};
@@ -107,7 +148,7 @@ static void waveout_tests(PwWin32 *r,PwX86State *s)
     assert(pw_win32_dispatch(r,s)==PW_OK && !s->gpr[0] &&
            *(uint32_t *)(uintptr_t)position==4 && *(uint32_t *)(uintptr_t)(position+4)==12345 &&
            *(uint32_t *)(uintptr_t)(position+8)==0);
-    r->wave_out.bytes_submitted=0;
+    r->wave_out.bytes_submitted=0;r->wave_out.bytes_completed=0;
     PwWaveOut before=r->wave_out;open[6]=1;open[1]=data+100;
     strcpy(symbol.name,"waveOutOpen");
     assert(pw_win32_resolve(r,"winmm.dll",&symbol,&target)==PW_OK);

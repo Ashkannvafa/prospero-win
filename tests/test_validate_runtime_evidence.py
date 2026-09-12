@@ -24,6 +24,20 @@ def transcript(end: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+def async_transcript() -> str:
+    return transcript().replace(
+        "PW_RUNTIME_HEARTBEAT ",
+        "PW_AUDIO_QUEUE worker=1 enqueues=3 completions=2 depth=1 high_water=8 full=0 blocks=9 output_errors=0\n"
+        "6\t3100000000\tINFO\tPW_RUNTIME_HEARTBEAT schema=2 ",
+    ).replace(
+        "retired=10 ",
+        "retired=10 dbt_dispatches=9 dbt_compiles=2 dbt_hits=7 dbt_misses=2 "
+        "dbt_lookup_probes=11 dbt_max_probe=2 dbt_protect_calls=4 dbt_protect_bytes=65536 "
+        "audio_enqueues=3 audio_completions=2 audio_queue_full=0 audio_errors=0 "
+        "loop_gap_max_ns=1000000 ",
+    )
+
+
 def check(text: str, continuous: bool, accepted: bool) -> None:
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "run.log"; path.write_text(text)
@@ -37,6 +51,9 @@ def check(text: str, continuous: bool, accepted: bool) -> None:
 
 def main() -> int:
     check(transcript(), True, True); check(transcript(True), False, True)
+    check(async_transcript(), True, True)
+    check(async_transcript().replace("audio_errors=0", "audio_errors=1"), True, False)
+    check(async_transcript().replace("worker=1", "worker=0"), True, False)
     check(transcript().replace("profile_errors=0", "profile_errors=1"), True, False)
     check(transcript().replace("3\t", "4\t", 1), True, False)
     check(transcript(True).replace("pad=ok", "pad=state"), False, False)

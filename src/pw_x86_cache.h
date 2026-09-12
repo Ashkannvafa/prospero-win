@@ -15,11 +15,14 @@ typedef struct PwX86Cache {
     PwX86CacheEntry *entries;
     uint32_t capacity,generation;
     size_t arena_bytes,cursor;
-    uint64_t hits,misses,publishes,resets;
+    uint64_t hits,misses,publishes,resets,lookup_probes;
+    uint32_t max_probe;
 } PwX86Cache;
 
-/* Generated code storage and RW/RX transitions remain owner-managed. A cache
- * generation is valid only while its immutable guest image mapping is alive. */
+/* Generated code storage and RW/RX transitions remain owner-managed. Entries
+ * use open addressing keyed by guest PC, making hot dispatch O(1) average
+ * rather than scanning the complete capacity. A generation is valid only
+ * while its immutable guest image mapping is alive. */
 int pw_x86_cache_init(PwX86Cache *,PwX86CacheEntry *,uint32_t,size_t,uint32_t);
 int pw_x86_cache_lookup(PwX86Cache *,uint32_t,const PwX86CacheEntry **);
 int pw_x86_cache_publish(PwX86Cache *,uint32_t,const PwX86Block *,size_t,

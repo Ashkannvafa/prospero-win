@@ -698,17 +698,27 @@ static int waveout_dispatch(PwWin32 *r,PwX86State *state)
                 if(status==PW_OK)result=11;else return status;
             } else if(next.paused)result=33;
             else {
-                if(r->services.audio_submit &&
-                   (status=r->services.audio_submit(r->services.opaque,
-                            (const void *)(uintptr_t)data,bytes))!=PW_OK)return status;
-                next.bytes_submitted+=bytes;
-                flags=(flags|1u)&~0x10u; /* synchronous completion: DONE, not INQUEUE */
-                output_address=a[1]+16;output_bytes=4;memcpy(output,&flags,4);
-                if(next.callback_flags==0x00010000u && r->user32) {
-                    PwUser32QueueEntry done={.window=next.callback,.message=0x3bd,
-                        .wparam=next.handle,.lparam=a[1]};
-                    status=pw_user32_post_message(r->user32,&done);
-                    if(status!=PW_OK && status!=PW_ERR_NOT_FOUND)return status;
+                status=PW_OK;
+                if(r->services.audio_submit)
+                    status=r->services.audio_submit(r->services.opaque,
+                        (const void *)(uintptr_t)data,bytes,a[1]);
+                if(status==PW_ERR_LIMIT)result=7; /* MMSYSERR_NOMEM: bounded backpressure */
+                else if(status!=PW_OK)return status;
+                else {
+                    next.bytes_submitted+=bytes;
+                    flags=(flags|0x10u)&~1u; /* queued: INQUEUE, not DONE */
+                    /* A backend without completion polling is a synchronous
+                     * test sink. Real hosts provide audio_poll and complete later. */
+                    if(!r->services.audio_poll) {
+                        flags=(flags|1u)&~0x10u;next.bytes_completed+=bytes;
+                        if(next.callback_flags==0x00010000u && r->user32) {
+                            PwUser32QueueEntry done={.window=next.callback,.message=0x3bd,
+                                .wparam=next.handle,.lparam=a[1]};
+                            status=pw_user32_post_message(r->user32,&done);
+                            if(status!=PW_OK && status!=PW_ERR_NOT_FOUND)return status;
+                        }
+                    }
+                    output_address=a[1]+16;output_bytes=4;memcpy(output,&flags,4);
                 }
             }
         }
@@ -723,7 +733,7 @@ static int waveout_dispatch(PwWin32 *r,PwX86State *state)
             if(pause)next.paused=1;
             else if(restart)next.paused=0;
             else if(reset) {
-                next.paused=0;
+                next.paused=0;next.bytes_completed=0;
                 for(unsigned i=0;i<next.header_count;i++) {
                     uint32_t flags;
                     if((status=range_access(state,next.headers[i]+16,4,
@@ -751,7 +761,7 @@ static int waveout_dispatch(PwWin32 *r,PwX86State *state)
         else {
             if((status=range_access(state,a[1],12,PW_X86_READ|PW_X86_WRITE))!=PW_OK)return status;
             uint32_t type;memcpy(&type,(const void *)(uintptr_t)a[1],4);
-            uint64_t value=next.bytes_submitted;
+            uint64_t value=next.bytes_completed;
             if(type==1) /* TIME_MS */
                 value=next.average_bytes_per_second?
                     value*1000/next.average_bytes_per_second:0;
@@ -805,6 +815,36 @@ static int waveout_dispatch(PwWin32 *r,PwX86State *state)
     if((status=pw_guest_call_finish(&call,32,result))!=PW_OK)return status;
     if(output_bytes)memcpy((void *)(uintptr_t)output_address,output,output_bytes);
     r->wave_out=next;*state=after;r->calls++;return PW_OK;
+}
+
+int pw_win32_pump_audio(PwWin32 *r,PwX86State *state,uint32_t *completed)
+{
+    if(!r || !state || !completed)return PW_ERR_PRECONDITION;
+    *completed=0;
+    if(!r->services.audio_poll)return PW_OK;
+    for(;;) {
+        uint32_t header=0,bytes=0;
+        int status=r->services.audio_poll(r->services.opaque,&header,&bytes);
+        if(status==PW_ERR_NOT_FOUND)return PW_OK;
+        if(status!=PW_OK)return status;
+        unsigned found=0;
+        for(unsigned i=0;i<r->wave_out.header_count;i++)found|=r->wave_out.headers[i]==header;
+        if(!found)return PW_ERR_STATE;
+        if((status=range_access(state,header+16,4,PW_X86_READ|PW_X86_WRITE))!=PW_OK)
+            return status;
+        uint32_t flags;memcpy(&flags,(const void *)(uintptr_t)(header+16),4);
+        if(!(flags&0x10u))return PW_ERR_STATE;
+        flags=(flags|1u)&~0x10u;
+        memcpy((void *)(uintptr_t)(header+16),&flags,4);
+        r->wave_out.bytes_completed+=bytes;
+        if(r->wave_out.callback_flags==0x00010000u && r->user32) {
+            PwUser32QueueEntry done={.window=r->wave_out.callback,.message=0x3bd,
+                .wparam=r->wave_out.handle,.lparam=header};
+            status=pw_user32_post_message(r->user32,&done);
+            if(status!=PW_OK && status!=PW_ERR_NOT_FOUND)return status;
+        }
+        (*completed)++;
+    }
 }
 int pw_win32_dispatch(PwWin32 *r,PwX86State *state)
 {

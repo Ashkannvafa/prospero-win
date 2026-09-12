@@ -66,6 +66,23 @@ def validate(path: Path, continuous: bool, min_seconds: float,
     for key in ("pad_read_errors", "profile_missing", "profile_errors"):
         if number(heartbeat.get(key, "-1")) != 0:
             raise ValueError(f"heartbeat {key} is nonzero")
+    if number(heartbeat.get("schema", "1")) >= 2:
+        for key in ("dbt_dispatches", "dbt_compiles", "dbt_hits", "dbt_misses",
+                    "dbt_lookup_probes", "dbt_max_probe", "dbt_protect_calls",
+                    "dbt_protect_bytes", "audio_enqueues", "audio_completions",
+                    "loop_gap_max_ns"):
+            if number(heartbeat.get(key, "0")) <= 0:
+                raise ValueError(f"async heartbeat {key} is zero")
+        for key in ("audio_queue_full", "audio_errors"):
+            if number(heartbeat.get(key, "-1")) != 0:
+                raise ValueError(f"async heartbeat {key} is nonzero")
+        queue = latest(records, "PW_AUDIO_QUEUE")[3]
+        if number(queue.get("worker", "0")) != 1:
+            raise ValueError("audio worker is not running")
+        if number(queue.get("enqueues", "0")) <= 0 or number(queue.get("completions", "0")) <= 0:
+            raise ValueError("audio queue made no asynchronous progress")
+        if number(queue.get("full", "-1")) != 0 or number(queue.get("output_errors", "-1")) != 0:
+            raise ValueError("audio queue reported backpressure/output failure")
     if number(heartbeat.get("pad_events", "0")) < min_pad_events:
         raise ValueError("insufficient physical pad events")
     if require_pad_quit:

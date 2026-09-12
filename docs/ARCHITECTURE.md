@@ -33,6 +33,7 @@ src/               the portable loader core
 native/            the PS5 adapter
   main.c        ps5log init, pre-flight, gate run, teardown
   pw_file_ps5   sceKernelOpen/Close/Stat plus read/lseek, mmap'd buffers
+  pw_audio_ps5  bounded PCM queue and the sole SceAudioOut worker
   ps5log/       vendored `ps5log/1` client, pinned by digest
 ```
 
@@ -148,3 +149,28 @@ Blocks retain every guest instruction end offset. If a translated memory guard
 fails midway, the dispatcher reports only the exact retired prefix. Cache and
 retirement metrics are part of the runner's structured host evidence; they are
 not a throughput claim and do not imply PS5 execution.
+
+Hot block lookup uses an open-addressed table keyed by guest PC. A normal
+dispatch therefore probes one or a small number of entries instead of scanning
+all 8,192 slots. Publishing a new translation changes W^X protection only for
+the 16 KiB page or pages touched by that block; it no longer toggles the entire
+4 MiB arena on every cold edge. The guest dispatcher remains single-owner.
+Audio, presentation and future I/O workers may run concurrently, but two host
+threads must never execute or mutate the same `PwX86State`.
+
+## Asynchronous audio ownership
+
+WinMM and SceAudioOut are separated by a bounded producer/consumer contract.
+`waveOutWrite` copies and converts the guest buffer into an owned queue, marks
+its `WAVEHDR` `WHDR_INQUEUE` and returns without waiting for playback. A
+dedicated worker is the only thread that calls `sceAudioOutOutput`. When the
+final 256-frame block has actually been consumed, it posts a completion token;
+the guest thread drains those tokens, changes the header to `WHDR_DONE` and
+posts `WOM_DONE`.
+
+This ownership rule applies to every WinMM consumer, not to a title name.
+Pause, restart, reset, queue exhaustion, worker failure and teardown are
+explicit states. Guest memory and User32 remain guest-thread-owned; the audio
+thread sees only copied signed-16-bit stereo blocks. The fixed 1,024-block
+queue holds about 5.46 seconds at 48 kHz and fails closed rather than blocking
+the DBT when full.

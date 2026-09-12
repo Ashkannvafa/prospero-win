@@ -43,7 +43,7 @@ typedef struct PwWaveOut {
     uint32_t samples_per_second,average_bytes_per_second;
     uint16_t channels,block_align,bits_per_sample;
     unsigned open,paused;
-    uint64_t bytes_submitted;
+    uint64_t bytes_submitted,bytes_completed;
     uint32_t headers[32];
     unsigned header_count;
 } PwWaveOut;
@@ -91,7 +91,10 @@ typedef struct PwWin32Services {
     /* Host scheduling adapter for kernel32 Sleep. */
     int (*sleep_ms)(void *,uint32_t milliseconds);
     int (*audio_open)(void *,uint32_t rate,uint16_t channels,uint16_t bits_per_sample);
-    int (*audio_submit)(void *,const void *pcm,uint32_t bytes);
+    /* Submit copies PCM before returning. A nonzero token is returned exactly
+     * once by audio_poll after the host has consumed the final sample. */
+    int (*audio_submit)(void *,const void *pcm,uint32_t bytes,uint32_t token);
+    int (*audio_poll)(void *,uint32_t *token,uint32_t *bytes);
     int (*audio_control)(void *,PwAudioControl);
 } PwWin32Services;
 typedef struct PwWin32 {
@@ -147,4 +150,7 @@ int pw_win32_resolve(void *,const char *,const PeImportSymbol *,PwImportTarget *
  * a yield, not an API return; fetch guest EIP next. Intercept callback tokens
  * here before fetching code. CRT pointer results refer to live guest words. */
 int pw_win32_dispatch(PwWin32 *,PwX86State *);
+/* Drain host audio completions on the guest thread. This is the only path
+ * allowed to mutate WAVEHDR flags or post WOM_DONE into the Win32 queue. */
+int pw_win32_pump_audio(PwWin32 *,PwX86State *,uint32_t *completed);
 #endif
