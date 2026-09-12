@@ -172,3 +172,27 @@ It loaded 473 state bytes, retired 13,784,396 guest instructions, presented
 the same all-subsystem teardown plus `BYE reason=validation-deadline`. The
 runtime-evidence validator accepts its final `PW_RUNTIME_END` counters, which
 include work after the last five-second heartbeat.
+
+## Pending performance and system-close candidate
+
+The async-audio/hashed-DBT candidate is not the artifact in the latest recorded
+hardware run. Run
+`20260912T221018758Z_PPSA99995_prospero-win_0x109083e5e5ec` reports schema 1,
+blocks in the earlier synchronous audio path and ended by transport EOF without
+`PW_RUNTIME_END` or `BYE`. It therefore documents an externally killed old
+runtime, not validation of the performance change.
+
+The current candidate also applies the lifecycle correction already merged in
+the Gears and Xash3D renderers: after each successful
+`sceAgcDriverSubmitDcb`, it invokes the real `sceAgcSuspendPoint`. A completion
+fence protects command/data reuse; the suspend point independently allows the
+system to suspend the AGC queue during Close Game. Host tests enforce ordering,
+no suspend call after failed submission, suspend-error propagation and missing
+callback rejection.
+
+Hardware acceptance remains explicit: deploy the exact candidate, refresh
+ShadowMountPlus once for changed title contents, confirm schema-2 queue/DBT
+telemetry, then close and relaunch the title without a system-software error.
+An external title-manager kill may still end telemetry at EOF because it cannot
+guarantee in-process teardown; the close/relaunch observation and absence of a
+GPU suspend timeout are the relevant system-close evidence.

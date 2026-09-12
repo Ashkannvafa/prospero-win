@@ -25,6 +25,8 @@ native/main.c
 native/runtime_main.c
 native/pw_agc_ps5.c
 native/pw_agc_ps5.h
+native/pw_agc_submit_lifecycle.c
+native/pw_agc_submit_lifecycle.h
 native/pw_audio_ps5.c
 native/pw_audio_ps5.h
 native/pw_pad_ps5.c
@@ -189,3 +191,4 @@ src/pw_registry_store.c
 src/pw_registry_store.h
 tests/test_pw_registry_store.c
 tests/test_pw_state_ps5.c
+tests/test_pw_agc_submit_lifecycle.c

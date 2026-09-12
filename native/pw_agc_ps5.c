@@ -3,6 +3,7 @@
  * validated FW 12.02 contracts recorded by the homebrew_ps5 laboratory:
  * wait-safe -> memory DMA (L2, synchronized) -> SetFlip -> RELEASE_MEM fence. */
 #include "pw_agc_ps5.h"
+#include "pw_agc_submit_lifecycle.h"
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -39,6 +40,7 @@ extern uint32_t *sceAgcDcbDmaData(void *,uint32_t,uint32_t,uint32_t,uint64_t,
                                   uint32_t,uint32_t);
 extern uint32_t *sceAgcDcbSetFlip(void *,uint32_t,int32_t,uint32_t,int64_t);
 extern int32_t sceAgcDriverSubmitDcb(void *);
+extern int32_t sceAgcSuspendPoint(void);
 extern uint32_t sceAgcDriverGetWaitRenderingPacketSizeInDwords(void);
 extern uint32_t sceAgcDriverWaitUntilSafeForRendering(uint32_t **,uint32_t,
                                                       uint32_t,uint32_t,int32_t);
@@ -148,7 +150,12 @@ int pw_agc_ps5_copy_flip(PwAgcPs5 *agc,int video_handle,int buffer_index,
     memcpy(cursor,release,sizeof(release));cursor+=8;
     flush(source,bytes);flush(begin,(size_t)(cursor-begin)*4u);flush((const void *)agc->fence,8);
     AgcSubmit submit={begin,(uint32_t)(cursor-begin),0,{0,0,0}};
-    if(sceAgcDriverSubmitDcb(&submit))return PW_ERR_STATE;
+    /* Close Game may suspend the process immediately after a frame.  A fence
+     * proves completion, but only sceAgcSuspendPoint makes the submitted AGC
+     * queue eligible for the system suspension lifecycle. */
+    int submit_status=pw_agc_submit_and_suspend(&submit,sceAgcDriverSubmitDcb,
+                                                sceAgcSuspendPoint);
+    if(submit_status!=PW_OK)return submit_status;
     const uint64_t deadline=monotonic_ns()+2000000000ull;
     while(__atomic_load_n(agc->fence,__ATOMIC_ACQUIRE)!=0 && monotonic_ns()<deadline)
         (void)usleep(1000);

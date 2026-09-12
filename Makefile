@@ -51,6 +51,7 @@ $(eval $(call test_rule,test_pw_time,tests/test_pw_time.c src/pw_win32.c src/pw_
 $(eval $(call test_rule,test_pw_guest_fp,tests/test_pw_guest_fp.c src/pw_guest_fp.c,))
 $(eval $(call test_rule,test_pw_x87,tests/test_pw_x87.c src/pw_x87.c src/pw_guest_fp.c,))
 $(eval $(call test_rule,test_pw_audio_ps5,tests/test_pw_audio_ps5.c native/pw_audio_ps5.c,-DPW_AUDIO_PS5_HOST_TEST -pthread))
+$(eval $(call test_rule,test_pw_agc_submit_lifecycle,tests/test_pw_agc_submit_lifecycle.c native/pw_agc_submit_lifecycle.c,))
 $(eval $(call test_rule,test_pw_pad_ps5,tests/test_pw_pad_ps5.c native/pw_pad_ps5.c src/pw_pad.c src/pw_user32.c,-DPW_PAD_PS5_HOST_TEST))
 $(eval $(call test_rule,test_pw_state_ps5,tests/test_pw_state_ps5.c native/pw_state_ps5.c src/pw_registry_store.c src/pw_registry.c,-DPW_STATE_PS5_HOST_TEST))
 $(eval $(call test_rule,test_pw_initterm,tests/test_pw_initterm.c src/pw_win32.c src/pw_user32.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_guest_heap.c src/pw_guest_args.c src/pw_x86_block.c src/pw_x87.c src/pw_guest_fp.c src/pw_guest_call.c src/pw_module_name.c src/pw_vm.c src/pw_vm_posix.c,))
@@ -62,7 +63,7 @@ $(eval $(call test_rule,inspect_pe,tools/inspect_pe.c $(CORE) src/pw_file_posix.
 
 TESTS := test_pw_guest_heap test_pw_registry test_pw_registry_store test_pw_ini test_pw_gdi test_pw_gdi_abi test_pw_crt_format test_pw_user32 test_pw_pad test_pe_resource test_pw_time test_pw_guest_args test_pw_initterm test_pw_window test_pw_guest_fp test_pe_image test_pe_layout test_pe_reloc test_pe_import \
 	test_pw_module_name test_pw_vm test_pw_map test_pw_loader \
-	test_pw_segment test_pw_compat32 test_pw_gate test_pw_win64 test_pw_x86_block test_pw_x86_cache test_pw_x86_engine test_pw_guest_call test_pw_import_bind test_pw_win32 test_pw_x87 test_pw_audio_ps5 test_pw_pad_ps5 test_pw_state_ps5
+	test_pw_segment test_pw_compat32 test_pw_gate test_pw_win64 test_pw_x86_block test_pw_x86_cache test_pw_x86_engine test_pw_guest_call test_pw_import_bind test_pw_win32 test_pw_x87 test_pw_audio_ps5 test_pw_agc_submit_lifecycle test_pw_pad_ps5 test_pw_state_ps5
 
 # The Python suites drive the built binaries: the evidence validator is
 # tested against a transcript the real gate produced, and the Python PE

@@ -205,6 +205,7 @@ def test_builder_compiles_every_core_source() -> None:
     assert '"$entry"' in sources
     assert "native/pw_file_ps5.c" in sources
     assert "native/pw_audio_ps5.c" in sources
+    assert "native/pw_agc_submit_lifecycle.c" in sources
     # The banned import is rejected by the build, not merely documented.
     assert "strcasestr" in builder
 
@@ -224,6 +225,15 @@ def test_runtime_entry_owns_execution_services() -> None:
     assert "eip=0x%08x" in text and "bytes=%02x%02x%02x%02x" in text
     assert "for(;;events++)" in text
     assert "ps5log_close(\"runtime-signal\")" in text
+
+
+def test_agc_submit_establishes_a_suspend_point() -> None:
+    adapter = read("native/pw_agc_ps5.c")
+    stub = read("native/stubs/libSceAgc.c")
+    assert "sceAgcSuspendPoint" in adapter
+    assert "pw_agc_submit_and_suspend(&submit,sceAgcDriverSubmitDcb," in adapter
+    assert "sceAgcSuspendPoint);" in adapter
+    assert "int32_t sceAgcSuspendPoint(void)" in stub
 
 
 def test_gate_records_stay_within_the_transport_budget() -> None:

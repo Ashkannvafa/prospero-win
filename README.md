@@ -22,7 +22,7 @@ prospero-win has reached its **first playable title** on an owned PS5 with FW
 - `ps5log/1` records artifact identity, instruction/API progress, AGC flips,
   PCM bytes/frames/hash and any classified abort;
 - Remote Play evidence contains 1080p60 H.264 video and captured AAC audio;
-- close and relaunch work without rebooting the console.
+- close and relaunch work without rebooting the console;
 - the reusable ScePad adapter translates chronological DualSense samples into
   Win32 key-down/up messages and neutralizes held keys on disconnect, input
   interception, controller-generation changes and shutdown; `Create` posts an
@@ -49,6 +49,12 @@ semantics, replaces linear DBT-cache scans with hashed lookup and limits W^X
 publication changes to the generated block's pages. Host, sanitizer and native
 build gates pass; hardware A/B pacing validation is still required before this
 is described as a measured fix.
+The same candidate now calls the real `sceAgcSuspendPoint` after every
+successful AGC submit, matching the lifecycle correction already validated by
+the Gears and Xash3D renderers. This is separate from fence completion: it
+makes the queue suspendable when the PS5 closes the title. Prospero Win still
+requires its own close/relaunch hardware validation before that correction is
+claimed here as proven.
 The original game defaults music off; its single optional `MCI_OPEN` request is
 reported honestly as no MIDI device, while its required WaveMix PCM effects
 remain active. The next compatibility milestone is a second independent
