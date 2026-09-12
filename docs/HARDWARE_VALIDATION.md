@@ -173,7 +173,7 @@ the same all-subsystem teardown plus `BYE reason=validation-deadline`. The
 runtime-evidence validator accepts its final `PW_RUNTIME_END` counters, which
 include work after the last five-second heartbeat.
 
-## Pending performance and system-close candidate
+## Performance and system-close candidate
 
 The async-audio/hashed-DBT candidate is not the artifact in the latest recorded
 hardware run. Run
@@ -190,9 +190,25 @@ system to suspend the AGC queue during Close Game. Host tests enforce ordering,
 no suspend call after failed submission, suspend-error propagation and missing
 callback rejection.
 
-Hardware acceptance remains explicit: deploy the exact candidate, refresh
-ShadowMountPlus once for changed title contents, confirm schema-2 queue/DBT
-telemetry, then close and relaunch the title without a system-software error.
-An external title-manager kill may still end telemetry at EOF because it cannot
-guarantee in-process teardown; the close/relaunch observation and absence of a
-GPU suspend timeout are the relevant system-close evidence.
+The candidate was built as linked ELF SHA-256
+`0e6c557479c3441f1717fed6d85158e7f85a931c388da08370d08587caecf8c0`
+and fSELF SHA-256
+`6772e0dec8c47b5c1fc2c041599a6692af080da23cc101832ab0b9a467528edd`.
+All 71 package files (4,161,991 bytes) were deployed with exact read-back
+verification. ShadowMountPlus then reported a fresh nullfs mount for the
+`PPSA99995` title and completed its startup synchronization.
+
+Runs `20260912T222705817Z_PPSA99995_prospero-win_0x117afc76a580` and
+`20260912T222822011Z_PPSA99995_prospero-win_0x118cb9ee90fc` both emitted the
+schema-2 DBT and audio-queue fields. The first system close returned zero and
+the controller verified the process gone after 100 ms; a Remote Play capture
+then showed the PS5 home screen with no error dialog. Immediate relaunch
+succeeded, and the second close again reached `running=none`. This accepts the
+user-visible close/relaunch regression for this artifact.
+
+Both transcripts end at EOF because an external title-manager kill cannot
+guarantee in-process teardown. That is distinct from the bounded orderly-exit
+evidence above. No kernel trace was captured, so the result does not claim an
+internal suspend-duration measurement. Performance A/B also remains pending:
+the old and new artifacts must execute the same collision-heavy gameplay
+scenario before loop-gap and pacing deltas can be attributed to these changes.
