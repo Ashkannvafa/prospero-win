@@ -247,6 +247,40 @@ static int gate_guest_access(void *context, uint32_t address, void *bytes,
 }
 
 /*
+ * True when a guest write of `size` bytes at `address` would pass the very
+ * guard above. Handlers preflight every output span with this before they
+ * change anything, so a failure cannot leave an allocation behind, hand back a
+ * released region or account for memory the guest will never be told about:
+ * the platform call either commits completely or not at all.
+ */
+static int guest_span_writable(const PwX86State *state, uint32_t address,
+                               uint32_t size)
+{
+    uint64_t end;
+
+    if (!state || size == 0u)
+        return 0;
+    end = (uint64_t)address + size;
+    if (address == 0u || end > 0x100000000ull)
+        return 0;
+    if (address >= state->stack_low && end <= state->stack_high)
+        return 1;
+    for (uint32_t index = 0; index < state->memory_count; ++index) {
+        const PwX86Memory *region = &state->memory[index];
+
+        if (region->high > 0x100000000ull)
+            continue;
+        if (address < region->low || end > region->high)
+            continue;
+        if ((region->permissions & (PW_X86_READ | PW_X86_WRITE)) !=
+            (PW_X86_READ | PW_X86_WRITE))
+            continue;
+        return 1;
+    }
+    return 0;
+}
+
+/*
  * State the NT call handlers need: the gate's low-address allocator, the
  * per-run accounting and the regions this run mapped on the guest's behalf
  * (released at cleanup).
@@ -421,6 +455,21 @@ static int gate_nt_allocate_virtual_memory(PwWineCallContext *calls,
         return PW_OK;
     }
     /*
+     * Both outputs are written on the success path, so their spans are proved
+     * writable before anything is reserved, committed or accounted. A handler
+     * that failed after publishing a region would leave the guest owning memory
+     * it was never told about, which is exactly the kind of half-mutation the
+     * bridge must not have.
+     */
+    if (!guest_span_writable(access_context, size_pointer, 4u)) {
+        *argument_index = 4u;
+        return PW_ERR_MALFORMED;
+    }
+    if (!guest_span_writable(access_context, base_pointer, 4u)) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    /*
      * MEM_COMMIT on a range this run already mapped is the normal second half
      * of "reserve then commit": it is idempotent, not a new reservation.
      */
@@ -549,6 +598,19 @@ static int gate_nt_free_virtual_memory(PwWineCallContext *calls,
     if (base_value == 0u) {
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
+    }
+    /*
+     * A release is irreversible for the backend, so both output spans are
+     * proved writable first: the region is only given back once the guest can
+     * be told the base and size it gave up.
+     */
+    if (!guest_span_writable(access_context, base_pointer, 4u)) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (!guest_span_writable(access_context, size_pointer, 4u)) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
     }
     for (uint32_t index = 0; index < calls->region_count; ++index) {
         PwVmRegion region = calls->regions[index];

@@ -269,10 +269,17 @@ LdrInitializeThunk, --bridge 1
             the translator does not cover
 ```
 
-Honest limits: the reserve/commit distinction is not modelled (the dispatcher
-knows one kind of guest region), `NtFreeVirtualMemory` and every other call
-still has no handler, and a handler failing midway is not rolled back. None
-of that is claimed as working.
+Honest limits at that point: the reserve/commit distinction is not modelled
+(the dispatcher knows one kind of guest region) and only a handful of calls had
+handlers. A platform call that writes guest outputs now preflights **every**
+output span before it changes anything, so a call either commits completely or
+not at all: an allocation cannot be published and accounted for when the guest
+could never be told the base and size it received, and a release cannot return
+a mapping the guest cannot be told it gave up. `tests/test_pw_wine_gate_bridge.c`
+injects each of those failures - an unwritable `*RegionSize`, an unwritable
+`*BaseAddress` on the allocation and on the release - and asserts that region
+ownership, live region count, declared bytes, cleanup count and the guest's own
+outputs are exactly what they were.
 
 ### What ntdll initialization reaches now
 

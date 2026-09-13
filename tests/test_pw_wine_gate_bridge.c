@@ -122,7 +122,17 @@ static void emit_stub(uint32_t id, uint16_t arg_bytes)
     emit_byte(0x90);                 /* pad to a clean slot */
 }
 
-static size_t build_module(void)
+/* Fault injection: which part of the caller hands the bridge a span it cannot
+ * write. Each variant is a self-contained run, because a rejected call is
+ * where the run stops. */
+enum PwBridgeFault {
+    PW_BRIDGE_NO_FAULT = 0,
+    PW_BRIDGE_ALLOC_SIZE_OUTPUT = 1,    /* *RegionSize unwritable */
+    PW_BRIDGE_ALLOC_BASE_OUTPUT = 2,    /* *BaseAddress unwritable */
+    PW_BRIDGE_FREE_BASE_OUTPUT = 3,     /* the release's *BaseAddress */
+};
+
+static size_t build_module(enum PwBridgeFault fault)
 {
     PeFixtureSpec spec;
     /* The guest pre-fills *RegionSize with the block it wants. */
@@ -138,9 +148,15 @@ static size_t build_module(void)
     assert(CALLER_RVA == TEXT_RVA);
     emit_push_imm8(0x04);              /* Protect: PAGE_READWRITE */
     emit_push_imm32(0x2000u);          /* AllocationType: MEM_RESERVE */
-    emit_push_absolute(SIZE_SLOT_RVA); /* *RegionSize */
+    if (fault == PW_BRIDGE_ALLOC_SIZE_OUTPUT)
+        emit_push_imm32(0x50000000u);  /* a span no region covers */
+    else
+        emit_push_absolute(SIZE_SLOT_RVA); /* *RegionSize */
     emit_push_imm8(0x00);              /* ZeroBits */
-    emit_push_absolute(BASE_SLOT_RVA); /* *BaseAddress */
+    if (fault == PW_BRIDGE_ALLOC_BASE_OUTPUT)
+        emit_push_imm32(0x50000000u);
+    else
+        emit_push_absolute(BASE_SLOT_RVA); /* *BaseAddress */
     emit_push_imm8(0xff);              /* ProcessHandle: NtCurrentProcess */
     emit_call(STUB0_RVA);
     emit_store_eax(RESULT0_RVA);
@@ -154,7 +170,10 @@ static size_t build_module(void)
     emit_u32(0u);
     emit_push_imm32(0x8000u);         /* FreeType: MEM_RELEASE */
     emit_push_absolute(SIZE_SLOT_RVA); /* *RegionSize */
-    emit_push_absolute(BASE_SLOT_RVA); /* *BaseAddress */
+    if (fault == PW_BRIDGE_FREE_BASE_OUTPUT)
+        emit_push_imm32(0x50000000u);
+    else
+        emit_push_absolute(BASE_SLOT_RVA); /* *BaseAddress */
     emit_push_imm8(0xff);             /* ProcessHandle: NtCurrentProcess */
     emit_call(STUB1_RVA);
     emit_store_eax(RESULT1_RVA);
@@ -256,7 +275,7 @@ int main(void)
     PwWineGateReport report;
     PwVmBackend vm;
     const char *modules[] = {"ntdll.dll"};
-    const size_t size = build_module();
+    const size_t size = build_module(PW_BRIDGE_NO_FAULT);
 
     assert(size != 0u);
     span.bytes = image;
@@ -349,5 +368,60 @@ int main(void)
      * release; the NT allocation is not among them any more. */
     assert(report.cleanup_modules == 1u);
     assert(report.cleanup_mappings >= 4u);
+    {
+        const uint32_t baseline_mappings = report.cleanup_mappings;
+
+        /*
+         * Fault injection. Both platform calls write guest outputs, so every
+         * output span is preflighted before anything is reserved, committed,
+         * released or accounted: a span the guest cannot write must leave the
+         * run's state exactly as it was. Each variant is its own run, because
+         * a rejected call is where that run stops.
+         */
+        const struct {
+            enum PwBridgeFault fault;
+            uint32_t argument_index;
+            uint32_t allocations;
+            uint32_t live_regions;
+            uint32_t allocated_bytes;
+            uint32_t cleanup_mappings;
+        } cases[] = {
+            /* *RegionSize cannot be written: nothing was allocated at all. */
+            { PW_BRIDGE_ALLOC_SIZE_OUTPUT, 4u, 0u, 1u, 0u, baseline_mappings },
+            /* *BaseAddress cannot be written: same, nothing was allocated. */
+            { PW_BRIDGE_ALLOC_BASE_OUTPUT, 2u, 0u, 1u, 0u, baseline_mappings },
+            /* The release's *BaseAddress cannot be written: the block the
+             * guest already owns stays live and accounted, and cleanup has one
+             * more mapping to release than the clean run had. */
+            { PW_BRIDGE_FREE_BASE_OUTPUT, 2u, 1u, 2u, ALLOCATION_SIZE,
+              baseline_mappings + 1u },
+        };
+
+        for (unsigned index = 0; index < sizeof(cases) / sizeof(cases[0]);
+             ++index) {
+            PwWineGateReport faulted;
+            const size_t faulted_size = build_module(cases[index].fault);
+            PwWineGateConfig fault_config = config;
+
+            assert(faulted_size != 0u);
+            span.size = faulted_size;
+            memset(&faulted, 0, sizeof(faulted));
+            assert(pw_wine_gate_run(&fault_config, &faulted) ==
+                   PW_ERR_UNSUPPORTED);
+            assert(faulted.stop == PW_WINE_STOP_UNIX_CALL_REJECTED);
+            assert(faulted.calls.rejected == 1u);
+            /* The rejected call is the last one in the run. */
+            assert(faulted.calls.records >= 1u);
+            assert(faulted.calls.sequence[faulted.calls.records - 1u]
+                       .argument_index == cases[index].argument_index);
+            /* The state the call would have changed is exactly as it was. */
+            assert(faulted.allocations == cases[index].allocations);
+            assert(faulted.call_regions == cases[index].live_regions);
+            assert(faulted.allocated_bytes == cases[index].allocated_bytes);
+            assert(faulted.cleanup_mappings == cases[index].cleanup_mappings);
+            assert(faulted.cleanup_translations == 1u);
+            assert(faulted.cleanup_modules == 1u);
+        }
+    }
     return 0;
 }
