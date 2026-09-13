@@ -11,10 +11,12 @@
  *
  *   - the first call is serviced (NtAllocateVirtualMemory), the guest memory
  *     it asks for becomes addressable and the base/size are written back;
+ *   - the guest releases that block (NtFreeVirtualMemory, MEM_RELEASE), the
+ *     mapping goes back to the backend, the block stops being addressable
+ *     and the released size is written back into the guest's own variable;
  *   - the guest resumes in the caller with the NTSTATUS in EAX, which is only
  *     true if the two-level frame was unwound correctly;
- *   - the second, unimplemented call is named exactly and stops the run;
- *   - the allocation this run made is released at cleanup.
+ *   - the third, unimplemented call is named exactly and stops the run.
  */
 #include "pe_fixture.h"
 
@@ -34,15 +36,16 @@ enum {
     SIZE_SLOT_RVA = DATA_RVA + 8,   /* *RegionSize, pre-set below */
     RESULT0_RVA = DATA_RVA + 12,    /* where the caller stores the status */
     RESULT1_RVA = DATA_RVA + 16,
-    THUNK_RVA = TEXT_RVA + 0x40,
-    STUB0_RVA = TEXT_RVA + 0x50,    /* NtAllocateVirtualMemory, 0x18 */
-    STUB1_RVA = TEXT_RVA + 0x60,    /* NtQueryInformationProcess, 0x19 */
+    THUNK_RVA = TEXT_RVA + 0x100,
+    STUB0_RVA = TEXT_RVA + 0x110,   /* NtAllocateVirtualMemory, 0x18 */
+    STUB1_RVA = TEXT_RVA + 0x120,   /* NtFreeVirtualMemory, 0x1e */
+    STUB2_RVA = TEXT_RVA + 0x130,   /* NtQueryInformationProcess, 0x19 */
     CALLER_RVA = TEXT_RVA,
     ALLOCATION_SIZE = 0x4000,
 };
 
 static uint8_t image[64 * 1024];
-static uint8_t text[256];
+static uint8_t text[512];
 static uint32_t text_bytes;
 static PeFixtureReloc relocs[32];
 static uint32_t reloc_count;
@@ -138,19 +141,35 @@ static size_t build_module(void)
     emit_push_imm8(0xff);              /* ProcessHandle: NtCurrentProcess */
     emit_call(STUB0_RVA);
     emit_store_eax(RESULT0_RVA);
-    /* The second call: an unimplemented number, reached only if the first
-     * one really returned to this caller. Its first argument is read from
-     * the slot the bridge wrote the allocated base into, so the reported
-     * argument proves the guest saw the write-back. */
-    emit_push_imm8(0x00);
+    /* The guest releases the block the bridge just gave it, asking for a
+     * whole-region release the way Wine's own cleanup path does: *RegionSize
+     * is set to zero first, so the value the free writes back (the size of
+     * the region it released) can only appear if the bridge really wrote it
+     * into guest memory. */
+    emit_byte(0xc7); emit_byte(0x05);   /* mov dword ptr [SIZE_SLOT], 0 */
+    emit_absolute(SIZE_SLOT_RVA);
+    emit_u32(0u);
+    emit_push_imm32(0x8000u);         /* FreeType: MEM_RELEASE */
+    emit_push_absolute(SIZE_SLOT_RVA); /* *RegionSize */
+    emit_push_absolute(BASE_SLOT_RVA); /* *BaseAddress */
+    emit_push_imm8(0xff);             /* ProcessHandle: NtCurrentProcess */
+    emit_call(STUB1_RVA);
+    emit_store_eax(RESULT1_RVA);
+    /* The third call: an unimplemented number, reached only if the two
+     * serviced calls really returned to this caller. Its first argument is
+     * the size the free wrote back and its second the base the allocation
+     * wrote back, so the reported arguments prove the guest saw both. */
     emit_push_imm8(0x00);
     emit_push_imm8(0x00);
     emit_push_imm8(0x00);
     emit_byte(0xa1);                  /* mov eax, [BASE_SLOT] */
     emit_absolute(BASE_SLOT_RVA);
-    emit_byte(0x50);                  /* push eax */
-    emit_call(STUB1_RVA);
-    emit_store_eax(RESULT1_RVA);
+    emit_byte(0x50);                  /* push eax: second argument */
+    emit_byte(0xa1);                  /* mov eax, [SIZE_SLOT] */
+    emit_absolute(SIZE_SLOT_RVA);
+    emit_byte(0x50);                  /* push eax: first argument */
+    emit_call(STUB2_RVA);
+    emit_store_eax(RESULT1_RVA + 4u);
     while (text_bytes < THUNK_RVA - TEXT_RVA)
         emit_byte(0x90);
     /* The dispatcher thunk: the single jmp that references the slot. */
@@ -160,6 +179,9 @@ static size_t build_module(void)
         emit_byte(0x90);
     emit_stub(0x0018u, 24u);           /* NtAllocateVirtualMemory */
     while (text_bytes < STUB1_RVA - TEXT_RVA)
+        emit_byte(0x90);
+    emit_stub(0x001eu, 16u);           /* NtFreeVirtualMemory */
+    while (text_bytes < STUB2_RVA - TEXT_RVA)
         emit_byte(0x90);
     emit_stub(0x0019u, 20u);           /* NtQueryInformationProcess */
     emit_byte(0xc3);
@@ -251,18 +273,18 @@ int main(void)
     config.module_count = 1u;
     config.bridge_calls = 1u;
 
-    /* The run stops at the second, unimplemented call, which is a refusal
+    /* The run stops at the third, unimplemented call, which is a refusal
      * the gate reports rather than a successful acceptance. */
     assert(pw_wine_gate_run(&config, &report) == PW_ERR_UNSUPPORTED);
     assert(report.stop == PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED);
     assert(strcmp(pw_wine_stop_name(report.stop),
                   "unix-call-unimplemented") == 0);
     assert(report.observed_syscall_id == 0x0019u);
-    assert(report.calls.handled == 1u);
+    assert(report.calls.handled == 2u);
     assert(report.calls.unimplemented == 1u);
     assert(report.calls.unknown == 0u && report.calls.rejected == 0u);
-    assert(report.calls_serviced == 1u);
-    assert(report.calls.records == 2u);
+    assert(report.calls_serviced == 2u);
+    assert(report.calls.records == 3u);
 
     /* The first call was recognised by number and by the table's name. */
     assert(report.calls.sequence[0].id == 0x0018u);
@@ -287,13 +309,23 @@ int main(void)
            report.modules[0].base + CALLER_RVA + 26u);
 
     /* The guest really continued: its allocation request was answered, its
-     * own store of the NTSTATUS ran, and the second call was reached. */
-    assert(report.calls.sequence[1].id == 0x0019u);
-    assert(strcmp(report.calls.sequence[1].name,
+     * own store of the NTSTATUS ran, and the release was reached. */
+    assert(report.calls.sequence[1].id == 0x001eu);
+    assert(strcmp(report.calls.sequence[1].name, "NtFreeVirtualMemory") == 0);
+    assert(report.calls.sequence[1].outcome == PW_UNIX_CALL_HANDLED);
+    assert(report.calls.sequence[1].status == PW_NT_SUCCESS);
+    assert(report.calls.sequence[1].args[0] == 0xffffffffu);
+    assert(report.calls.sequence[1].args[3] == 0x8000u);   /* MEM_RELEASE */
+    assert(report.calls.sequence[2].id == 0x0019u);
+    assert(strcmp(report.calls.sequence[2].name,
                   "NtQueryInformationProcess") == 0);
-    assert(report.calls.sequence[1].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
+    assert(report.calls.sequence[2].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
     assert(report.allocations == 1u);
-    assert(report.allocated_bytes == ALLOCATION_SIZE);
+    assert(report.releases == 1u);
+    /* Nothing the guest allocated is still live, and the one region that
+     * remains registered is the process-parameters block, which the gate
+     * plays the parent for. */
+    assert(report.allocated_bytes == 0u);
     assert(report.call_regions == 1u);
     /* The gate populated a process-parameters structure: the loader reads the
      * current directory, the DLL and image paths and the environment from
@@ -301,16 +333,17 @@ int main(void)
     assert(report.parameters_length > 0x100u);
     assert(report.parameters_base == 0x0c000000u);
     /*
-     * The second call's first argument was loaded by the guest from the slot
-     * the bridge filled in, so this value can only be right if the write-back
-     * landed in guest memory the guest could then read. The run itself
-     * reaching that call is the proof that the first call returned to the
-     * caller with a correct stack.
+     * The third call's arguments were loaded by the guest from the slots the
+     * two serviced calls filled in, so these values can only be right if both
+     * write-backs landed in guest memory the guest could then read: the base
+     * the allocation returned, and the size the release wrote back.
      */
-    assert(report.calls.sequence[1].args[0] == 0x20000000u);
+    assert(report.calls.sequence[2].args[0] == ALLOCATION_SIZE);
+    assert(report.calls.sequence[2].args[1] == 0x20000000u);
     /* The region it was given is addressable for the guest. */
     assert(report.guest_regions >= 4u);
-    /* ... and the run released it again. */
+    /* Cleanup has the window, the TEB, the PEB and the process parameters to
+     * release; the NT allocation is not among them any more. */
     assert(report.cleanup_modules == 1u);
     assert(report.cleanup_mappings >= 4u);
     return 0;

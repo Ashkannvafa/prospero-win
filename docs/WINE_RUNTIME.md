@@ -410,6 +410,13 @@ NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
                                        and Directory for a directory object)
 NtQueryVolumeInformationFile  (0x0049) FileFsDeviceInformation only
 NtClose                       (0x000f) releases a gate-owned handle
+NtFreeVirtualMemory           (0x001e) returns a whole guest block that this
+                                       run mapped to the backend; a partial
+                                       release answers STATUS_UNABLE_TO_FREE_VM
+                                       and MEM_DECOMMIT answers
+                                       STATUS_NOT_SUPPORTED, because the
+                                       reserve/commit distinction is not
+                                       modelled
 ```
 
 Rules the gate enforces before the platform is ever asked:
@@ -481,13 +488,38 @@ and fails on any difference.
 Measured on the same pinned runtime with `--bridge 1`:
 
 ```text
-retired 12472 instructions over 2400 dispatches and 490 translated blocks
-5 calls handled: 3 NtAllocateVirtualMemory, NtOpenFile "\??\C:\windows",
-  and NtQueryVolumeInformationFile FileFsDeviceInformation on that directory
-2 guest regions mapped (88 KiB)
-6th call: syscall 0x001e = NtFreeVirtualMemory, 16 argument bytes
+retired 18386 instructions over 3821 dispatches and 721 translated blocks
+6 calls handled: 3 NtAllocateVirtualMemory, NtOpenFile "\??\C:\windows",
+  NtQueryVolumeInformationFile FileFsDeviceInformation on that directory,
+  and NtFreeVirtualMemory MEM_RELEASE of the process-parameters block
+2 guest regions mapped (88 KiB) and 1 released again
+7th call: syscall 0x0012 = NtOpenKey, 12 argument bytes
 stop: unix-call-unimplemented, verdict not accepted
 ```
+
+That release is worth naming precisely, because it is the loader's own
+initialization doing it. `init_user_process_params` builds its own copy of the
+process environment, points `PEB->ProcessParameters` at the copy, and releases
+the block it was handed. In a real process that block was allocated by the
+parent through `NtAllocateVirtualMemory`, so the gate registers its
+process-parameters page as one of this run's guest regions: the release finds
+it, the page leaves the dispatcher's declared ranges, and the mapping goes
+back to the backend. It is *not* counted against the guest's live bytes,
+because the guest never allocated it - the gate is playing the parent.
+
+`NtFreeVirtualMemory` itself is deliberately narrow. It can honour the release
+of a whole region this run mapped, which is the form both a loader and a heap
+use; a size that does not cover the whole region is answered with
+`STATUS_UNABLE_TO_FREE_VM` rather than a partial unmap the dispatcher cannot
+represent, and `MEM_DECOMMIT` with `STATUS_NOT_SUPPORTED` because the one kind
+of guest region this bridge knows has no committed/decommitted distinction.
+`tests/test_pw_wine_gate_bridge.c` proves the successful path from the guest:
+it allocates, sets the size to zero, releases with `MEM_RELEASE`, and then
+hands both the base the allocation wrote back and the size the release wrote
+back to a call with no handler, so the recorded arguments show the guest read
+both write-backs out of its own memory. It also checks that the block stops
+being one of the run's live regions and is not released a second time at
+cleanup.
 
 A directory object is not a file-system implementation: there is no
 enumeration and no `NtQueryDirectoryFile`, and the individual DLLs the loader

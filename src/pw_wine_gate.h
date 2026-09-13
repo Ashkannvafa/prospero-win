@@ -175,6 +175,7 @@ typedef struct PwWineGateReport {
     PwUnixCallTally calls;
     uint32_t calls_serviced;
     uint32_t allocations;
+    uint32_t releases;              /* NtFreeVirtualMemory releases */
     uint32_t allocated_bytes;
     uint32_t call_regions;          /* guest regions this run mapped for NT */
     /* file_opens counts every NtOpenFile the gate answered with a handle;

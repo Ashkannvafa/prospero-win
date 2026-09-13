@@ -258,6 +258,10 @@ typedef struct PwWineCallContext {
     uint32_t heap_cursor;
     uint32_t limit;
     PwVmRegion regions[PW_WINE_GATE_MAX_CALL_REGIONS];
+    /* Whether each region was allocated by an NtAllocateVirtualMemory call
+     * the guest made (1) or is a page the gate registered for the guest's
+     * benefit (0). Only the first kind counts against the live byte limit. */
+    uint8_t region_owned[PW_WINE_GATE_MAX_CALL_REGIONS];
     uint32_t region_count;
     struct PwWineHandle {
         void *token;
@@ -321,6 +325,22 @@ static int region_covers(const PwWineCallContext *calls, uint32_t base,
             return 1;
     }
     return 0;
+}
+
+/*
+ * A returned region must stop being addressable by the guest: the block
+ * leaves the dispatcher's declared ranges together with the mapping, so a
+ * guest that keeps touching memory it gave back is refused by the same guard
+ * that protects every other access.
+ */
+static void forget_declared_region(PwX86State *state, uint32_t base)
+{
+    for (uint32_t index = 0; index < state->memory_count; ++index) {
+        if (state->memory[index].low != base)
+            continue;
+        state->memory[index] = state->memory[--state->memory_count];
+        return;
+    }
 }
 
 /*
@@ -439,7 +459,9 @@ static int gate_nt_allocate_virtual_memory(PwWineCallContext *calls,
             .permissions = PW_X86_READ | PW_X86_WRITE,
         };
     }
-    calls->regions[calls->region_count++] = region;
+    calls->regions[calls->region_count] = region;
+    calls->region_owned[calls->region_count] = 1u;
+    calls->region_count++;
     calls->report->allocations++;
     calls->report->allocated_bytes += (uint32_t)region.bytes;
     calls->report->call_regions = calls->region_count;
@@ -453,6 +475,111 @@ static int gate_nt_allocate_virtual_memory(PwWineCallContext *calls,
         }
     }
     *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/* The two Windows free types, and the shape this bridge can honour. */
+enum {
+    PW_WINE_MEM_DECOMMIT = 0x4000u,
+    PW_WINE_MEM_RELEASE = 0x8000u,
+};
+
+/*
+ * NtFreeVirtualMemory for the same profile. The bridge models one kind of
+ * guest region - a block this run reserved and mapped - so what it can
+ * honour is the release of a whole one, which is exactly what a loader's
+ * cleanup path asks for. A partial release and a MEM_DECOMMIT are answered
+ * with real NTSTATUS values instead of a wrong success, because the
+ * reserve/commit distinction is not modelled here. A successful release
+ * removes the block from the dispatcher's declared ranges and returns the
+ * mapping to the backend, so the guest cannot keep using memory it gave
+ * back, and the base and size are written back the way Wine's own
+ * implementation does.
+ */
+static int gate_nt_free_virtual_memory(PwWineCallContext *calls,
+                                       const PwUnixCallFrame *frame,
+                                       PwUnixCallAccess guest_access,
+                                       void *access_context,
+                                       uint32_t *status,
+                                       uint32_t *argument_index)
+{
+    const uint32_t process_handle = frame->args[0];
+    const uint32_t base_pointer = frame->args[1];
+    const uint32_t size_pointer = frame->args[2];
+    const uint32_t free_type = frame->args[3];
+    uint32_t base_value = 0u;
+    uint32_t size_value = 0u;
+
+    if (process_handle != 0xffffffffu) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (guest_access(access_context, base_pointer, &base_value, 4u, 0) !=
+        PW_OK) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (guest_access(access_context, size_pointer, &size_value, 4u, 0) !=
+        PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    if (free_type != PW_WINE_MEM_RELEASE) {
+        *status = free_type == PW_WINE_MEM_DECOMMIT ? PW_NT_NOT_SUPPORTED
+                                                    : PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    if (base_value == 0u) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    for (uint32_t index = 0; index < calls->region_count; ++index) {
+        PwVmRegion region = calls->regions[index];
+        const uint32_t region_base = (uint32_t)(uintptr_t)region.exec_base;
+        const uint32_t released_owned = calls->region_owned[index];
+        uint32_t region_bytes = (uint32_t)region.bytes;
+        uint32_t released_bytes;
+        uint32_t written_base = region_base;
+
+        if (region_base != base_value)
+            continue;
+        /* A size of zero means "the whole region"; anything shorter is a
+         * partial release, which this single-kind allocator cannot split. */
+        released_bytes = size_value == 0u
+            ? region_bytes
+            : (size_value + 0xfffu) & ~0xfffu;
+        if (released_bytes < region_bytes) {
+            *status = PW_NT_UNABLE_TO_FREE_VM;
+            return PW_OK;
+        }
+        if (calls->low->base.release(calls->low->base.context, &region) !=
+            PW_OK) {
+            *status = PW_NT_INVALID_PARAMETER;
+            return PW_OK;
+        }
+        calls->regions[index] = calls->regions[--calls->region_count];
+        calls->region_owned[index] = calls->region_owned[calls->region_count];
+        calls->report->call_regions = calls->region_count;
+        forget_declared_region(access_context, region_base);
+        /* Wine writes the released base and size back into the guest's own
+         * variables; the size becomes the whole region. */
+        region_bytes = released_bytes;
+        if (guest_access(access_context, base_pointer, &written_base, 4u,
+                         1) != PW_OK ||
+            guest_access(access_context, size_pointer, &region_bytes, 4u,
+                         1) != PW_OK) {
+            *argument_index = 2u;
+            return PW_ERR_MALFORMED;
+        }
+        calls->report->releases++;
+        /* A registered page (the process-parameters block the gate plays the
+         * parent for) was never counted against the guest's live bytes. */
+        if (released_owned && calls->report->allocated_bytes >= region_bytes)
+            calls->report->allocated_bytes -= region_bytes;
+        *status = PW_NT_SUCCESS;
+        return PW_OK;
+    }
+    *status = PW_NT_MEMORY_NOT_ALLOCATED;
     return PW_OK;
 }
 
@@ -976,6 +1103,11 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
                                                  gate_guest_access, state,
                                                  &status, &argument_index);
         break;
+    case 0x001eu:
+        result = gate_nt_free_virtual_memory(calls, &frame, gate_guest_access,
+                                             state, &status,
+                                             &argument_index);
+        break;
     case 0x0033u:
         result = gate_nt_open_file(calls, &frame, gate_guest_access, state,
                                    &status, &argument_index);
@@ -1273,7 +1405,6 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     int have_stack = 0;
     int have_teb = 0;
     int have_peb = 0;
-    int have_parameters = 0;
 
     if (!config || !report || !config->provider || !config->backend ||
         config->module_count == 0u ||
@@ -1505,13 +1636,29 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                                      &report->parameters_base);
         if (status != PW_OK)
             goto done;
-        have_parameters = 1;
         status = populate_process_parameters(parameters.write_base,
                                              (uint32_t)parameters.bytes,
                                              root_canonical,
                                              &report->parameters_length);
         if (status != PW_OK)
             goto done;
+        /*
+         * The parameters block stands in for the memory a parent hands a new
+         * process, and ntdll's init_user_process_params replaces it with its
+         * own copy and releases the original with NtFreeVirtualMemory. The
+         * block is therefore registered as one of this run's guest regions
+         * (owned = 0, because the guest never allocated it and it is not
+         * counted against its live bytes), so that release finds it instead
+         * of being told the address was never allocated.
+         */
+        if (calls.region_count >= PW_WINE_GATE_MAX_CALL_REGIONS) {
+            status = PW_ERR_LIMIT;
+            goto done;
+        }
+        calls.regions[calls.region_count] = parameters;
+        calls.region_owned[calls.region_count] = 0u;
+        calls.region_count++;
+        report->call_regions = calls.region_count;
         {
             uint8_t *peb_block = peb.write_base;
             const PwModule *root_module_loaded =
@@ -1713,9 +1860,9 @@ done:
     if (have_peb &&
         config->backend->release(config->backend->context, &peb) == PW_OK)
         report->cleanup_mappings++;
-    if (have_parameters &&
-        config->backend->release(config->backend->context, &parameters) == PW_OK)
-        report->cleanup_mappings++;
+    /* The parameters page is registered among the call regions (it is the
+     * block ntdll replaces and releases), so it is released below with them
+     * and only once, whether or not the guest already gave it back. */
     for (uint32_t index = 0; index < calls.region_count; ++index) {
         if (calls.low->base.release(calls.low->base.context,
                                     &calls.regions[index]) == PW_OK)

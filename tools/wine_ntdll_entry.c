@@ -263,14 +263,15 @@ int main(int argc, char **argv)
            pw_result_name(report.status));
     if (config.bridge_calls) {
         printf("kind=host-wine-calls serviced=%u handled=%llu unimplemented=%llu "
-               "unknown=%llu rejected=%llu allocations=%u allocated_bytes=%u "
+               "unknown=%llu rejected=%llu allocations=%u releases=%u "
+               "allocated_bytes=%u "
                "regions=%u files=%u opens=%llu reads=%llu bytes=%llu closes=%llu "
                "directories=%llu refusals=%llu last=%s\n", report.calls_serviced,
                (unsigned long long)report.calls.handled,
                (unsigned long long)report.calls.unimplemented,
                (unsigned long long)report.calls.unknown,
                (unsigned long long)report.calls.rejected, report.allocations,
-               report.allocated_bytes, report.call_regions,
+               report.releases, report.allocated_bytes, report.call_regions,
                report.files_configured, (unsigned long long)report.file_opens,
                (unsigned long long)report.file_reads,
                (unsigned long long)report.file_bytes,
