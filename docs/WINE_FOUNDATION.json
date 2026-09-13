@@ -14,8 +14,8 @@
       "id": "pe-loader",
       "status": "partial",
       "depends_on": [],
-      "evidence": "PE32/PE32+ mapping, relocations and normal imports are tested; exports, forwards, delay imports and TLS initialization remain.",
-      "exit_criteria": ["exports-and-forwarders", "delay-imports", "tls-callback-order", "caller-owned-module-capacity"]
+      "evidence": "PE32/PE32+ mapping, relocations and normal imports are tested. Exports, name/ordinal lookup, forwarded exports with bounded depth and cycle detection, runtime-to-runtime import binding, and the PE32 TLS directory plus a process/thread TLS owner with callback plans are implemented and host-tested; delay imports remain.",
+      "exit_criteria": ["delay-imports", "caller-owned-module-capacity"]
     },
     {
       "id": "runtime-module-policy",
@@ -42,22 +42,22 @@
       "id": "wine-pe-runtime",
       "status": "planned",
       "depends_on": ["runtime-module-policy", "ia32-dbt", "unix-call-bridge", "nt-process-thread"],
-      "evidence": "Architecture and pinned source revision are selected; no Wine PE startup is yet claimed.",
-      "exit_criteria": ["reproducible-i386-build", "ntdll-entry", "kernelbase-load", "wine-tests-smoke"]
+      "evidence": "The pinned revision 490f6d5d builds a reproducible i386 PE runtime (two clean builds byte-identical, recorded in a validated manifest) and a bounded host gate maps it from PW_FILE_RUNTIME, binds kernelbase's 428 imports against ntdll's exports and executes ntdll's exported NtClose stub through the DBT until the first Unix-call boundary. No Windows process starts yet and no title uses it: process initialization, kernelbase load under a real process and Wine test smoke runs remain.",
+      "exit_criteria": ["kernelbase-load", "wine-process-startup", "wine-tests-smoke"]
     },
     {
       "id": "unix-call-bridge",
       "status": "planned",
       "depends_on": ["ia32-dbt", "nt-process-thread"],
-      "evidence": "The dispatcher boundary is identified in pinned Wine ntdll/wow64cpu sources.",
+      "evidence": "The dispatcher boundary is identified in the pinned Wine sources and located in the built image: the gate finds the exported __wine_syscall_dispatcher slot and the single jmp-dword-ptr thunk that references it, then stops there with the syscall number the stub encoded. No call table, argument validation or nested-call handling exists yet.",
       "exit_criteria": ["versioned-call-table", "argument-validation", "nested-calls", "fault-atomicity"]
     },
     {
       "id": "nt-process-thread",
       "status": "partial",
       "depends_on": ["virtual-memory"],
-      "evidence": "One guest thread has isolated CPU/FP/FS state; real PEB/TEB, TLS lifecycle and multiple guest threads remain.",
-      "exit_criteria": ["peb32", "teb32", "tls-slots-and-callbacks", "native-thread-adapter", "orderly-thread-exit"]
+      "evidence": "One guest thread has isolated CPU/FP/FS state. PE32 TLS now has a process/thread owner: stable module indices published through mapped guest memory, per-thread template-plus-zero-fill storage from a caller-owned arena, guest FS:[0x2C] lookup and deterministic attach/detach callback plans driven by the DBT's guest-callback mechanism, with two-thread and rollback coverage. Real PEB/TEB construction, module entry-point ordering and native thread adapters remain.",
+      "exit_criteria": ["peb32", "teb32", "native-thread-adapter", "orderly-thread-exit"]
     },
     {
       "id": "nt-objects-waits",

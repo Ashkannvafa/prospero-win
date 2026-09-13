@@ -53,8 +53,11 @@ The loader now has an explicit `PW_MODULE_RUNTIME` origin and
 `PW_FILE_RUNTIME` namespace. `pw_loader_wine_policy` selects known Windows
 modules from that namespace. Both host and PS5 providers accept an independently
 configured runtime directory; an unconfigured runtime fails as unsupported and
-never falls back silently to the application directory. Building, staging and
-booting an actual Wine runtime remain separate acceptance gates.
+never falls back silently to the application directory. The i386 runtime is
+now built and staged reproducibly, and a bounded host gate maps it, binds the
+real module graph and reaches ntdll's Unix-call boundary under the DBT; see
+[WINE_RUNTIME.md](WINE_RUNTIME.md). Staging the runtime inside the title and
+booting a Wine process remain separate acceptance gates.
 
 DXVK DLLs use the same runtime-distribution mechanism. Per-application DLL
 overrides will be an explicit policy entry, not an accidental filename search
