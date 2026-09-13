@@ -90,7 +90,8 @@ class EvidenceTest(unittest.TestCase):
         write = {key: kwargs.pop(key) for key in list(kwargs)
                  if key in self.WRITE_KEYS}
         options = {"root": None, "expect_modules": None, "expect_local": None,
-                   "expect_host": None, "allow_i386": False,
+                   "expect_runtime": None, "expect_host": None,
+                   "allow_i386": False,
                    "allow_wx": False, "expect_compat32": "any"}
         options.update(kwargs)
         return write, options
@@ -120,18 +121,40 @@ class EvidenceTest(unittest.TestCase):
 
     def test_accepts_a_real_gate_run(self) -> None:
         summary = self.accept(root="game.exe", expect_modules=4,
-                              expect_local=1, expect_host=2)
+                              expect_local=1, expect_runtime=0, expect_host=2)
         self.assertEqual(summary["machine"], "amd64")
         self.assertEqual(summary["mapped"], 2)
         self.assertEqual(summary["cycles"], 0)
         self.assertEqual(summary["max_depth"], 2)
         self.assertGreater(summary["reserved_bytes"], 0)
 
+    def test_accepts_historical_graph_without_runtime_field(self) -> None:
+        records = self.mutate("local=1 runtime=0 host=2",
+                              "local=1 host=2")
+        summary = self.accept(records, expect_runtime=0)
+        self.assertEqual(summary["runtime"], 0)
+
     def test_pins_expected_counts(self) -> None:
         self.reject(expect_modules=5, message="expected modules=5")
         self.reject(expect_local=2, message="expected local=2")
+        self.reject(expect_runtime=1, message="expected runtime=1")
         self.reject(expect_host=1, message="expected host=1")
         self.reject(root="other.exe", message="expected root=other.exe")
+
+    def test_rejects_module_kind_count_drift(self) -> None:
+        self.reject(self.mutate("local=1 runtime=0 host=2",
+                                "local=1 runtime=1 host=2"),
+                    message="runtime count disagrees")
+        records = []
+        for record in self.records:
+            if record.startswith("PW_DEP") and "dep_kind=host" in record:
+                record = record.replace("dep_kind=host", "dep_kind=runtime")
+                records.append(record)
+                records.extend(self.records[len(records):])
+                break
+            records.append(record)
+        self.assertNotEqual(records, self.records)
+        self.reject(records, message="PW_DEP kind disagrees")
 
     def test_rejects_transport_defects(self) -> None:
         self.reject(manifest_overrides={"gaps": [3]},
@@ -267,7 +290,8 @@ class EvidenceTest(unittest.TestCase):
         manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
         with self.assertRaises(validator.EvidenceError) as caught:
             validator.validate(manifest, root=None, expect_modules=None,
-                               expect_local=None, expect_host=None,
+                               expect_local=None, expect_runtime=None,
+                               expect_host=None,
                                allow_i386=False, allow_wx=False)
         self.assertIn("error record", str(caught.exception))
 
@@ -357,7 +381,8 @@ class EvidenceTest(unittest.TestCase):
         manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
         with self.assertRaises(validator.EvidenceError) as caught:
             validator.validate(manifest, root=None, expect_modules=None,
-                               expect_local=None, expect_host=None,
+                               expect_local=None, expect_runtime=None,
+                               expect_host=None,
                                allow_i386=False, allow_wx=False)
         self.assertIn("sequence gap", str(caught.exception))
 

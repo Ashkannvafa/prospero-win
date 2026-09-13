@@ -2,9 +2,11 @@
 
 Export routing and reviewed CRT/platform dependencies: see WINE_REUSE_AUDIT.md.
 
-Plan the Win32 surface from a complete normal-import inventory before adding
-individual API handlers. Runtime tracing validates integration and discovers
-dynamic dependencies; it is not the primary API-discovery workflow.
+Use a complete normal-import inventory to understand an application before it
+runs. It remains valuable for compatibility reporting and selecting tests, but
+it is no longer a queue of functions to reimplement directly: Wine PE modules
+provide the Windows API surface, and prospero-win adapts Wine's bounded native
+platform dependencies.
 
 ## Reproduce for another game
 
@@ -59,30 +61,27 @@ data exports. These are declarations, not yet audited argument layouts.
   and delegates to GetModuleHandleExA. Follow dependencies rather than
   copying the small wrapper in isolation.
 
-## Integration order and extraction criteria
+## Integration order
 
-1. Build a reviewed symbol catalog from the inventory: code versus data,
-   calling convention, widths, pointer directions, ownership, callbacks and
-   error behavior. Keep architecture-specific Wine declarations visible.
-2. Establish guest process/module/TEB state and separate function/data IAT
-   binding. Replace stale bound addresses. Unknown APIs fail by identity.
-3. Reuse coherent CRT/loader utilities where their dependency closure and
-   licensing permit. Add host tests against documented API semantics and
-   relevant Wine tests before running the original executable again.
-4. Implement window/messages/GDI together around the PS5 platform boundary,
-   then WinMM/audio and persistence. Xash3D's AGC, DualSense and live-audio
-   foundations already have playable Half-Life 1 hardware use; adapt those
-   reusable components after checking each file's provenance and actual
-   license instead of reopening PS5 platform feasibility.
-5. Validate integrated batches with the game, ps5log telemetry and Remote
-   Play. x86 instruction execution is a separate required workstream.
+1. Build and pin the selected i386 Wine PE module set outside the repository;
+   record hashes, architecture and source revision in a runtime manifest.
+2. Map application and runtime namespaces independently. Complete exports,
+   forwarders, TLS and API-set/override policy before executing module entry.
+3. Create PE32 PEB/TEB/process state, enter Wine `ntdll` under the DBT and
+   intercept its versioned Unix-call boundary.
+4. Implement the platform side as reusable VM, object/wait, file/path,
+   registry, exception, audio, input and networking services. Use Wine tests
+   and synthetic multi-application fixtures as the behavioral oracle.
+5. Validate each integrated batch with structured telemetry and exact artifact
+   identity. Use application imports and traces to prioritize coverage, not to
+   define application-specific runtime semantics.
 
-Wine's Makefile imports show why whole-DLL copying is not minimal extraction:
+Wine's Makefile imports show why isolated wrapper copying does not scale:
 kernel32 pulls kernelbase/ntdll; user32 and gdi32 involve win32u and further
-modules; winmm includes ole32/msacm32 dependencies. win32u and ntdll have Unix
-libraries. These are module-level dependencies, not a proven minimal graph
-for Pinball's individual functions. Record function-level dependencies and
-replace platform services deliberately; do not assume Wine is PS5-ready.
+modules; winmm includes ole32/msacm32 dependencies. The module graph is the
+reusable Windows subsystem. Wine's Unix libraries still assume host services
+that PS5 does not provide unchanged, so that boundary must be adapted and
+tested deliberately; Wine is not treated as PS5-ready by compilation alone.
 
 Keep LGPL-2.1-or-later for the project. Preserve Wine authorship, license
 notices and pinned provenance for every reused file. A proposed license

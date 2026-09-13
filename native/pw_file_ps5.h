@@ -30,6 +30,8 @@ typedef struct PwFilePs5Mapping {
 
 typedef struct PwFilePs5 {
     char directory[PW_PATH_MAX + 1];
+    char runtime_directory[PW_PATH_MAX + 1];
+    uint8_t runtime_configured;
     uint32_t opens;
     uint32_t closes;
     uint32_t failures;
@@ -51,6 +53,10 @@ typedef struct PwFilePs5Smoke {
 } PwFilePs5Smoke;
 
 int pw_file_ps5_init(PwFilePs5 *state, const char *directory);
+
+/* Configures the independent, exact-name Wine/DXVK distribution root. */
+int pw_file_ps5_set_runtime_directory(PwFilePs5 *state,
+                                      const char *directory);
 
 int pw_file_ps5_provider(PwFilePs5 *state, PwFileProvider *provider);
 

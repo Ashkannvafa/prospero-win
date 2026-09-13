@@ -42,6 +42,22 @@ int pw_file_posix_init(PwFilePosix *state, const char *directory)
     return PW_OK;
 }
 
+int pw_file_posix_set_runtime_directory(PwFilePosix *state,
+                                        const char *directory)
+{
+    size_t length;
+
+    if (!state || !directory)
+        return PW_ERR_PRECONDITION;
+    length = strlen(directory);
+    if (length == 0u || length > PW_PATH_MAX)
+        return PW_ERR_LIMIT;
+    memcpy(state->runtime_directory, directory, length);
+    state->runtime_directory[length] = '\0';
+    state->runtime_configured = 1u;
+    return PW_OK;
+}
+
 int pw_file_posix_read(PwFilePosix *state, const char *path, PwFileSpan *out)
 {
     FILE *handle;
@@ -109,26 +125,53 @@ static int resolve_case_insensitive(const char *directory, const char *name,
     return status;
 }
 
-static int provider_open(void *context, const char *canonical_name,
-                         PwFileSpan *out)
+static int open_from_directory(PwFilePosix *state, const char *directory,
+                               const char *canonical_name, PwFileSpan *out)
 {
-    PwFilePosix *state = context;
     char path[2u * (PW_PATH_MAX + 1u)];
     int status;
 
-    if (!state || !canonical_name || !out)
+    if (!state || !directory || !canonical_name || !out)
         return PW_ERR_PRECONDITION;
-    status = join(path, sizeof(path), state->directory, canonical_name);
+    status = join(path, sizeof(path), directory, canonical_name);
     if (status != PW_OK)
         return status;
     status = pw_file_posix_read(state, path, out);
     if (status != PW_ERR_NOT_FOUND)
         return status;
-    status = resolve_case_insensitive(state->directory, canonical_name, path,
+    status = resolve_case_insensitive(directory, canonical_name, path,
                                        sizeof(path));
     if (status != PW_OK)
         return PW_ERR_NOT_FOUND;
     return pw_file_posix_read(state, path, out);
+}
+
+static int provider_open(void *context, const char *canonical_name,
+                         PwFileSpan *out)
+{
+    PwFilePosix *state = context;
+
+    if (!state)
+        return PW_ERR_PRECONDITION;
+    return open_from_directory(state, state->directory, canonical_name, out);
+}
+
+static int provider_open_namespace(void *context,
+                                   PwFileNamespace file_namespace,
+                                   const char *canonical_name, PwFileSpan *out)
+{
+    PwFilePosix *state = context;
+
+    if (!state)
+        return PW_ERR_PRECONDITION;
+    if (file_namespace == PW_FILE_APPLICATION)
+        return open_from_directory(state, state->directory, canonical_name, out);
+    if (file_namespace != PW_FILE_RUNTIME)
+        return PW_ERR_PRECONDITION;
+    if (!state->runtime_configured)
+        return PW_ERR_UNSUPPORTED;
+    return open_from_directory(state, state->runtime_directory,
+                               canonical_name, out);
 }
 
 static void provider_close(void *context, PwFileSpan *span)
@@ -152,5 +195,6 @@ int pw_file_posix_provider(PwFilePosix *state, PwFileProvider *provider)
     provider->context = state;
     provider->open = provider_open;
     provider->close = provider_close;
+    provider->open_namespace = provider_open_namespace;
     return PW_OK;
 }

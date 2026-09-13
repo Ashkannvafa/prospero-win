@@ -52,6 +52,13 @@ def as_int(fields: dict[str, str], key: str) -> int:
         raise AssertionError
 
 
+def as_optional_int(fields: dict[str, str], key: str, default: int) -> int:
+    """Read an additive evidence field without invalidating older captures."""
+    if key not in fields:
+        return default
+    return as_int(fields, key)
+
+
 def require(fields: dict[str, str], key: str, expected: str) -> None:
     if fields.get(key) != expected:
         fail(f"expected {key}={expected}, found {key}={fields.get(key)}")
@@ -144,6 +151,7 @@ def check_modules(records: list[str], *, allow_i386: bool,
     by_index: dict[int, dict[str, str]] = {}
     mapped_indices: set[int] = set()
     machines: set[str] = set()
+    kind_counts = {"root": 0, "local": 0, "runtime": 0, "host": 0}
 
     for module in modules:
         index = as_int(module, "index")
@@ -157,8 +165,9 @@ def check_modules(records: list[str], *, allow_i386: bool,
 
     for index, module in sorted(by_index.items()):
         kind = module.get("kind")
-        if kind not in ("root", "local", "host"):
+        if kind not in ("root", "local", "runtime", "host"):
             fail(f"module {index} has an unknown kind: {kind}")
+        kind_counts[kind] += 1
         is_mapped = as_int(module, "mapped") == 1
 
         if kind == "host":
@@ -194,6 +203,17 @@ def check_modules(records: list[str], *, allow_i386: bool,
         if as_int(module, "native") != 1 and not allow_i386:
             fail(f"module {module.get('name')} is not natively executable; "
                  "pass --allow-i386 to accept a parse-only run")
+
+    if kind_counts["root"] != 1 or by_index[0].get("kind") != "root":
+        fail("the graph must contain exactly one root at module index zero")
+    for kind in ("local", "runtime", "host"):
+        # `runtime` was added after the first accepted hardware captures.
+        # Its absence in those immutable transcripts means zero; a present
+        # value remains strict and must agree with PW_MODULE records.
+        reported = as_optional_int(graph, kind, 0) if kind == "runtime" \
+            else as_int(graph, kind)
+        if reported != kind_counts[kind]:
+            fail(f"PW_GRAPH {kind} count disagrees with PW_MODULE records")
 
     if len(machines) > 1:
         fail(f"the graph mixes instruction sets: {sorted(machines)}")
@@ -310,6 +330,8 @@ def check_order(records: list[str], by_index: dict[int, dict[str, str]],
         if edge.get("name") != by_index[index].get("name") or \
                 edge.get("dep_name") != by_index[dependency].get("name"):
             fail("PW_DEP names disagree with the PW_MODULE records")
+        if edge.get("dep_kind") != by_index[dependency].get("kind"):
+            fail("PW_DEP kind disagrees with the target PW_MODULE")
         if index == dependency:
             fail(f"module {edge.get('name')} depends on itself")
         declared[index] += 1
@@ -341,7 +363,8 @@ def check_call6(records: list[str], required: bool = False) -> bool:
 
 
 def validate(manifest_path: Path, *, root: str | None, expect_modules: int | None,
-             expect_local: int | None, expect_host: int | None,
+             expect_local: int | None, expect_runtime: int | None,
+             expect_host: int | None,
              allow_i386: bool, allow_wx: bool,
              expect_compat32: str = "any", expect_call6: bool = False) -> dict[str, object]:
     manifest_path = manifest_path.resolve()
@@ -389,9 +412,11 @@ def validate(manifest_path: Path, *, root: str | None, expect_modules: int | Non
     counts = {
         "modules": as_int(graph, "modules"),
         "local": as_int(graph, "local"),
+        "runtime": as_optional_int(graph, "runtime", 0),
         "host": as_int(graph, "host"),
     }
     for key, expected in (("modules", expect_modules), ("local", expect_local),
+                          ("runtime", expect_runtime),
                           ("host", expect_host)):
         if expected is not None and counts[key] != expected:
             fail(f"expected {key}={expected}, found {key}={counts[key]}")
@@ -403,6 +428,7 @@ def validate(manifest_path: Path, *, root: str | None, expect_modules: int | Non
         "machine": graph.get("machine"),
         "modules": counts["modules"],
         "local": counts["local"],
+        "runtime": counts["runtime"],
         "host": counts["host"],
         "mapped": len(mapped),
         "cycles": as_int(graph, "cycles"),
@@ -424,6 +450,7 @@ def main() -> int:
                         help="require synthetic Win64 integer execution proof")
     parser.add_argument("--expect-modules", type=int)
     parser.add_argument("--expect-local", type=int)
+    parser.add_argument("--expect-runtime", type=int)
     parser.add_argument("--expect-host", type=int)
     parser.add_argument("--allow-i386", action="store_true",
                         help="accept a parse-only run of a 32-bit image")
@@ -439,6 +466,7 @@ def main() -> int:
         summary = validate(arguments.manifest, root=arguments.root,
                            expect_modules=arguments.expect_modules,
                            expect_local=arguments.expect_local,
+                           expect_runtime=arguments.expect_runtime,
                            expect_host=arguments.expect_host,
                            allow_i386=arguments.allow_i386,
                            allow_wx=arguments.allow_wx,

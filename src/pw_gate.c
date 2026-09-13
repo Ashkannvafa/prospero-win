@@ -229,6 +229,7 @@ static void record_graph(PwGateReport *report, const PwLoader *loader)
         return;
     field_u64(&line, "modules", loader->module_count);
     field_u64(&line, "local", loader->local_count);
+    field_u64(&line, "runtime", loader->runtime_count);
     field_u64(&line, "host", loader->host_count);
     field_u64(&line, "cycles", loader->cycle_edges);
     field_u64(&line, "max_depth", loader->max_depth);

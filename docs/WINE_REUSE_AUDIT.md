@@ -1,7 +1,20 @@
-# Wine reuse audit: Pinball bootstrap and CRT
+# Wine reuse audit and integration boundary
 
 Reference: Wine `490f6d5dcbb2a5047345b8af88d114bbcaad69a8`.
 No Wine implementation is vendored into this project by this audit.
+
+## Architecture decision
+
+The direct Win32/CRT handlers audited below enabled the first playable target
+and remain valuable as focused behavioral references. They are not the path to
+broad compatibility. prospero-win will execute Wine's PE DLLs and intercept
+the defined ntdll Unix-call/syscall boundary; native PS5 code will implement
+platform services below that boundary. See [WINE_INTEGRATION.md](WINE_INTEGRATION.md).
+
+This changes the unit of reuse from an individual imported function to a
+coherent Wine module plus its tests. The inventory and source navigator remain
+useful for prioritization, provenance and debugging, but they must not generate
+another application-specific dispatcher.
 
 ## Repeatable source navigation
 
@@ -50,29 +63,27 @@ The last example is a concrete limitation of text indexing: the complete
 by `USER_FUNC`/`DEFINE_USER_FUNC` macros in rtl.c. It must not be
 classified as missing functionality just because lexical lookup is empty.
 
-## Extraction decisions
+## Reuse decisions
 
-The shared integer call/callback foundation is now implemented and host-
-tested; see GUEST_ABI.md for its exact scope. This is not Wine extraction
-or completed API coverage.
+The shared integer call/callback foundation is implemented and host-tested;
+see GUEST_ABI.md for its exact scope. It supports both the bootstrap path and
+future Wine crossings, but is not a completed Wine runtime.
 
-1. Implement the common guest ABI services first: pointer validation,
-   code/data import distinction, calling conventions, guest callbacks,
-   module/TEB state and FP-state access. Do this from the whole inventory,
-   not from whichever API happens to fail on the next execution.
-2. Evaluate coherent CRT string/conversion/allocation groups for reuse.
-   Adapt their guest memory, Windows type widths, locale and allocation
-   ownership. A host libc function is not automatically ABI-compatible.
-3. Treat startup, exceptions and x87 helpers as an execution-engine contract,
-   not standalone C wrappers. Retain Wine regression cases where applicable
-   and add synthetic guest callbacks, unwind and FP tests.
-4. Extract GDI/window and audio logic only after selecting the platform
-   boundary. Wine's Unix/driver layers must be replaced or ported deliberately;
-   copying an entire DLL pulls substantially more dependencies than Pinball's
-   import list alone reveals.
+1. Complete loader exports/forwarders/TLS and the application/runtime namespace
+   contract, then boot the pinned i386 Wine `ntdll` rather than binding another
+   batch of individual APIs.
+2. Implement PEB/TEB, callbacks, FP/SSE state and exception delivery as CPU and
+   process contracts shared by all Wine modules.
+3. Define a versioned Unix-call dispatch table whose arguments are guest-
+   validated and whose failures are atomic. Do not expose raw PS5 pointers or
+   an assumed `dlopen` ABI to PE code.
+4. Reuse Wine's Windows semantics above the boundary. Implement or adapt only
+   the native VM, thread, object/wait, path, audio, input and network services
+   below it, retaining relevant Wine regression tests.
+5. Keep the direct handlers as a bootstrap/reference suite until equivalent
+   Wine paths pass; retire them by demonstrated subsystem, not all at once.
 
 Per-file licensing and authorship review precedes vendoring. Preserve Wine
-LGPL notices and record source commit plus local changes. The project's
-LGPL declaration and a planned license migration in another project do not
-override third-party rights. This audit is implementation planning, not a
-completed compatibility claim.
+LGPL notices and record source commit plus local changes. Generated Wine PE
+binaries remain external build artifacts. This audit is implementation
+planning, not a completed compatibility claim.

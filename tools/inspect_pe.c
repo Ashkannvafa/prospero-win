@@ -222,9 +222,10 @@ int main(int argc, char **argv)
                       loader.missing);
         goto cleanup;
     }
-    (void)printf("graph modules=%u local=%u host=%u depth=%u cycles=%u "
+    (void)printf("graph modules=%u local=%u runtime=%u host=%u depth=%u cycles=%u "
                  "reserved=%llu\n",
-                 loader.module_count, loader.local_count, loader.host_count,
+                 loader.module_count, loader.local_count, loader.runtime_count,
+                 loader.host_count,
                  loader.max_depth, loader.cycle_edges,
                  (unsigned long long)loader.reserved_bytes);
     for (uint32_t index = 0; index < loader.order_count; ++index) {

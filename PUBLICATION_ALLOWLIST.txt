@@ -10,6 +10,8 @@ docs/GUEST_ABI.md
 docs/HARDWARE_VALIDATION.md
 docs/GDI.md
 docs/WINE_REUSE_AUDIT.md
+docs/WINE_INTEGRATION.md
+docs/WINE_FOUNDATION.json
 docs/X86_EXECUTION.md
 docs/PE_MAPPING_PHASE0.md
 docs/PINBALL_TARGET.md
@@ -115,8 +117,11 @@ tests/test_pw_audio_ps5.c
 tests/test_pw_ini.c
 tests/test_pw_pad.c
 tests/test_pw_pad_ps5.c
+tests/test_pw_file_posix.c
+tests/test_pw_file_ps5.c
 tests/test_win32_catalog.py
 tests/test_status_vocabulary.py
+tests/test_wine_foundation.py
 tests/test_classify_x86.py
 tests/test_startup_x87_contract.py
 tests/test_pw_import_bind.c

@@ -27,35 +27,41 @@ dates or a list of internal experiments.
 
 ## Next compatibility release
 
-1. Add a second independent PE32 GDI application to expose target-specific
-   assumptions.
-2. Introduce deterministic target-side DBT benchmarks for chaining, register
-   residency, lazy flags and indirect branches.
-3. Reduce reconciliation and spill traffic using measured workloads.
-4. Expand User32, GDI, WinMM and CRT behavior only through reusable contracts
-   with Wine-compatible semantics and application-independent tests.
-5. Stabilize packaging, contributor documentation and release automation.
+1. Produce a reproducible, pinned i386 Wine PE runtime distribution and map it
+   from the dedicated runtime namespace.
+2. Complete PE exports/forwarders and TLS, then enter Wine `ntdll` under the
+   IA-32 DBT with real PEB/TEB state.
+3. Implement the versioned Wine Unix-call boundary and reusable NT
+   object/handle/wait services on the PS5 platform layer.
+4. Drive DBT instruction coverage and performance from Wine plus multiple
+   applications: indirect-branch caches, SSE2, wider register allocation,
+   traces and thread-safe immutable code reuse.
+5. Add a second independent PE32 application and Wine test subsets so
+   application-specific assumptions cannot become runtime contracts.
+
+The exact dependency graph and exit criteria live in
+[WINE_FOUNDATION.json](WINE_FOUNDATION.json).
 
 ## 3D applications
 
-The first 3D milestone is a reusable Direct3D 9 frontend targeting the native
-PS5 graphics backend. Earlier Direct3D applications can later use established
-D3D8-to-D3D9 translation where licensing and behavior permit. Work begins with
-small synthetic API tests before attempting a complete game.
+The Direct3D path is DXVK, not a new prospero-win D3D renderer. DXVK's
+D3D8/9/10/11 and DXGI PE modules will execute inside the same Wine runtime and
+use `ps5-vulkan`, which in turn owns AGC/VideoOut/gfx1013. Direct3D work begins
+only when the companion backend satisfies its pinned DXVK consumer profile.
 
 This milestone requires:
 
-- resource and lifetime models independent of any single title;
-- shader translation with explicit gfx1013 capability gates;
-- render-state and synchronization tests;
+- Wine/DXGI loader, thread, object and presentation contracts;
+- Vulkan resource, lifetime and synchronization behavior required by DXVK;
+- shader/pipeline support exposed through the ps5-vulkan consumer gate;
 - deterministic visual and telemetry evidence;
 - no dependency on proprietary shaders or SDK blobs.
 
 ## Later work
 
 - Broader multimedia and filesystem compatibility.
-- More complete exception, thread and synchronization behavior.
-- PE64/x86-64 loading and ABI support.
+- Wine-compatible exception, multi-thread and synchronization behavior.
+- PE64/x86-64 imports, callbacks and ABI/unwind support.
 - Additional graphics APIs only after the D3D9 backend is stable.
 
 ## Non-goals

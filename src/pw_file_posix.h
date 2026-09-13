@@ -17,12 +17,19 @@
 
 typedef struct PwFilePosix {
     char directory[PW_PATH_MAX + 1];
+    char runtime_directory[PW_PATH_MAX + 1];
+    uint8_t runtime_configured;
     uint32_t opens;
     uint32_t closes;
     uint64_t bytes_read;
 } PwFilePosix;
 
 int pw_file_posix_init(PwFilePosix *state, const char *directory);
+
+/* Configures the independent Wine/DXVK distribution root. The directory is
+ * never inferred from the application path. */
+int pw_file_posix_set_runtime_directory(PwFilePosix *state,
+                                        const char *directory);
 
 int pw_file_posix_provider(PwFilePosix *state, PwFileProvider *provider);
 

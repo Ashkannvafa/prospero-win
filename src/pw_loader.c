@@ -22,8 +22,32 @@ const char *pw_module_kind_name(unsigned kind)
     case PW_MODULE_ROOT: return "root";
     case PW_MODULE_LOCAL: return "local";
     case PW_MODULE_HOST: return "host";
+    case PW_MODULE_RUNTIME: return "runtime";
     default: return "unknown";
     }
+}
+
+int pw_loader_set_policy(PwLoader *loader, const PwModulePolicy *policy)
+{
+    if (!loader)
+        return PW_ERR_PRECONDITION;
+    if (loader->module_count != 0u)
+        return PW_ERR_STATE;
+    if (policy && !policy->classify)
+        return PW_ERR_PRECONDITION;
+    loader->policy = policy ? *policy : (PwModulePolicy){0};
+    return PW_OK;
+}
+
+int pw_loader_wine_policy(void *context, const char *canonical_name,
+                          unsigned *kind)
+{
+    (void)context;
+    if (!canonical_name || !kind)
+        return PW_ERR_PRECONDITION;
+    *kind = pw_module_is_system(canonical_name) ? PW_MODULE_RUNTIME
+                                                : PW_MODULE_LOCAL;
+    return PW_OK;
 }
 
 static void copy_bounded(char *out, size_t out_bytes, const char *value)
@@ -139,8 +163,9 @@ static int register_host_module(PwLoader *loader, const char *name,
     return PW_OK;
 }
 
-static int register_local_module(PwLoader *loader, const char *name,
-                                 uint32_t depth, uint16_t *index_out)
+static int register_mapped_module(PwLoader *loader, const char *name,
+                                  unsigned kind, uint32_t depth,
+                                  uint16_t *index_out)
 {
     PwModule *module;
     PwFileSpan span;
@@ -149,7 +174,19 @@ static int register_local_module(PwLoader *loader, const char *name,
     if (loader->module_count >= PW_LOADER_MAX_MODULES)
         return PW_ERR_LIMIT;
     memset(&span, 0, sizeof(span));
-    status = loader->provider->open(loader->provider->context, name, &span);
+    if (kind != PW_MODULE_LOCAL && kind != PW_MODULE_RUNTIME)
+        return PW_ERR_PRECONDITION;
+    if (loader->provider->open_namespace) {
+        const PwFileNamespace file_namespace = kind == PW_MODULE_RUNTIME
+                                                ? PW_FILE_RUNTIME
+                                                : PW_FILE_APPLICATION;
+        status = loader->provider->open_namespace(loader->provider->context,
+                                                   file_namespace, name, &span);
+    } else if (kind == PW_MODULE_LOCAL) {
+        status = loader->provider->open(loader->provider->context, name, &span);
+    } else {
+        status = PW_ERR_UNSUPPORTED;
+    }
     if (status != PW_OK) {
         copy_bounded(loader->missing, sizeof(loader->missing), name);
         return status == PW_ERR_NOT_FOUND ? PW_ERR_NOT_FOUND : status;
@@ -164,14 +201,17 @@ static int register_local_module(PwLoader *loader, const char *name,
     memset(module, 0, sizeof(*module));
     copy_bounded(module->name, sizeof(module->name), name);
     copy_bounded(module->path, sizeof(module->path), span.path);
-    module->kind = PW_MODULE_LOCAL;
+    module->kind = (uint8_t)kind;
     module->depth = depth;
     module->span = span;
     module->owns_span = 1u;
     /* Registered before mapping so a failure still releases the span. */
     *index_out = (uint16_t)loader->module_count;
     ++loader->module_count;
-    ++loader->local_count;
+    if (kind == PW_MODULE_LOCAL)
+        ++loader->local_count;
+    else
+        ++loader->runtime_count;
     if (depth > loader->max_depth)
         loader->max_depth = depth;
 
@@ -215,12 +255,25 @@ static int resolve_imports(PwLoader *loader, uint32_t module_index)
         found = pw_loader_find(loader, canonical);
         if (found >= 0) {
             target = (uint16_t)found;
-        } else if (pw_module_is_system(canonical)) {
-            status = register_host_module(loader, canonical, depth, &target);
+        } else {
+            unsigned kind;
+            if (loader->policy.classify)
+                status = loader->policy.classify(loader->policy.context,
+                                                  canonical, &kind);
+            else {
+                kind = pw_module_is_system(canonical) ? PW_MODULE_HOST
+                                                       : PW_MODULE_LOCAL;
+                status = PW_OK;
+            }
             if (status != PW_OK)
                 return status;
-        } else {
-            status = register_local_module(loader, canonical, depth, &target);
+            if (kind == PW_MODULE_HOST)
+                status = register_host_module(loader, canonical, depth, &target);
+            else if (kind == PW_MODULE_LOCAL || kind == PW_MODULE_RUNTIME)
+                status = register_mapped_module(loader, canonical, kind, depth,
+                                                &target);
+            else
+                status = PW_ERR_PRECONDITION;
             if (status != PW_OK)
                 return status;
         }
@@ -377,6 +430,7 @@ int pw_loader_release(PwLoader *loader)
     loader->module_count = 0u;
     loader->local_count = 0u;
     loader->host_count = 0u;
+    loader->runtime_count = 0u;
     loader->order_count = 0u;
     loader->reserved_bytes = 0u;
     loader->machine = 0u;

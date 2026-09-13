@@ -26,6 +26,10 @@ static FakeFile files[MAX_FILES];
 static uint32_t file_count;
 static uint32_t open_calls;
 static uint32_t close_calls;
+static uint32_t namespace_open_calls;
+static uint32_t application_open_calls;
+static uint32_t runtime_open_calls;
+static PwFileNamespace last_namespace;
 
 /* A provider over an in-memory table: host tests touch no filesystem. */
 static int fake_open(void *context, const char *canonical_name,
@@ -55,11 +59,28 @@ static void fake_close(void *context, PwFileSpan *span)
     span->size = 0u;
 }
 
+static int fake_open_namespace(void *context,
+                               PwFileNamespace file_namespace,
+                               const char *canonical_name, PwFileSpan *out)
+{
+    ++namespace_open_calls;
+    last_namespace = file_namespace;
+    if (file_namespace == PW_FILE_APPLICATION)
+        ++application_open_calls;
+    else if (file_namespace == PW_FILE_RUNTIME)
+        ++runtime_open_calls;
+    return fake_open(context, canonical_name, out);
+}
+
 static void provider_reset(void)
 {
     file_count = 0u;
     open_calls = 0u;
     close_calls = 0u;
+    namespace_open_calls = 0u;
+    application_open_calls = 0u;
+    runtime_open_calls = 0u;
+    last_namespace = 0;
     memset(files, 0, sizeof(files));
 }
 
@@ -118,7 +139,12 @@ static size_t add_module(const char *name, int dll, uint16_t machine,
     return size;
 }
 
-static PwFileProvider provider = {NULL, fake_open, fake_close};
+static PwFileProvider provider = {
+    .context = NULL,
+    .open = fake_open,
+    .close = fake_close,
+    .open_namespace = fake_open_namespace,
+};
 static PwVmBackend backend;
 static PwLoader loader;                 /* far too large for the stack */
 
@@ -155,6 +181,8 @@ static void test_resolves_third_party_chain(void)
     assert(loader.cycle_edges == 0u);
     /* Only the two local dependencies were ever opened. */
     assert(open_calls == 2u);
+    assert(namespace_open_calls == 2u);
+    assert(last_namespace == PW_FILE_APPLICATION);
 
     module = pw_loader_module(&loader, 0u);
     assert(module && strcmp(module->name, "game.exe") == 0);
@@ -232,6 +260,88 @@ static void test_resolves_third_party_chain(void)
     assert(loader.reserved_bytes == 0u);
     /* Every span the loader opened was closed. */
     assert(close_calls == 2u);
+}
+
+static void test_maps_wine_runtime_namespace(void)
+{
+    static const char *const root_imports[] = {"KERNEL32.dll", "helper.dll"};
+    static const char *const kernel_imports[] = {"ntdll.dll"};
+    static const char *const ntdll_imports[] = {"kernel32.dll"};
+    size_t root_size;
+
+    provider_reset();
+    root_size = add_module("", 0, 0, root_imports, 2u, 0);
+    (void)add_module("kernel32.dll", 1, 0, kernel_imports, 1u, 1);
+    (void)add_module("helper.dll", 1, 0, NULL, 0u, 1);
+    (void)add_module("ntdll.dll", 1, 0, ntdll_imports, 1u, 1);
+
+    assert(pw_loader_init(&loader, &provider, &backend) == PW_OK);
+    PwModulePolicy wine = {NULL, pw_loader_wine_policy};
+    assert(pw_loader_set_policy(&loader, &wine) == PW_OK);
+    assert(pw_loader_load(&loader, images[0], root_size, "game.exe") == PW_OK);
+
+    assert(loader.module_count == 4u);
+    assert(loader.local_count == 1u);
+    assert(loader.runtime_count == 2u);
+    assert(loader.host_count == 0u);
+    assert(loader.cycle_edges == 1u);
+    assert(open_calls == 3u && namespace_open_calls == 3u);
+    assert(application_open_calls == 1u && runtime_open_calls == 2u);
+
+    const int kernel = pw_loader_find(&loader, "kernel32.dll");
+    const int helper = pw_loader_find(&loader, "helper.dll");
+    const int ntdll = pw_loader_find(&loader, "ntdll.dll");
+    assert(kernel >= 0 && helper >= 0 && ntdll >= 0);
+    assert(pw_loader_module(&loader, (uint32_t)kernel)->kind == PW_MODULE_RUNTIME);
+    assert(pw_loader_module(&loader, (uint32_t)helper)->kind == PW_MODULE_LOCAL);
+    assert(pw_loader_module(&loader, (uint32_t)ntdll)->kind == PW_MODULE_RUNTIME);
+    assert(pw_loader_module(&loader, (uint32_t)kernel)->mapped_ok == 1u);
+    assert(pw_loader_module(&loader, (uint32_t)ntdll)->mapped_ok == 1u);
+
+    assert(pw_loader_set_policy(&loader, NULL) == PW_ERR_STATE);
+    assert(pw_loader_finalize(&loader) == PW_OK);
+    assert(pw_loader_release(&loader) == PW_OK);
+    assert(loader.runtime_count == 0u);
+    assert(close_calls == 3u);
+}
+
+static int invalid_policy(void *context, const char *name, unsigned *kind)
+{
+    (void)context;
+    (void)name;
+    *kind = PW_MODULE_ROOT;
+    return PW_OK;
+}
+
+static void test_policy_fails_closed(void)
+{
+    static const char *const root_imports[] = {"kernel32.dll"};
+    size_t root_size;
+
+    provider_reset();
+    root_size = add_module("", 0, 0, root_imports, 1u, 0);
+    assert(pw_loader_init(&loader, &provider, &backend) == PW_OK);
+    PwModulePolicy invalid = {NULL, invalid_policy};
+    PwModulePolicy missing = {NULL, NULL};
+    assert(pw_loader_set_policy(NULL, &invalid) == PW_ERR_PRECONDITION);
+    assert(pw_loader_set_policy(&loader, &missing) == PW_ERR_PRECONDITION);
+    assert(pw_loader_set_policy(&loader, &invalid) == PW_OK);
+    assert(pw_loader_load(&loader, images[0], root_size, "game.exe") ==
+           PW_ERR_PRECONDITION);
+    assert(loader.module_count == 0u);
+    assert(open_calls == 0u && close_calls == 0u);
+
+    /* Runtime selection requires an explicit namespace-aware provider. */
+    PwFileProvider legacy = provider;
+    legacy.open_namespace = NULL;
+    assert(pw_loader_init(&loader, &legacy, &backend) == PW_OK);
+    PwModulePolicy wine = {NULL, pw_loader_wine_policy};
+    assert(pw_loader_set_policy(&loader, &wine) == PW_OK);
+    assert(pw_loader_load(&loader, images[0], root_size, "game.exe") ==
+           PW_ERR_UNSUPPORTED);
+    assert(strcmp(loader.missing, "kernel32.dll") == 0);
+    assert(loader.module_count == 0u);
+    assert(open_calls == 0u && close_calls == 0u);
 }
 
 static void test_reports_missing_dependency(void)
@@ -347,6 +457,7 @@ static void test_preconditions(void)
     assert(strcmp(pw_module_kind_name(PW_MODULE_ROOT), "root") == 0);
     assert(strcmp(pw_module_kind_name(PW_MODULE_LOCAL), "local") == 0);
     assert(strcmp(pw_module_kind_name(PW_MODULE_HOST), "host") == 0);
+    assert(strcmp(pw_module_kind_name(PW_MODULE_RUNTIME), "runtime") == 0);
     assert(strcmp(pw_module_kind_name(99u), "unknown") == 0);
 }
 
@@ -357,6 +468,8 @@ int main(void)
     assert(sizeof(PwLoader) < 1024u * 1024u);
 
     test_resolves_third_party_chain();
+    test_maps_wine_runtime_namespace();
+    test_policy_fails_closed();
     test_reports_missing_dependency();
     test_refuses_mixed_machines();
     test_tolerates_import_cycles();

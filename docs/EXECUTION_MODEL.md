@@ -1,8 +1,9 @@
 # Execution model
 
-PE32/i386 and PE32+/AMD64 applications are in scope; neither is currently a
-demonstrated complete Windows application. Phase 0.1 validated mapping
-synthetic images, not executing a game.
+PE32/i386 and PE32+/AMD64 applications are in scope. A complete PE32 game now
+runs through the IA-32 DBT and the bootstrap Win32 surface; a Wine-based broad
+Windows subsystem is not yet demonstrated. PE64 mapping and a synthetic
+integer bridge exist, but a complete PE64 Windows application does not yet run.
 
 ## Native AMD64 and ABI bridges
 
@@ -64,14 +65,16 @@ Reference: [Microsoft x64 calling convention](https://learn.microsoft.com/en-us/
 ## PE32 execution
 
 The tested sysarch(I386_SET_LDT, ...) route returns EINVAL on FW 12.02.
-Controls and repeated measurements remain in COMPAT32_PHASE0A.md. We plan a
-software execution engine for x86 code; the tested compatibility-mode route
-is closed. ABI marshalling is still needed.
+Controls and repeated measurements remain in COMPAT32_PHASE0A.md. The tested
+compatibility-mode route is closed, so PE32 executes through prospero-win's
+IA-32-to-x86-64 dynamic binary translator.
 
-Dynamic binary translation is a form of CPU emulation. It translates and
-caches blocks rather than interpreting every instruction repeatedly.
-Sharing the instruction family may help, but performance and instruction
-coverage have not been established for this project.
+Dynamic binary translation is a form of CPU emulation. The current engine
+translates and caches blocks, uses hashed lookup and direct chaining, keeps a
+bounded guest-register set resident across blocks, eliminates dead flags and
+materializes arithmetic flags lazily. Exact host differential tests and the
+first playable hardware title establish the implemented subset; they do not
+establish complete IA-32/SSE2 coverage or a native-performance percentage.
 
 Low addresses do not make arbitrary 32-bit instructions safe to copy into
 long mode. Address size changes, absolute disp32 can become RIP-relative,
@@ -79,9 +82,11 @@ stack width changes, and guest ESP and FS/TLS need treatment. Prefixes,
 flags, x87/SSE state, indirect control flow, exceptions and self-modifying
 code also need coverage.
 
-The prototype must compare known blocks against native 32-bit host
-execution. Pinball determines initial coverage. cdecl/stdcall marshalling,
-32-bit pointers/handles and host-to-guest callbacks remain required.
+Every added instruction family must retain differential tests against native
+32-bit host execution. Wine startup and multiple applications now drive the
+next coverage set; Pinball is no longer the sole oracle. Per-thread TEB/FS and
+CPU state, SSE/SSE2, indirect-branch prediction, exception precision and
+thread-safe immutable translated-code reuse remain required.
 
 ## Measured memory facts
 

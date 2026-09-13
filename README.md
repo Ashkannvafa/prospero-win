@@ -1,9 +1,10 @@
 # prospero-win
 
 prospero-win is an experimental Windows compatibility runtime for PlayStation
-5 homebrew. It maps Windows PE images, translates 32-bit x86 code to x86-64,
-provides reviewed Win32 and CRT services, and connects guest graphics, audio
-and input to native PS5 backends.
+5 homebrew. Its target architecture runs Wine's Windows subsystem on PS5:
+PE32 code uses the project's IA-32 dynamic translator, PE64 will use native
+x86-64 plus ABI bridges, and platform services connect Wine to the console.
+Direct3D will run through DXVK over the companion `ps5-vulkan` project.
 
 The first compatibility target is the original Windows Space Cadet Pinball
 executable, running without recompilation. Pinball is a bring-up target for the
@@ -28,8 +29,10 @@ hardware runs also reach video, audio and input teardown cleanly. These results
 establish correctness and no observed regression; they do not yet establish a
 percentage performance gain.
 
-This is not broad Windows compatibility. The implemented surface is currently
+This is not yet broad Windows compatibility. The validated path is currently
 PE32/IA-32 with the Win32, GDI and WinMM services required by the first target.
+Those direct bindings remain a bootstrap/reference implementation while Wine
+PE modules, their Unix-call bridge and reusable NT services are integrated.
 PE64 and Direct3D are not implemented.
 
 ## Build and test
@@ -58,6 +61,7 @@ transcripts, private paths and unreviewed files from the repository.
 
 Start with the [documentation index](docs/README.md), then see the
 [architecture](docs/ARCHITECTURE.md), [compatibility roadmap](docs/ROADMAP.md),
+[Wine integration](docs/WINE_INTEGRATION.md),
 [hardware evidence](docs/HARDWARE_VALIDATION.md) and
 [development workflow](docs/DEVELOPMENT.md).
 

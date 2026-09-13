@@ -46,7 +46,12 @@ static void fake_close(void *context, PwFileSpan *span)
     span->bytes = NULL;
 }
 
-static PwFileProvider provider = {NULL, fake_open, fake_close};
+static PwFileProvider provider = {
+    .context = NULL,
+    .open = fake_open,
+    .close = fake_close,
+    .open_namespace = NULL,
+};
 
 static void add(const char *name, int dll, const char *const *imports,
                 uint32_t import_count)
@@ -181,6 +186,7 @@ static void test_successful_gate_report(void)
     line = find_line("PW_GRAPH", 0u);
     assert(strstr(line, "modules=4") != NULL);
     assert(strstr(line, "local=1") != NULL);
+    assert(strstr(line, "runtime=0") != NULL);
     assert(strstr(line, "host=2") != NULL);
     assert(strstr(line, "cycles=0") != NULL);
     assert(strstr(line, "machine=amd64") != NULL);

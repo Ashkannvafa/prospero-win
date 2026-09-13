@@ -9,6 +9,10 @@ are deliberately kept outside the standalone project.
 
 - [Architecture](ARCHITECTURE.md): component boundaries, memory ownership and
   failure rules.
+- [Wine integration](WINE_INTEGRATION.md): Windows subsystem boundary, CPU
+  execution choices and the DXVK-to-ps5-vulkan graphics path.
+- [Wine foundation ledger](WINE_FOUNDATION.json): machine-readable component
+  status, dependencies and exit criteria.
 - [Development](DEVELOPMENT.md): required gates and native build workflow.
 - [Compatibility roadmap](ROADMAP.md): public milestones and current scope.
 - [Hardware validation](HARDWARE_VALIDATION.md): accepted claims and evidence
@@ -20,8 +24,9 @@ are deliberately kept outside the standalone project.
 
 ## Compatibility work
 
-- [Import plan](IMPORT_PLAN.md)
-- [Wine reuse audit](WINE_REUSE_AUDIT.md)
+- [Import plan](IMPORT_PLAN.md): static discovery and runtime-module bring-up.
+- [Wine reuse audit](WINE_REUSE_AUDIT.md): pinned-source findings and the
+  transition away from title-specific direct wrappers.
 - [GDI](GDI.md)
 - [First playable target](PINBALL_TARGET.md)
 - [PE mapping](PE_MAPPING_PHASE0.md)

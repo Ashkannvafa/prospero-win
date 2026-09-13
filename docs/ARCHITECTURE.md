@@ -1,22 +1,31 @@
 # Architecture
 
-Three layers, with the dependency direction fixed. Nothing in `src/` knows
-what platform it is on; `native/` knows the console and nothing about PE.
+The target has four layers with a fixed dependency direction. Portable code
+does not call PS5 APIs directly; native adapters do not implement Windows API
+semantics. Wine owns the Windows subsystem, while prospero-win owns CPU
+execution and the platform boundary.
 
 ```text
-include/           the contracts a host implements
+Windows application and application-local PE modules
+  -> Wine PE runtime (ntdll, kernelbase, user32, gdi32, ...)
+     -> prospero-win DBT / ABI bridge, Unix-call and NT service boundary
+        -> native PS5 adapters
+
+DXVK PE modules -> ps5-vulkan -> AGC / VideoOut / gfx1013
+
+include/           portable contracts a host implements
   prospero_win.h      result codes, protection flags, limits
   prospero_win_vm.h   reserve / commit / protect / release, two aliases
-  prospero_win_file.h canonical module name -> read-only byte span
+  prospero_win_file.h namespace + canonical module -> read-only byte span
 
 src/               the portable loader core
   pe_image      DOS/NT headers, directories, section table   (read only)
   pe_layout     reservation, copy/zero spans, page protection
   pe_reloc      base relocation against the executing address
   pe_import     import descriptors: which modules, which symbols
-  pw_module_name canonical names; the local / host split
+  pw_module_name canonical names and bootstrap system-module classification
   pw_map        reserve, copy, zero, relocate, verify, protect
-  pw_loader     recursive dependency graph and load order
+  pw_loader     recursive graph, module-origin policy and load order
   pw_gate       the structured report one load produces
   pw_registry   fixed-capacity guest keys, values and opaque handles
   pw_x86_block  bounded x86-to-x86-64 translation
@@ -36,6 +45,12 @@ native/            the PS5 adapter
   pw_audio_ps5  bounded PCM queue and the sole SceAudioOut worker
   ps5log/       vendored `ps5log/1` client, pinned by digest
 ```
+
+The direct `pw_win32.c` import surface made the first playable target possible
+and remains a useful reference harness. It is not the broad-compatibility
+architecture: new applications should converge on Wine PE DLLs plus the
+defined Unix-call/platform boundary instead of expanding title-specific
+wrappers. See [WINE_INTEGRATION.md](WINE_INTEGRATION.md).
 
 ## Why the core imports almost nothing
 
@@ -94,28 +109,23 @@ The explicit zero fill is not redundant with a fresh anonymous mapping. A
 recycled reservation would otherwise leak previous contents into a `.bss`
 that the program is entitled to see as zero.
 
-## The local / host split
+## Application, runtime and host module origins
 
-Every import is classified by canonical name:
+Every import is classified by canonical name and explicit policy:
 
-- a **host** module (`kernel32.dll`, `msvcrt.dll`, `ddraw.dll`, …) is an
-  interface prospero-win implements natively. It is registered in the graph,
-  never opened, never mapped. There is no Windows on the console to load it
-  from, and a stub silently standing in for it would be the worst possible
-  failure mode.
-- anything else is **local**: real third-party code, resolved through the
-  file provider next to the executable and manually mapped. `binkw32.dll` is
-  the canonical case.
+- **application** modules are the executable and application-local DLLs;
+- **runtime** modules are selected Wine or DXVK PE files from a separate,
+  pinned runtime distribution;
+- **host** modules are native interfaces, registered but never opened or
+  mapped.
 
-The classification table in `pw_module_name.c` is sorted and searched by
-binary search, so its order is a correctness property; a test asserts it
-stays sorted, and asserts that known third-party names are absent. A name
-missing from the table is treated as local; an unresolved file produces
-`PW_ERR_NOT_FOUND`. This is provisional mapping-gate policy, not Windows
-DLL search-order conformance. Familiar names such as d3d9.dll and dinput8.dll
-can be application-local wrappers. Before execution/import binding, replace
-this classification with explicit core-host, API-set, local-override and
-fallback rules, covered by resolver fixtures. See ROADMAP.md gate 0.3.
+The default policy preserves the direct-wrapper bootstrap: known system names
+are host modules and other DLLs are local. `pw_loader_wine_policy` instead
+maps known Windows modules from `PW_FILE_RUNTIME`. The provider must implement
+namespace-aware lookup; runtime lookup fails as unsupported if it cannot, and
+never falls back silently to the application's directory. Application-local
+overrides and API-set resolution will be explicit policy rules with fixtures,
+not ambient filename search order.
 
 ## Bounds, cycles and failure
 

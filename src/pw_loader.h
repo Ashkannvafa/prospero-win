@@ -2,11 +2,12 @@
 /*
  * Recursive dependency loader.
  *
- * Walks the import graph from one root image, manually maps every
- * third-party dependency it can resolve locally, and records every Win32
- * module as a host binding to be implemented natively rather than loaded.
- * A DLL chain such as game.exe -> binkw32.dll -> msvcrt.dll therefore ends
- * with two mapped images and one host binding.
+ * Walks the import graph from one root image and applies an explicit origin
+ * policy to every dependency. Application-local and Wine/DXVK runtime PE
+ * modules are manually mapped from separate namespaces; native host modules
+ * are recorded as interfaces and never opened. The default policy preserves
+ * the original direct-wrapper bootstrap, while pw_loader_wine_policy selects
+ * Windows DLLs from the runtime distribution.
  *
  * Cycles are normal in PE and are not errors: a module is registered once,
  * under its canonical name, and a repeat edge only adds a dependency link.
@@ -36,7 +37,19 @@ enum pw_module_kind {
     PW_MODULE_ROOT = 0,    /* the image the loader was asked to load */
     PW_MODULE_LOCAL = 1,   /* third-party code, manually mapped */
     PW_MODULE_HOST = 2,    /* Win32 surface, implemented by prospero-win */
+    PW_MODULE_RUNTIME = 3, /* Wine/DXVK PE module, manually mapped */
 };
+
+/* Selects where each dependency comes from. The callback sees a canonical
+ * lower-case name and must return LOCAL, HOST or RUNTIME. ROOT is invalid.
+ * Policy has no I/O side effects; the loader opens the selected namespace
+ * only after the complete classification result has been validated. */
+typedef int (*PwModuleClassify)(void *context, const char *canonical_name,
+                                unsigned *kind);
+typedef struct PwModulePolicy {
+    void *context;
+    PwModuleClassify classify;
+} PwModulePolicy;
 
 typedef struct PwModule {
     char name[PW_MODULE_NAME_MAX + 1];
@@ -61,9 +74,11 @@ typedef struct PwModule {
 typedef struct PwLoader {
     const PwFileProvider *provider;
     const PwVmBackend *backend;
+    PwModulePolicy policy;
     uint32_t module_count;
     uint32_t local_count;
     uint32_t host_count;
+    uint32_t runtime_count;
     uint32_t cycle_edges;
     uint32_t max_depth;
     uint64_t reserved_bytes;
@@ -77,6 +92,15 @@ typedef struct PwLoader {
 
 int pw_loader_init(PwLoader *loader, const PwFileProvider *provider,
                    const PwVmBackend *backend);
+
+/* Must be configured before load. NULL restores the legacy policy: known
+ * Windows modules are native host adapters and every other DLL is local. */
+int pw_loader_set_policy(PwLoader *loader, const PwModulePolicy *policy);
+
+/* Reusable policy for the Wine architecture: known Windows modules are read
+ * from PW_FILE_RUNTIME; application/third-party modules remain local. */
+int pw_loader_wine_policy(void *context, const char *canonical_name,
+                          unsigned *kind);
 
 /*
  * Parses, maps and verifies the root, then resolves the whole graph. On any

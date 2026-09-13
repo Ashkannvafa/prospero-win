@@ -34,6 +34,8 @@ $(eval $(call test_rule,test_pe_layout,tests/test_pe_layout.c src/pe_image.c src
 $(eval $(call test_rule,test_pe_reloc,tests/test_pe_reloc.c src/pe_image.c src/pe_reloc.c src/pw_result.c,))
 $(eval $(call test_rule,test_pe_import,tests/test_pe_import.c src/pe_image.c src/pe_import.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_module_name,tests/test_pw_module_name.c src/pw_module_name.c src/pw_result.c,))
+$(eval $(call test_rule,test_pw_file_posix,tests/test_pw_file_posix.c src/pw_file_posix.c src/pw_module_name.c,))
+$(eval $(call test_rule,test_pw_file_ps5,tests/test_pw_file_ps5.c native/pw_file_ps5.c,))
 $(eval $(call test_rule,test_pw_vm,tests/test_pw_vm.c src/pw_vm.c src/pw_vm_posix.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_map,tests/test_pw_map.c $(CORE),))
 $(eval $(call test_rule,test_pw_loader,tests/test_pw_loader.c $(CORE),))
@@ -66,7 +68,7 @@ $(eval $(call test_rule,inspect_pe,tools/inspect_pe.c $(CORE) src/pw_file_posix.
 $(eval $(call test_rule,bench_dynarec,tools/bench_dynarec.c src/pw_x86_engine.c src/pw_x86_cache.c src/pw_x86_block.c src/pw_x87.c src/pw_guest_fp.c src/pw_vm.c src/pw_vm_posix.c,-lm))
 
 TESTS := test_pw_guest_heap test_pw_registry test_pw_registry_store test_pw_ini test_pw_gdi test_pw_gdi_abi test_pw_crt_format test_pw_user32 test_pw_pad test_pe_resource test_pw_time test_pw_guest_args test_pw_initterm test_pw_window test_pw_guest_fp test_pe_image test_pe_layout test_pe_reloc test_pe_import \
-	test_pw_module_name test_pw_vm test_pw_map test_pw_loader \
+	test_pw_module_name test_pw_file_posix test_pw_file_ps5 test_pw_vm test_pw_map test_pw_loader \
 	test_pw_segment test_pw_compat32 test_pw_gate test_pw_win64 test_pw_x86_block test_pw_x86_cache test_pw_x86_engine test_pw_x86_chaining test_pw_x86_residency test_pw_x86_lazyflags test_pw_guest_call test_pw_import_bind test_pw_win32 test_pw_x87 test_pw_audio_ps5 test_pw_agc_submit_lifecycle test_pw_pad_ps5 test_pw_state_ps5
 
 # The Python suites drive the built binaries: the evidence validator is
@@ -87,6 +89,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_audit_wine_imports.py
 	python3 tests/test_win32_catalog.py
 	python3 tests/test_status_vocabulary.py
+	python3 tests/test_wine_foundation.py
 	python3 tests/test_classify_x86.py
 	python3 tests/test_startup_x87_contract.py
 	python3 tests/test_build_source_oracle.py
