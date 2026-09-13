@@ -47,20 +47,11 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
     if(status!=PW_OK)return status;
     if(!source || !available)return PW_ERR_NOT_FOUND;
     if(available>PW_X86_ENGINE_MAX_SOURCE)available=PW_X86_ENGINE_MAX_SOURCE;
-    uint8_t scratch[PW_X86_ENGINE_MAX_CODE],best_code[PW_X86_ENGINE_MAX_CODE];
-    PwX86Block candidate,best={0};int last=PW_ERR_TRUNCATED;
-    for(size_t bytes=1;bytes<=available;bytes++) {
-        last=pw_x86_translate(source,bytes,pc,scratch,sizeof(scratch),&candidate);
-        if(last==PW_OK) {
-            best=candidate;memcpy(best_code,scratch,best.code_bytes);
-            if(candidate.instructions==32 || candidate.source_bytes<bytes)break;
-            continue;
-        }
-        if(last==PW_ERR_TRUNCATED)continue;
-        if(best.instructions)break;
-        return last;
-    }
-    if(!best.instructions)return last==PW_ERR_TRUNCATED?PW_ERR_TRUNCATED:last;
+    uint8_t scratch[PW_X86_ENGINE_MAX_CODE];
+    PwX86Block best = {0};
+    int last = pw_x86_translate(source, available, pc, scratch, sizeof(scratch), &best);
+    if (last != PW_OK) return last;
+    if (!best.instructions) return PW_ERR_TRUNCATED;
     if(best.code_bytes>engine->cache.arena_bytes-engine->cache.cursor)return PW_ERR_LIMIT;
     size_t page=engine->backend->page_bytes;
     size_t first=(engine->cache.cursor/page)*page;
@@ -69,7 +60,7 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
     if(end>engine->code.bytes)end=engine->code.bytes;
     if(protection(engine,first,end-first,PW_PROT_READ|PW_PROT_WRITE)!=PW_OK)
         return PW_ERR_VM;
-    memcpy((uint8_t *)engine->code.write_base+engine->cache.cursor,best_code,best.code_bytes);
+    memcpy((uint8_t *)engine->code.write_base+engine->cache.cursor,scratch,best.code_bytes);
     status=pw_x86_cache_publish(&engine->cache,pc,&best,engine->cache.cursor,entry);
     if(status!=PW_OK) {
         if(protection(engine,first,end-first,PW_PROT_READ|PW_PROT_EXEC)!=PW_OK)

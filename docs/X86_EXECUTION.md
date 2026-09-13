@@ -250,3 +250,36 @@ transitions only the generated block's host pages, rather than all 4 MiB of the
 arena. The engine remains deliberately single-dispatcher: native audio and I/O
 workers increase runtime concurrency without racing guest registers, flags,
 memory ownership or translated-code publication.
+
+## Measured optimizations and synthetic benchmarks
+
+Cold block construction originally evaluated source lengths incrementally from
+1 to `available` bytes in an O(N^2) byte-by-byte probing loop. This is replaced
+with single-pass translation: `pw_x86_translate` ingests available source bytes
+directly, committing instructions progressively. When encountering an
+unsupported opcode, truncated instruction or terminal jump/call/ret, any
+previously decoded instructions in the basic block are cleanly closed and emitted,
+reducing cold translation from O(N^2) to O(N).
+
+Warm execution hot paths are accelerated via inline fast paths:
+- Memory access bounds checking: Inlines guest bounds checks for both the active
+  stack region and primary memory region (`memory[0]`), validating 32-bit pointer
+  limits and permissions inline before directly accessing host pointers. Only
+  unregistered regions or out-of-bounds addresses fall back to the C helper
+  `memory_pointer`.
+- Branch condition evaluation: Replaces indirect function calls for simple
+  conditional branches (OF, CF, ZF, SF, PF and composite unsigned comparisons)
+  with direct bit tests against `state->eflags` in the emitted block code, falling
+  back to C helpers only for complex signed condition codes.
+
+The reusable synthetic IA-32 benchmark suite (`tools/bench_dynarec.c`) profiles
+five representative workloads:
+1. `reg_alu`: Dense 32-bit register arithmetic, logic, shifts, and multiplications.
+2. `cond_branch`: Collatz branch sequence exercising flag branches and convergence loops.
+3. `call_ret`: Function call nesting, stack frame management, and return transitions.
+4. `mem_load_store`: ModRM/SIB array indexing, structured traversal, and memory writes.
+5. `x87_fp`: Binary80 extended-precision floating-point arithmetic and transcendentals.
+
+Each workload reports deterministic register state checksums and is validated
+bit-for-bit against hardware i386 execution via `tests/test_dynarec_bench.py`.
+

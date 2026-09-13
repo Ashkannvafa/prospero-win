@@ -192,3 +192,5 @@ src/pw_registry_store.h
 tests/test_pw_registry_store.c
 tests/test_pw_state_ps5.c
 tests/test_pw_agc_submit_lifecycle.c
+tools/bench_dynarec.c
+tests/test_dynarec_bench.py

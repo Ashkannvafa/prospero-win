@@ -68,8 +68,51 @@ static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned writ
 }
 static void memory_address_width(Emitter *e,unsigned write,unsigned width)
 {
-    /* Effective address is EAX. SysV helper checks the live memory registry.
-     * Save context RDI and align native RSP before the call. */
+    /* 1. Fast path: check stack [stack_low, stack_high).
+     * If stack_low <= EAX && EAX + width <= stack_high, address is valid RW stack. */
+    byte(e, 0x3b); byte(e, 0x47); byte(e, offsetof(PwX86State, stack_low)); /* cmp eax, [rdi + stack_low] */
+    byte(e, 0x72); /* jb to try_mem0 */
+    size_t patch_jb_stack = e->n++;
+
+    byte(e, 0x89); byte(e, 0xc2); /* mov edx, eax */
+    byte(e, 0x83); byte(e, 0xc2); byte(e, (uint8_t)width); /* add edx, width */
+    byte(e, 0x72); /* jc to try_mem0 (unsigned 32-bit wrap) */
+    size_t patch_jc_stack = e->n++;
+
+    byte(e, 0x3b); byte(e, 0x57); byte(e, offsetof(PwX86State, stack_high)); /* cmp edx, [rdi + stack_high] */
+    byte(e, 0x76); /* jbe to fast_ok */
+    size_t patch_jbe_stack = e->n++;
+
+    /* try_mem0: check memory[0] if memory_count >= 1 */
+    e->p[patch_jb_stack] = (uint8_t)(e->n - (patch_jb_stack + 1));
+    e->p[patch_jc_stack] = (uint8_t)(e->n - (patch_jc_stack + 1));
+
+    unsigned req_perm = write == 2 ? (PW_X86_READ|PW_X86_WRITE) : write ? PW_X86_WRITE : PW_X86_READ;
+    byte(e, 0x83); byte(e, 0x7f); byte(e, offsetof(PwX86State, memory_count)); byte(e, 1); /* cmp dword [rdi + memory_count], 1 */
+    byte(e, 0x72); /* jb to slow_path */
+    size_t patch_jb_count = e->n++;
+
+    byte(e, 0x8b); byte(e, 0x57); byte(e, offsetof(PwX86State, memory[0].permissions)); /* mov edx, [rdi + memory[0].permissions] */
+    byte(e, 0x83); byte(e, 0xe2); byte(e, (uint8_t)req_perm); /* and edx, req_perm */
+    byte(e, 0x83); byte(e, 0xfa); byte(e, (uint8_t)req_perm); /* cmp edx, req_perm */
+    byte(e, 0x75); /* jne to slow_path */
+    size_t patch_jne_perm = e->n++;
+
+    byte(e, 0x3b); byte(e, 0x47); byte(e, offsetof(PwX86State, memory[0].low)); /* cmp eax, [rdi + memory[0].low] */
+    byte(e, 0x72); /* jb to slow_path */
+    size_t patch_jb_low = e->n++;
+
+    byte(e, 0x89); byte(e, 0xc2); /* mov edx, eax (zero-extends into RDX) */
+    byte(e, 0x48); byte(e, 0x83); byte(e, 0xc2); byte(e, (uint8_t)width); /* add rdx, width (64-bit) */
+    byte(e, 0x48); byte(e, 0x3b); byte(e, 0x57); byte(e, offsetof(PwX86State, memory[0].high)); /* cmp rdx, [rdi + memory[0].high] */
+    byte(e, 0x76); /* jbe to fast_ok */
+    size_t patch_jbe_mem = e->n++;
+
+    /* slow_path: */
+    e->p[patch_jb_count] = (uint8_t)(e->n - (patch_jb_count + 1));
+    e->p[patch_jne_perm] = (uint8_t)(e->n - (patch_jne_perm + 1));
+    e->p[patch_jb_low] = (uint8_t)(e->n - (patch_jb_low + 1));
+
     byte(e,0x89);byte(e,0xc6); /* esi = address */
     byte(e,0xba);word(e,write);
     byte(e,0xb9);word(e,width);
@@ -80,6 +123,10 @@ static void memory_address_width(Emitter *e,unsigned write,unsigned width)
     byte(e,0xff);byte(e,0xd0);byte(e,0x5f);
     byte(e,0x48);byte(e,0x85);byte(e,0xc0);
     require_condition(e,0x75);
+
+    /* fast_ok: */
+    e->p[patch_jbe_stack] = (uint8_t)(e->n - (patch_jbe_stack + 1));
+    e->p[patch_jbe_mem] = (uint8_t)(e->n - (patch_jbe_mem + 1));
 }
 static void memory_address(Emitter *e,unsigned write){memory_address_width(e,write,4);}
 static int branch_condition(PwX86State *s,unsigned condition)
@@ -101,9 +148,31 @@ static void condition_value(Emitter *e,unsigned condition)
 }
 static void conditional_target(Emitter *e,unsigned condition,uint32_t next,uint32_t target)
 {
-    condition_value(e,condition);
     store(e,offsetof(PwX86State,eip),next);
-    byte(e,0x85);byte(e,0xc0);byte(e,0x74);byte(e,7);
+    unsigned c = condition >> 1;
+    unsigned invert = condition & 1;
+    if (c == 0) { /* OF: bit 11 in eflags (bit 3 of byte [rdi+53]) */
+        byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags)+1);byte(e,0x08);
+        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+    } else if (c == 1) { /* CF: bit 0 in eflags (byte [rdi+52]) */
+        byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x01);
+        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+    } else if (c == 2) { /* ZF: bit 6 in eflags (byte [rdi+52]) */
+        byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x40);
+        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+    } else if (c == 3) { /* CF || ZF: bits 0, 6 in eflags (byte [rdi+52]) */
+        byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x41);
+        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+    } else if (c == 4) { /* SF: bit 7 in eflags (byte [rdi+52]) */
+        byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x80);
+        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+    } else if (c == 5) { /* PF: bit 2 in eflags (byte [rdi+52]) */
+        byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x04);
+        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+    } else {
+        condition_value(e,condition);
+        byte(e,0x85);byte(e,0xc0);byte(e,0x74);byte(e,7);
+    }
     store(e,offsetof(PwX86State,eip),target);
 }
 static void stack_address(Emitter *e, int push)
@@ -328,6 +397,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
     if (!source || !bytes || !output || !capacity || !block)
         return PW_ERR_PRECONDITION;
     memset(block,0,sizeof(*block));
+#define DECODE_FAIL(err) do { if (count) goto block_done; return (err); } while (0)
     while (cursor < bytes && count < 32) {
         const uint8_t op = source[cursor];
         size_t length;
@@ -341,14 +411,14 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         unsigned imul_general=0;
         int terminal = 0;
         if(op==0x66 && bytes-cursor>=2 && source[cursor+1]==0xf3) {
-            if(bytes-cursor<3)return PW_ERR_TRUNCATED;
-            if(source[cursor+2]!=0xa5 && source[cursor+2]!=0xab)return PW_ERR_UNSUPPORTED;
+            if(bytes-cursor<3)DECODE_FAIL(PW_ERR_TRUNCATED);
+            if(source[cursor+2]!=0xa5 && source[cursor+2]!=0xab)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             string_op=source[cursor+2];string_width=2;string_repeat=1;length=3;
         } else if(op==0xf3) {
-            if(bytes-cursor<2)return PW_ERR_TRUNCATED;
+            if(bytes-cursor<2)DECODE_FAIL(PW_ERR_TRUNCATED);
             if((source[cursor+1]<0xa4 || source[cursor+1]>0xa7) &&
                source[cursor+1]!=0xaa && source[cursor+1]!=0xab)
-                return PW_ERR_UNSUPPORTED;
+                DECODE_FAIL(PW_ERR_UNSUPPORTED);
             string_op=source[cursor+1];string_width=(string_op&1)?4:1;
             string_repeat=1;length=2;
         } else if((op>=0xa4 && op<=0xa7) || op==0xaa || op==0xab) {
@@ -357,12 +427,12 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                   (source[cursor+1]==0xa5 || source[cursor+1]==0xab)) {
             string_op=source[cursor+1];string_width=2;length=2;
         } else if(op==0x66 && bytes-cursor==2 && source[cursor+1]==0x0f) {
-            return PW_ERR_TRUNCATED;
+            DECODE_FAIL(PW_ERR_TRUNCATED);
         } else if(op==0x66 && bytes-cursor>=3 && source[cursor+1]==0x0f &&
                   (source[cursor+2]==0xb6 || source[cursor+2]==0xb7 ||
                    source[cursor+2]==0xbe || source[cursor+2]==0xbf)) {
             int result=decode_operand(source+cursor+3,bytes-cursor-3,&operand);
-            if(result!=PW_OK)return result;
+            if(result!=PW_OK)DECODE_FAIL(result);
             extend=1;extend_word_destination=1;length=3+operand.bytes;
         } else if(op==0x66 && bytes-cursor>=2 &&
                   (source[cursor+1]==0x01 || source[cursor+1]==0x03 ||
@@ -375,12 +445,12 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                    source[cursor+1]==0x85 || source[cursor+1]==0xc7)) {
             word_general=source[cursor+1];
             int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
-            if(result!=PW_OK)return result;
-            if(word_general==0xc7 && operand.reg)return PW_ERR_UNSUPPORTED;
+            if(result!=PW_OK)DECODE_FAIL(result);
+            if(word_general==0xc7 && operand.reg)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=2+operand.bytes+(word_general==0xc7?2:0);
         } else if(op>=0xd8 && op<=0xdf) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
-            if(result!=PW_OK)return result;
+            if(result!=PW_OK)DECODE_FAIL(result);
             length=1+operand.bytes;
             if(operand.mod!=3) {
                 if(op==0xd9 && operand.reg==0){x87=PW_X87_FLD_F32+1;x87_width=4;}
@@ -401,7 +471,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                         PW_X87_FSUBR_F64,PW_X87_FDIV_F64,PW_X87_FDIVR_F64};
                     x87=actions[operand.reg]+1;x87_width=8;
                 }
-                else return PW_ERR_UNSUPPORTED;
+                else DECODE_FAIL(PW_ERR_UNSUPPORTED);
             } else if(op==0xd9 && operand.reg==0) {
                 x87=PW_X87_FLD_ST+1;x87_register=operand.rm+1;
             } else if(op==0xd9 && operand.reg==5 && operand.rm==0)x87=PW_X87_FLD1+1;
@@ -438,74 +508,74 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                     PW_X87_FDIVR_TO_ST,PW_X87_FDIV_TO_ST};
                 x87=actions[operand.reg]+1;x87_register=operand.rm+1;
             }
-            else return PW_ERR_UNSUPPORTED;
+            else DECODE_FAIL(PW_ERR_UNSUPPORTED);
         } else if(op==0xc1 || op==0xd1 || op==0xd3) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
-            if(result!=PW_OK)return result;
-            if(operand.reg!=4 && operand.reg!=5 && operand.reg!=7)return PW_ERR_UNSUPPORTED;
+            if(result!=PW_OK)DECODE_FAIL(result);
+            if(operand.reg!=4 && operand.reg!=5 && operand.reg!=7)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=1+operand.bytes+(op==0xc1);
         } else if(op==0x69 || op==0x6b) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
-            if(result!=PW_OK)return result;
+            if(result!=PW_OK)DECODE_FAIL(result);
             length=1+operand.bytes+(op==0x69?4:1);
         } else if(op<=0x3a && ((op&7)==0 || (op&7)==2)) {
             byte_alu=(op>>3)+1;byte_direction=!!(op&2);
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
-            if(result!=PW_OK)return result;
+            if(result!=PW_OK)DECODE_FAIL(result);
             length=1+operand.bytes;
         } else if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
-            if(result!=PW_OK)return result;
+            if(result!=PW_OK)DECODE_FAIL(result);
             if((op==0x80 && operand.reg!=0 && operand.reg!=1 && operand.reg!=4 &&
                               operand.reg!=5 && operand.reg!=6 && operand.reg!=7) ||
-               ((op==0xc6 || op==0xf6) && operand.reg!=0))return PW_ERR_UNSUPPORTED;
+               ((op==0xc6 || op==0xf6) && operand.reg!=0))DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=1+operand.bytes+(op==0x80 || op==0xc6 || op==0xf6);
         } else if((op<=0x3c && (op&7)==4) || op==0xa8 || (op>=0xb0 && op<=0xb7)) {
-            if(op==0x14 || op==0x1c)return PW_ERR_UNSUPPORTED;
+            if(op==0x14 || op==0x1c)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=2;
         } else if(op>=0x40 && op<=0x4f)length=1;
         else if(op==0x85 || op==0xf7 || op==0xa9) {
             if(op==0xa9){memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;length=5;}
             else {
                 int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
-                if(result!=PW_OK)return result;
-                if(op==0xf7 && operand.reg!=0 && operand.reg<2)return PW_ERR_UNSUPPORTED;
+                if(result!=PW_OK)DECODE_FAIL(result);
+                if(op==0xf7 && operand.reg!=0 && operand.reg<2)DECODE_FAIL(PW_ERR_UNSUPPORTED);
                 length=1+operand.bytes+(op==0xf7 && operand.reg==0?4:0);
             }
         } else if(op==0x66 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=op==0x66?1:0;
-            if(bytes-cursor<=prefix)return PW_ERR_TRUNCATED;
+            if(bytes-cursor<=prefix)DECODE_FAIL(PW_ERR_TRUNCATED);
             unsigned cmpop=source[cursor+prefix];
             unsigned accumulator=cmpop<=0x3d && (cmpop&7)==5;
-            if(cmpop!=0x81 && cmpop!=0x83 && !accumulator)return PW_ERR_UNSUPPORTED;
+            if(cmpop!=0x81 && cmpop!=0x83 && !accumulator)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             word_operand=(unsigned)prefix;short_imm=cmpop==0x83;compare=1;
             if(accumulator) {memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;alu=cmpop>>3;}
             else {
                 int result=decode_operand(source+cursor+prefix+1,bytes-cursor-prefix-1,&operand);
-                if(result!=PW_OK)return result;
+                if(result!=PW_OK)DECODE_FAIL(result);
                 alu=operand.reg;
             }
             length=prefix+1+operand.bytes+(short_imm?1:word_operand?2:4);
         } else if(op>=0x70 && op<=0x7f) {conditional=1;length=2;}
         else if(op==0x0f) {
-            if(bytes-cursor<2)return PW_ERR_TRUNCATED;
+            if(bytes-cursor<2)DECODE_FAIL(PW_ERR_TRUNCATED);
             if(source[cursor+1]>=0x80 && source[cursor+1]<=0x8f){conditional=1;length=6;}
             else if(source[cursor+1]==0xaf) {
                 int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
-                if(result!=PW_OK)return result;
+                if(result!=PW_OK)DECODE_FAIL(result);
                 imul_general=1;length=2+operand.bytes;
             }
             else if(source[cursor+1]==0xb6 || source[cursor+1]==0xb7 || source[cursor+1]==0xbe || source[cursor+1]==0xbf || (source[cursor+1]>=0x90 && source[cursor+1]<=0x9f)) {
                 int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
-                if(result!=PW_OK)return result;
+                if(result!=PW_OK)DECODE_FAIL(result);
                 extend=source[cursor+1]>=0xb6;setcc=!extend;
-                if(setcc && operand.mod!=3)return PW_ERR_UNSUPPORTED;
+                if(setcc && operand.mod!=3)DECODE_FAIL(PW_ERR_UNSUPPORTED);
                 length=2+operand.bytes;
-            } else return PW_ERR_UNSUPPORTED;
+            } else DECODE_FAIL(PW_ERR_UNSUPPORTED);
         } else if (op == 0x64) {
-            if (bytes-cursor < 2) return PW_ERR_TRUNCATED;
+            if (bytes-cursor < 2) DECODE_FAIL(PW_ERR_TRUNCATED);
             if (source[cursor+1]!=0xa1 && source[cursor+1]!=0xa3)
-                return PW_ERR_UNSUPPORTED;
+                DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=6;
         } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 ||
                    op==0x01 || op==0x03 || op==0x09 || op==0x0b ||
@@ -513,10 +583,10 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
                    op==0x21 || op==0x23 || op==0x29 || op==0x2b ||
                    op==0x31 || op==0x33 || op==0xff || op==0x39 || op==0x3b) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
-            if (result!=PW_OK) return result;
-            if (op==0x8d && operand.mod==3) return PW_ERR_UNSUPPORTED;
-            if (op==0xc7 && operand.reg!=0) return PW_ERR_UNSUPPORTED;
-            if (op==0xff && operand.reg!=0 && operand.reg!=1 && operand.reg!=2 && operand.reg!=4 && operand.reg!=6) return PW_ERR_UNSUPPORTED;
+            if (result!=PW_OK) DECODE_FAIL(result);
+            if (op==0x8d && operand.mod==3) DECODE_FAIL(PW_ERR_UNSUPPORTED);
+            if (op==0xc7 && operand.reg!=0) DECODE_FAIL(PW_ERR_UNSUPPORTED);
+            if (op==0xff && operand.reg!=0 && operand.reg!=1 && operand.reg!=2 && operand.reg!=4 && operand.reg!=6) DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=1+operand.bytes;
             if (op==0xc7) length+=4;
         } else if (op == 0x6a || op == 0xeb) length = 2;
@@ -525,8 +595,8 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         else if(op==0xc2)length=3;
         else if (op == 0x99 || op == 0xc3 || op == 0xc9 || op == 0x90 ||
                  (op >= 0x50 && op <= 0x5f)) length = 1;
-        else return PW_ERR_UNSUPPORTED;
-        if (length > bytes-cursor) return PW_ERR_TRUNCATED;
+        else DECODE_FAIL(PW_ERR_UNSUPPORTED);
+        if (length > bytes-cursor) DECODE_FAIL(PW_ERR_TRUNCATED);
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
@@ -952,8 +1022,10 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         block->instruction_ends[count-1]=(uint16_t)cursor;
         if (terminal) break;
     }
+block_done:
     success(&e);
     if (e.failed) return PW_ERR_LIMIT;
     block->source_bytes = cursor; block->code_bytes = e.n; block->instructions = count;
     return PW_OK;
+#undef DECODE_FAIL
 }
