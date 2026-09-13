@@ -325,6 +325,23 @@ The families added for that path, each with architectural tests:
   lane order and the 16-byte granularity come from the CPU. MMX encodings of
   the same opcodes, the merging scalar register forms and anything outside
   the list stay refused.
+
+  Two boundaries are deliberate. The packed moves that *require* 16-byte
+  alignment - `movaps`/`movapd` (`0F 28/29`) and `movdqa` (`66 0F 6F/7F`) -
+  are accepted **between registers only**: their memory forms stay refused
+  until the dispatcher has a classified guest alignment fault, because the
+  host executes the emitted instruction and a misaligned guest address would
+  otherwise become an uncontrolled host fault rather than the guest's own
+  exception. `tests/test_classify_x86.py` pins both halves of that rule.
+  And no accepted SSE form is verified only by the instruction the emitter
+  wrote: `tests/test_pw_x86_reference.S` executes a lane sequence
+  (`movdqu`, `movd`, `paddw`, `pshufd`, `punpckldq`, `movdqa`, `pand`,
+  `movups`, `pmovmskb`, `pextrw`) as real native i386 and prints the stored
+  lanes, the lane mask and the extracted word, and the translated engine must
+  produce the same 24 bytes - so the semantic oracle for that slice is the
+  CPU, not a second copy of our own emitter. Each of those forms is also run
+  through all four residency/lazy-flag combinations in the unit suite, and the
+  `movd`-to-memory defect that started this is now one of them.
 - **BSF/BSR** (`0F BC/BD`, 32- and 16-bit, register and memory sources): the
   index comes from the host instruction, a zero source leaves the destination
   unchanged deterministically (the ISA leaves it undefined) while ZF still

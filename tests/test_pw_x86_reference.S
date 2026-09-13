@@ -87,6 +87,32 @@ target:
     movl $1, %ebx
     movl $4, %eax
     int $0x80
+/*
+ * The SSE lane. Every register the sequence reads is written by the sequence
+ * itself first, so the host CPU's initial XMM state is irrelevant: the bytes
+ * this prints are lanes, a lane mask and an extracted word, produced by real
+ * native i386 instructions rather than by the emitter that is under test.
+ */
+    movl $sse_in, %esi
+    movl $sse_out, %edi
+    movdqu (%esi), %xmm0            /* 16 bytes in                      */
+    movl $0x00010002, %eax
+    movd %eax, %xmm1                /* one dword, upper lanes zeroed     */
+    paddw %xmm1, %xmm0              /* 16-bit lanes add with wrap        */
+    pshufd $0x00, %xmm0, %xmm2      /* broadcast the low lane            */
+    punpckldq %xmm2, %xmm2          /* interleave low dwords             */
+    movdqa %xmm0, %xmm3
+    pand %xmm2, %xmm3               /* byte-wise and of the lanes        */
+    movups %xmm3, (%edi)            /* 16 bytes out                      */
+    pmovmskb %xmm3, %edx            /* one bit per lane sign             */
+    pextrw $3, %xmm3, %ecx          /* lane 3's low word                 */
+    movl %edx, sse_out+16
+    movl %ecx, sse_out+20
+    movl $24, %edx
+    movl $sse_out, %ecx
+    movl $1, %ebx
+    movl $4, %eax
+    int $0x80
     movl $0, %ebx
     movl $1, %eax
     int $0x80
@@ -102,8 +128,15 @@ tls_failed:
 .align 4
 lock_target:
     .long 5
+.align 16
+sse_in:
+    .byte 0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08
+    .byte 0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10
 .bss
 .align 16
 tls_block:
     .space 256
+.align 16
+sse_out:
+    .space 24
 .section .note.GNU-stack,"",@progbits

@@ -1069,6 +1069,17 @@ static void sse_and_scan_tests(void)
     const uint8_t movups_oob[]={0x0f,0x11,0x00};
     const uint8_t lea_cs_reg[]={0x2e,0x8d,0xc0};
     const uint8_t nop_bad[]={0x0f,0x1f,0xc8};
+    /* The packed moves that require 16-byte alignment: register forms are
+     * fine, memory forms are refused until a classified guest alignment fault
+     * exists, because the host executes the emitted instruction. */
+    const uint8_t movaps_reg[]={0x0f,0x28,0xc3};
+    const uint8_t movaps_mem[]={0x0f,0x28,0x10};
+    const uint8_t movdqa_mem[]={0x66,0x0f,0x6f,0x10};
+    const uint8_t movdqa_store_mem[]={0x66,0x0f,0x7f,0x10};
+    assert(pw_x86_translate(movaps_reg,sizeof(movaps_reg),0,scratch,sizeof(scratch),&block)==PW_OK);
+    assert(pw_x86_translate(movaps_mem,sizeof(movaps_mem),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(movdqa_mem,sizeof(movdqa_mem),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(movdqa_store_mem,sizeof(movdqa_store_mem),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(lea_cs_reg,sizeof(lea_cs_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(nop_bad,sizeof(nop_bad),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(mmx_movq,sizeof(mmx_movq),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
@@ -1355,6 +1366,47 @@ int main(int argc, char **argv)
         if (argc==2 && strcmp(argv[1],"--emit")==0) {
             assert(fwrite(&state.gpr[0],4,1,stdout)==1);
             assert(fwrite(&state.gpr[2],4,1,stdout)==1);
+        }
+    }
+    /*
+     * The SSE lane, executed here through the translator as one block and in
+     * tests/test_pw_x86_reference.S as native i386. Every register the
+     * sequence reads is written first, and the bytes emitted below are the
+     * stored lanes, the lane mask and the extracted word - the same values the
+     * native program prints, from a different implementation.
+     */
+    {
+        static const uint8_t sse_in[16] = {
+            0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+            0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,
+        };
+        const uint32_t in_address=state.stack_low+0x200u;
+        const uint32_t out_address=state.stack_low+0x300u;
+        const uint8_t sse_sequence[]={
+            0xf3,0x0f,0x6f,0x06,             /* movdqu xmm0,[esi] */
+            0xb8,0x02,0x00,0x01,0x00,         /* mov eax,0x00010002 */
+            0x66,0x0f,0x6e,0xc8,              /* movd xmm1,eax */
+            0x66,0x0f,0xfd,0xc1,              /* paddw xmm0,xmm1 */
+            0x66,0x0f,0x70,0xd0,0x00,         /* pshufd xmm2,xmm0,0 */
+            0x66,0x0f,0x62,0xd2,              /* punpckldq xmm2,xmm2 */
+            0x66,0x0f,0x6f,0xd8,              /* movdqa xmm3,xmm0 */
+            0x66,0x0f,0xdb,0xda,              /* pand xmm3,xmm2 */
+            0x0f,0x11,0x1f,                   /* movups [edi],xmm3 */
+            0x66,0x0f,0xd7,0xd3,              /* pmovmskb edx,xmm3 */
+            0x66,0x0f,0xc5,0xcb,0x03,         /* pextrw ecx,xmm3,3 */
+        };
+
+        memset((void *)(uintptr_t)in_address,0,32u);
+        memcpy((void *)(uintptr_t)in_address,sse_in,sizeof(sse_in));
+        memset((void *)(uintptr_t)out_address,0,32u);
+        memset(state.fp.xmm,0,sizeof(state.fp.xmm));
+        state.gpr[6]=in_address;                  /* esi */
+        state.gpr[7]=out_address;                 /* edi */
+        assert(run(sse_sequence,sizeof(sse_sequence),0xc00)==0);
+        if (argc==2 && strcmp(argv[1],"--emit")==0) {
+            assert(fwrite((void *)(uintptr_t)out_address,16,1,stdout)==1);
+            assert(fwrite(&state.gpr[2],4,1,stdout)==1);
+            assert(fwrite(&state.gpr[1],4,1,stdout)==1);
         }
     }
     const uint8_t ret[]={0xc3};

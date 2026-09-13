@@ -1032,6 +1032,24 @@ static int decode_sse(uint8_t prefix, size_t prefix_bytes,
     if ((*kind == PW_SSE_XMM_RM || *kind == PW_SSE_STORE_RM) &&
         *mem_bytes < 16u && operand->mod == 3)
         return PW_ERR_UNSUPPORTED;
+    /*
+     * The two packed moves that *require* 16-byte alignment - movaps/movapd
+     * (0f 28/29) and movdqa (66 0f 6f/7f) - stay refused with a memory
+     * operand until the dispatcher has a classified alignment fault. The host
+     * executes the emitted instruction, so a misaligned guest address would
+     * otherwise become an uncontrolled host fault instead of the guest's own
+     * exception. Their register forms touch no memory and are unambiguous, so
+     * those stay accepted; the unaligned twins (movups, movdqu) keep their
+     * memory forms.
+     */
+    if (operand->mod != 3) {
+        const int aligned_move =
+            (prefix == 0x66u && (opcode == 0x6fu || opcode == 0x7fu)) ||
+            (prefix == 0u && (opcode == 0x28u || opcode == 0x29u));
+
+        if (aligned_move)
+            return PW_ERR_UNSUPPORTED;
+    }
     return PW_OK;
 }
 
