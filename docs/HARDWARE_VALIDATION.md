@@ -212,3 +212,25 @@ evidence above. No kernel trace was captured, so the result does not claim an
 internal suspend-duration measurement. Performance A/B also remains pending:
 the old and new artifacts must execute the same collision-heavy gameplay
 scenario before loop-gap and pacing deltas can be attributed to these changes.
+
+## Reviewed dynarec candidate
+
+The reviewed PR #54/#55 stack was built as linked ELF SHA-256
+`7516b78d7183d295957262817d97ac0438fb768f7bcd26e214c141e224063d31`
+and fSELF SHA-256
+`95e3a093afc8961245bf5f7c2f379a5ee64c314fb330fd0740026f1680a5cfad`.
+Its 72-file package (4,169,401 bytes) was deployed with exact read-back
+verification before ShadowMountPlus refreshed `PPSA99995`.
+
+Run `20260913T110455070Z_PPSA99995_prospero-win_0x3ad57bb24f0b` reached
+69,498,483 retired guest instructions, 12,165,097 DBT dispatches and 3,608
+compiled blocks. The last sampled DBT cache state contained 12,161,489 hits,
+no telemetry sequence gaps and no audio errors. AGC DMA reached 360 submitted
+frames with changing hashes, while Remote Play showed the fully rendered
+Pinball table. These observations validate functional execution of the
+reviewed compiler stack on PS5; they are not a controlled performance A/B.
+
+The exact-title close helper returned success and observed the process gone
+after 100 ms. The transcript therefore ends at transport EOF with no `BYE`, as
+expected for an external system close. This accepts process closure for the
+candidate but deliberately does not claim orderly in-process teardown.
