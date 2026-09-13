@@ -267,6 +267,53 @@ LdrInitializeThunk, --bridge 1
 
 Honest limits: the reserve/commit distinction is not modelled (the dispatcher
 knows one kind of guest region), `NtFreeVirtualMemory` and every other call
-still have no handler, a handler failing midway is not rolled back, and the
-SSE register file is not implemented, so the run stops there rather than
-continuing through Wine's loader. None of that is claimed as working.
+still has no handler, and a handler failing midway is not rolled back. None
+of that is claimed as working.
+
+### What ntdll initialization reaches now
+
+Servicing the first calls pushed real ntdll code into the DBT that nothing had
+executed before, and each stop then named the next missing family. Current
+state of that path with `--bridge 1`:
+
+```text
+retired 8577 instructions over 1440 dispatches and 252 translated blocks
+3 NtAllocateVirtualMemory calls serviced, 2 guest regions mapped (88 KiB)
+stops at ntdll RVA 0x24ee6 on the next family the translator does not cover
+```
+
+The families added for that path, each with architectural tests:
+
+- **SSE data movement and lane shuffles**: `movd` both directions, `movdqa`/
+  `movdqu` (`66`/`F3 0F 6F`/`7F`), `movups`/`movaps` (`0F 10/11/28/29`),
+  `movq` store and load (`66 0F D6`, `F3 0F 7E`), `movss`/`movsd` memory
+  forms, the `punpck`/`packss` lane family (`60`-`6D`), `pand`/`paddq`/
+  `psubq`/`por`/`pxor`, `pshufd`/`pshufhw`/`pshuflw` (`66`/`F3`/`F2 0F 70`),
+  `pextrw` and `pinsrw`. The i386 XMM register file lives in
+  `PwGuestFp.xmm`, host XMM registers are scratch, and the host executes the
+  same operation, so upper-bit zeroing (`movd`, `movss`, `movsd`, `movq`),
+  lane order and the 16-byte granularity come from the CPU. MMX encodings of
+  the same opcodes, the merging scalar register forms and anything outside
+  the list stay refused.
+- **BSF/BSR** (`0F BC/BD`, 32- and 16-bit, register and memory sources): the
+  index comes from the host instruction, a zero source leaves the destination
+  unchanged deterministically (the ISA leaves it undefined) while ZF still
+  reports the zero, and only ZF is written.
+- The memory guard accepts 16-byte accesses now, which is the width of the SSE
+  loads and stores, and records the address, width and direction of a refused
+  access, so a `memory-bounds` stop names the fault instead of only its kind.
+- A REP prefix (`F3`) that does not introduce a string instruction falls
+  through to the SSE slice instead of being refused as a malformed `REP`.
+
+Two further gaps surfaced by the same path were closed in the gate: ntdll
+reads `PEB->ProcessParameters` (PEB+0x10) during heap and loader
+initialization, so the gate owns a zeroed process-parameters page and links
+it, and the FS-segment work from the previous step is what makes the TEB
+reads valid. The gate's PEB is still a zeroed page with two fields filled: it
+is not a Windows process environment.
+
+Testing note: the SSE slice is verified by explicit architectural
+expectations (upper-bit zeroing, lane order, 16-byte guard behaviour, and the
+same instructions through all four residency/lazy-flag combinations) rather
+than by the native oracle, because the emitted host instruction *is* the
+instruction the oracle would execute.

@@ -59,6 +59,9 @@ typedef struct PwX86State {
      * emitter addresses these fields with disp32, so adding observability
      * cannot silently move memory[] beyond a signed disp8. */
     PwX86DeferredFlags deferred_flags;    /* active deferred flags descriptor */
+    /* Why the memory guard refused the last access, so a classified stop can
+     * name the address instead of only its kind. */
+    uint32_t fault_address, fault_width, fault_write;
 } PwX86State;
 
 uint32_t pw_x86_compute_canonical_flags(const PwX86DeferredFlags *df, uint32_t prev_eflags);

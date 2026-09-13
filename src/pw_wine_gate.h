@@ -126,6 +126,9 @@ typedef struct PwWineGateReport {
     uint32_t first_eip;
     uint32_t last_eip;
     uint32_t stop_address;
+    uint32_t fault_address;         /* memory-bounds identity, when reported */
+    uint32_t fault_width;
+    uint32_t fault_write;
     uint32_t chaining;
     uint32_t residency;
     uint32_t lazy_flags;
@@ -135,6 +138,7 @@ typedef struct PwWineGateReport {
     uint32_t teb_base;              /* minimal guest TEB (FS base) */
     uint32_t teb_bytes;
     uint32_t peb_base;              /* minimal guest PEB (first argument) */
+    uint32_t parameters_base;       /* zeroed process-parameters page */
     PwUnixCallTally calls;
     uint32_t calls_serviced;
     uint32_t allocations;

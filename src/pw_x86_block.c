@@ -53,6 +53,8 @@ static uintptr_t memory_range_pointer(PwX86State *state,uint32_t address,unsigne
 {
     uint64_t end=(uint64_t)address+width;
     unsigned permission=write==2?(PW_X86_READ|PW_X86_WRITE):write?PW_X86_WRITE:PW_X86_READ;
+    state->fault_address=address;state->fault_width=(uint32_t)width;
+    state->fault_write=write;
     if (!address || !width || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
         return 0;
     if(address>=state->stack_low && end<=state->stack_high)return address;
@@ -65,7 +67,8 @@ static uintptr_t memory_range_pointer(PwX86State *state,uint32_t address,unsigne
 }
 static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write,unsigned width)
 {
-    if(width!=1 && width!=2 && width!=4 && width!=8 && width!=10)return 0;
+    /* 16 is the SSE 128-bit access width: movups/movdqa and friends. */
+    if(width!=1 && width!=2 && width!=4 && width!=8 && width!=10 && width!=16)return 0;
     return memory_range_pointer(state,address,write,width);
 }
 static void memory_address_width(Emitter *e,unsigned write,unsigned width)
@@ -298,6 +301,36 @@ static void load_guest_reg_edx(Emitter *e, const PwX86RegContract *c, unsigned g
     } else {
         byte(e, 0x8b); byte(e, 0x57); byte(e, (uint8_t)(gpr * 4));
     }
+}
+
+/*
+ * Guest XMM state lives in PwGuestFp.xmm like every other piece of guest
+ * state, so the emitted code moves it through host XMM0/XMM1 and lets the
+ * host instruction provide the semantics (including the upper-bit zeroing of
+ * movd, movss and movsd). Host XMM registers are caller-saved scratch in this
+ * ABI and are never part of a guest register contract.
+ */
+static void xmm_disp(Emitter *e, unsigned reg, unsigned extra)
+{
+    const uint32_t offset = (uint32_t)(offsetof(PwX86State, fp) +
+                                       offsetof(PwGuestFp, xmm) +
+                                       reg * 16u + extra);
+    word(e, offset);
+}
+static void load_guest_xmm(Emitter *e, unsigned reg)
+{
+    byte(e, 0xf3); byte(e, 0x0f); byte(e, 0x6f); byte(e, 0x87);
+    xmm_disp(e, reg, 0u);
+}
+static void load_guest_xmm1(Emitter *e, unsigned reg)
+{
+    byte(e, 0xf3); byte(e, 0x0f); byte(e, 0x6f); byte(e, 0x8f);
+    xmm_disp(e, reg, 0u);
+}
+static void store_guest_xmm(Emitter *e, unsigned reg)
+{
+    byte(e, 0xf3); byte(e, 0x0f); byte(e, 0x7f); byte(e, 0x87);
+    xmm_disp(e, reg, 0u);
 }
 
 static void load_guest_reg_ecx(Emitter *e, const PwX86RegContract *c, unsigned gpr)
@@ -827,6 +860,15 @@ typedef struct DecodedInst {
     unsigned bit_imm;               /* the bit index is an imm8 */
     unsigned cmov;                  /* 0f 40..4f: conditional move */
     unsigned cmov_condition;
+    unsigned sse_kind;              /* PW_SSE_*: the SSE slice this maps to */
+    uint8_t sse_prefix;             /* mandatory prefix byte, 0 when none */
+    uint8_t sse_opcode;             /* the 0f map opcode */
+    uint32_t sse_mem_bytes;         /* width of a memory operand */
+    uint8_t sse_imm;
+    unsigned sse_has_imm;
+    unsigned bit_scan;              /* 0f bc/bd: BSF or BSR */
+    uint8_t bit_scan_opcode;
+    unsigned bit_scan_word;         /* the 0x66 (16-bit) form */
     unsigned conditional;
     unsigned extend;
     unsigned setcc;
@@ -842,6 +884,129 @@ typedef struct DecodedInst {
     int flags_dead;
     int can_fault;
 } DecodedInst;
+
+/*
+ * SSE forms this translator maps. Every one of them is data movement or a
+ * lane shuffle, so none of them writes EFLAGS; guest XMM state lives in
+ * PwGuestFp.xmm and host XMM registers are only scratch.
+ */
+enum {
+    PW_SSE_NONE = 0,
+    PW_SSE_XMM_RM,      /* xmm <- <op> xmm/m128 (loads, punpck, logic) */
+    PW_SSE_STORE_RM,    /* xmm/m128 <- xmm */
+    PW_SSE_MOVD_LOAD,   /* xmm <- r/m32, upper 96 bits zeroed */
+    PW_SSE_MOVD_STORE,  /* r/m32 <- xmm */
+    PW_SSE_MOVQ_STORE,  /* m64 <- xmm */
+    PW_SSE_PEXTRW,      /* r32 <- xmm[imm]'s low word */
+    PW_SSE_PINSRW,      /* xmm[imm] <- r/m16 */
+    PW_SSE_XMM_IMM,     /* xmm <- <op> xmm/m128, imm8 (pshufd and friends) */
+};
+
+/* Only the (mandatory prefix, 0f opcode) pairs listed here are accepted, so
+ * the MMX encodings that share these opcodes stay refused rather than being
+ * executed as something they are not. The scalar register forms (movss and
+ * movsd with an xmm destination) are refused too: they merge into the
+ * destination's upper bits, which a whole-register copy would get wrong.
+ */
+static int decode_sse(uint8_t prefix, size_t prefix_bytes,
+                      const uint8_t *source, size_t available,
+                      Operand *operand, unsigned *kind, uint32_t *mem_bytes,
+                      size_t *length, uint8_t *imm, unsigned *has_imm)
+{
+    uint8_t opcode;
+    int result;
+
+    if (available < 2u)
+        return PW_ERR_TRUNCATED;
+    opcode = source[1];
+    result = decode_operand(source + 2u, available - 2u, operand);
+    if (result != PW_OK)
+        return result;
+    *length = prefix_bytes + 2u + operand->bytes;
+    *kind = PW_SSE_NONE;
+    *mem_bytes = 16u;
+    *has_imm = 0u;
+    *imm = 0u;
+    switch (prefix) {
+    case 0x66u:
+        if (opcode == 0x6eu) {
+            *kind = PW_SSE_MOVD_LOAD;
+            *mem_bytes = 4u;
+        } else if (opcode == 0x7eu) {
+            *kind = PW_SSE_MOVD_STORE;
+            *mem_bytes = 4u;
+        } else if (opcode == 0xd6u) {
+            *kind = PW_SSE_MOVQ_STORE;
+            *mem_bytes = 8u;
+        } else if (opcode == 0x6fu) {
+            *kind = PW_SSE_XMM_RM;
+        } else if (opcode == 0x7fu) {
+            *kind = PW_SSE_STORE_RM;
+        } else if (opcode == 0x60u || opcode == 0x61u || opcode == 0x62u ||
+                   opcode == 0x63u || opcode == 0x68u || opcode == 0x69u ||
+                   opcode == 0x6au || opcode == 0x6bu || opcode == 0x6cu ||
+                   opcode == 0x6du || opcode == 0xdbu || opcode == 0xd4u ||
+                   opcode == 0xd5u || opcode == 0xebu || opcode == 0xefu) {
+            *kind = PW_SSE_XMM_RM;
+        } else if (opcode == 0xc5u) {
+            *kind = PW_SSE_PEXTRW;
+            *mem_bytes = 2u;
+        } else if (opcode == 0xc4u) {
+            *kind = PW_SSE_PINSRW;
+            *mem_bytes = 2u;
+        } else if (opcode == 0x70u) {
+            *kind = PW_SSE_XMM_IMM;
+        }
+        break;
+    case 0xf3u:
+        if (opcode == 0x70u) {
+            *kind = PW_SSE_XMM_IMM;
+        } else if (opcode == 0x7eu) {
+            /* movq xmm, xmm/m64: the 64-bit load zeroes the upper half. */
+            *kind = PW_SSE_XMM_RM;
+            *mem_bytes = 8u;
+        } else if (opcode == 0x6fu || opcode == 0x10u) {
+            *kind = PW_SSE_XMM_RM;
+            *mem_bytes = opcode == 0x10u ? 4u : 16u;
+        } else if (opcode == 0x7fu || opcode == 0x11u) {
+            *kind = PW_SSE_STORE_RM;
+            *mem_bytes = opcode == 0x11u ? 4u : 16u;
+        }
+        break;
+    case 0xf2u:
+        if (opcode == 0x70u) {
+            *kind = PW_SSE_XMM_IMM;
+        } else if (opcode == 0x10u) {
+            *kind = PW_SSE_XMM_RM;
+            *mem_bytes = 8u;
+        } else if (opcode == 0x11u) {
+            *kind = PW_SSE_STORE_RM;
+            *mem_bytes = 8u;
+        }
+        break;
+    default:
+        if (opcode == 0x10u || opcode == 0x28u || opcode == 0x54u ||
+            opcode == 0x55u || opcode == 0x56u || opcode == 0x57u)
+            *kind = PW_SSE_XMM_RM;
+        else if (opcode == 0x11u || opcode == 0x29u)
+            *kind = PW_SSE_STORE_RM;
+        break;
+    }
+    if (*kind == PW_SSE_NONE)
+        return PW_ERR_UNSUPPORTED;
+    if (*kind == PW_SSE_PEXTRW || *kind == PW_SSE_PINSRW ||
+        *kind == PW_SSE_XMM_IMM) {
+        if (available < *length + 1u)
+            return PW_ERR_TRUNCATED;
+        *imm = source[*length];
+        *has_imm = 1u;
+        *length += 1u;
+    }
+    if ((*kind == PW_SSE_XMM_RM || *kind == PW_SSE_STORE_RM) &&
+        *mem_bytes < 16u && operand->mod == 3)
+        return PW_ERR_UNSUPPORTED;
+    return PW_OK;
+}
 
 /*
  * Shared decode for the BT/BTS/BTR/BTC family, with or without a 0x66
@@ -911,6 +1076,10 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         unsigned compare=0,alu=7,short_imm=0,word_operand=0,lock_prefix=0,conditional=0,extend=0,setcc=0;
         unsigned bit_op=0,bit_imm=0;
         unsigned cmov=0,cmov_condition=0;
+        unsigned sse_kind=PW_SSE_NONE,sse_mem_bytes=0,sse_has_imm=0;
+        uint8_t sse_prefix=0,sse_opcode=0,sse_imm=0;
+        unsigned bit_scan=0,bit_scan_word=0;
+        uint8_t bit_scan_opcode=0;
         unsigned extend_word_destination=0;
         unsigned x87=0,x87_width=0,x87_write=0,x87_register=0;
         unsigned string_op=0,string_width=0,string_repeat=0;
@@ -925,11 +1094,14 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
             if(bytes-cursor<3)DECODE_FAIL(PW_ERR_TRUNCATED);
             if(source[cursor+2]!=0xa5 && source[cursor+2]!=0xab)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             string_op=source[cursor+2];string_width=2;string_repeat=1;length=3;can_fault=1;
-        } else if(op==0xf3) {
-            if(bytes-cursor<2)DECODE_FAIL(PW_ERR_TRUNCATED);
-            if((source[cursor+1]<0xa4 || source[cursor+1]>0xa7) &&
-               source[cursor+1]!=0xaa && source[cursor+1]!=0xab)
-                DECODE_FAIL(PW_ERR_UNSUPPORTED);
+        } else if(op==0xf3 && bytes-cursor<2) {
+            DECODE_FAIL(PW_ERR_TRUNCATED);
+        } else if(op==0xf3 &&
+                  ((source[cursor+1]>=0xa4 && source[cursor+1]<=0xa7) ||
+                   source[cursor+1]==0xaa || source[cursor+1]==0xab)) {
+            /* REP with a string instruction. An F3 that introduces anything
+             * else falls through to the SSE slice below, which is where the
+             * mandatory-prefix forms live. */
             string_op=source[cursor+1];string_width=(string_op&1)?4:1;
             string_repeat=1;length=2;can_fault=1;
         } else if((op>=0xa4 && op<=0xa7) || op==0xaa || op==0xab) {
@@ -1099,6 +1271,18 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                 }
             }
         } else if(op==0x66 && bytes-cursor>=4 && source[cursor+1]==0x0f &&
+                  (source[cursor+2]==0xbc || source[cursor+2]==0xbd)) {
+            /* 16-bit BSF/BSR: the host instruction with a 0x66 prefix keeps
+             * the destination's upper 16 bits, exactly as the guest expects. */
+            int result=decode_operand(source+cursor+3,bytes-cursor-3,&operand);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            bit_scan=1;
+            bit_scan_word=1;
+            bit_scan_opcode=source[cursor+2];
+            length=3+operand.bytes;
+            can_fault=(operand.mod!=3);
+            flags_def=0x40;
+        } else if(op==0x66 && bytes-cursor>=4 && source[cursor+1]==0x0f &&
                   (source[cursor+2]==0xa3 || source[cursor+2]==0xab ||
                    source[cursor+2]==0xb3 || source[cursor+2]==0xbb ||
                    source[cursor+2]==0xba)) {
@@ -1109,6 +1293,32 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
             word_operand=1;
             can_fault=1;
             flags_def=0x001;
+        } else if(op==0x66 && bytes-cursor>=3 && source[cursor+1]==0x0f) {
+            /* SSE with a mandatory 0x66 prefix. */
+            int result=decode_sse(0x66u,0u,source+cursor+1,bytes-cursor-1,
+                                  &operand,&sse_kind,&sse_mem_bytes,&length,
+                                  &sse_imm,&sse_has_imm);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            sse_prefix=0x66u;
+            sse_opcode=source[cursor+2];
+            length+=1u;                 /* the prefix itself */
+            can_fault=(operand.mod!=3);
+        } else if(op==0x66 && source[cursor+1]==0x0f) {
+            DECODE_FAIL(PW_ERR_TRUNCATED);
+        } else if((op==0xf2 || op==0xf3) && bytes-cursor>=3 &&
+                  source[cursor+1]==0x0f) {
+            /* SSE with a mandatory F2 or F3 prefix. */
+            int result=decode_sse((uint8_t)op,0u,source+cursor+1,
+                                  bytes-cursor-1,&operand,&sse_kind,
+                                  &sse_mem_bytes,&length,&sse_imm,&sse_has_imm);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            sse_prefix=(uint8_t)op;
+            sse_opcode=source[cursor+2];
+            length+=1u;
+            can_fault=(operand.mod!=3);
+        } else if((op==0xf2 || op==0xf3) && bytes-cursor>=2 &&
+                  source[cursor+1]==0x0f) {
+            DECODE_FAIL(PW_ERR_TRUNCATED);
         } else if(op==0x66 || op==0xf0 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=(op==0x66 || op==0xf0)?1:0;
             if(bytes-cursor<=prefix)DECODE_FAIL(PW_ERR_TRUNCATED);
@@ -1190,6 +1400,29 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                 length=2+operand.bytes;
                 can_fault=(operand.mod!=3);
                 flags_use=branch_condition_flags(cmov_condition);
+            }
+            else if(source[cursor+1]==0x10 || source[cursor+1]==0x11 ||
+                    source[cursor+1]==0x28 || source[cursor+1]==0x29 ||
+                    source[cursor+1]==0x54 || source[cursor+1]==0x55 ||
+                    source[cursor+1]==0x56 || source[cursor+1]==0x57) {
+                /* The unprefixed half of the SSE slice: movups, movaps and
+                 * the bitwise logic instructions. */
+                int result=decode_sse(0u,0u,source+cursor,bytes-cursor,
+                                      &operand,&sse_kind,&sse_mem_bytes,&length,
+                                      &sse_imm,&sse_has_imm);
+                if(result!=PW_OK)DECODE_FAIL(result);
+                sse_opcode=source[cursor+1];
+                can_fault=(operand.mod!=3);
+            }
+            else if(source[cursor+1]==0xbc || source[cursor+1]==0xbd) {
+                /* BSF/BSR: only ZF is architecturally defined. */
+                int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+                if(result!=PW_OK)DECODE_FAIL(result);
+                bit_scan=1;
+                bit_scan_opcode=source[cursor+1];
+                length=2+operand.bytes;
+                can_fault=(operand.mod!=3);
+                flags_def=0x40;
             } else DECODE_FAIL(PW_ERR_UNSUPPORTED);
         } else if (op == 0x64) {
             if (bytes-cursor < 2) DECODE_FAIL(PW_ERR_TRUNCATED);
@@ -1260,6 +1493,15 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->bit_imm = bit_imm;
         d->cmov = cmov;
         d->cmov_condition = cmov_condition;
+        d->sse_kind = sse_kind;
+        d->sse_prefix = sse_prefix;
+        d->sse_opcode = sse_opcode;
+        d->sse_mem_bytes = sse_mem_bytes;
+        d->sse_imm = sse_imm;
+        d->sse_has_imm = sse_has_imm;
+        d->bit_scan = bit_scan;
+        d->bit_scan_opcode = bit_scan_opcode;
+        d->bit_scan_word = bit_scan_word;
         d->conditional = conditional;
         d->extend = extend;
         d->setcc = setcc;
@@ -1384,6 +1626,14 @@ analyze_and_emit:
         unsigned bit_imm = d->bit_imm;
         unsigned cmov = d->cmov;
         unsigned cmov_condition = d->cmov_condition;
+        unsigned sse_kind = d->sse_kind;
+        unsigned sse_mem_bytes = d->sse_mem_bytes;
+        uint8_t sse_imm = d->sse_imm;
+        uint8_t sse_prefix = d->sse_prefix;
+        uint8_t sse_opcode = d->sse_opcode;
+        unsigned bit_scan = d->bit_scan;
+        uint8_t bit_scan_opcode = d->bit_scan_opcode;
+        unsigned bit_scan_word = d->bit_scan_word;
         unsigned conditional = d->conditional;
         unsigned extend = d->extend;
         unsigned setcc = d->setcc;
@@ -1846,6 +2096,128 @@ analyze_and_emit:
                     block->exit_contract.dirty_mask |= (1 << operand.reg);
                 }
             } else store_guest_reg(&e, &block->exit_contract, operand.reg);
+        } else if(bit_scan) {
+            /*
+             * BSF/BSR. The host instruction computes the index on the guest
+             * value, and the scan is skipped when the source is zero so the
+             * destination is left unchanged deterministically (the ISA
+             * leaves it undefined there) while ZF still reports the zero.
+             * Only ZF is saved, matching what the architecture defines.
+             */
+            const unsigned skip=bit_scan_word?4u:3u;
+            if(operand.mod==3) {
+                load_guest_reg_ecx(&e,&block->exit_contract,operand.rm);
+            } else {
+                effective_address(&e,&operand,&block->exit_contract);
+                memory_address_width(&e,0,bit_scan_word?2u:4u);
+                byte(&e,0x8b);byte(&e,0x08);
+            }
+            load_guest_reg(&e,&block->exit_contract,operand.reg);
+            byte(&e,0x85);byte(&e,0xc9);            /* test ecx, ecx */
+            byte(&e,0x74);byte(&e,(uint8_t)skip);
+            if(bit_scan_word)byte(&e,0x66);
+            byte(&e,0x0f);byte(&e,bit_scan_opcode);byte(&e,0xc1);
+            store_guest_reg(&e,&block->exit_contract,operand.reg);
+            emit_save_flags(&e,0x40,lazy_flags_enabled,d->flags_dead);
+        } else if(sse_kind) {
+            /*
+             * The SSE slice: data movement, lane unpacking and bitwise logic.
+             * The host executes the same operation on host XMM scratch, so
+             * the architectural details (upper-bit zeroing on movd/movss,
+             * byte lanes of punpck, the 16-byte granularity of movups) come
+             * from the CPU rather than from hand-written emulation.
+             */
+            const unsigned reg=operand.reg;
+            if(sse_kind==PW_SSE_MOVD_LOAD) {
+                if(operand.mod==3) {
+                    load_guest_reg(&e,&block->exit_contract,operand.rm);
+                } else {
+                    effective_address(&e,&operand,&block->exit_contract);
+                    memory_address_width(&e,0,4u);
+                    byte(&e,0x8b);byte(&e,0x00);
+                }
+                byte(&e,0x66);byte(&e,0x0f);byte(&e,0x6e);byte(&e,0xc0);
+                store_guest_xmm(&e,reg);
+            } else if(sse_kind==PW_SSE_MOVD_STORE) {
+                load_guest_xmm(&e,reg);
+                byte(&e,0x66);byte(&e,0x0f);byte(&e,0x7e);byte(&e,0xc0);
+                if(operand.mod==3) {
+                    store_guest_reg(&e,&block->exit_contract,operand.rm);
+                } else {
+                    effective_address(&e,&operand,&block->exit_contract);
+                    memory_address_width(&e,2,4u);
+                    byte(&e,0x89);byte(&e,0x00);
+                }
+            } else if(sse_kind==PW_SSE_MOVQ_STORE) {
+                load_guest_xmm(&e,reg);
+                effective_address(&e,&operand,&block->exit_contract);
+                memory_address_width(&e,2,8u);
+                byte(&e,0x66);byte(&e,0x0f);byte(&e,0xd6);byte(&e,0x00);
+            } else if(sse_kind==PW_SSE_XMM_RM) {
+                load_guest_xmm(&e,reg);
+                if(operand.mod==3) {
+                    load_guest_xmm1(&e,operand.rm);
+                    if(sse_prefix)byte(&e,sse_prefix);
+                    byte(&e,0x0f);byte(&e,sse_opcode);byte(&e,0xc1);
+                } else {
+                    effective_address(&e,&operand,&block->exit_contract);
+                    memory_address_width(&e,0,(unsigned)sse_mem_bytes);
+                    if(sse_prefix)byte(&e,sse_prefix);
+                    byte(&e,0x0f);byte(&e,sse_opcode);byte(&e,0x00);
+                }
+                store_guest_xmm(&e,reg);
+            } else if(sse_kind==PW_SSE_PEXTRW) {
+                /* pextrw r32, xmm, imm8: the source is always a register. */
+                if(operand.mod!=3) return PW_ERR_UNSUPPORTED;
+                load_guest_xmm(&e,operand.rm);
+                byte(&e,0x66);byte(&e,0x0f);byte(&e,0xc5);byte(&e,0xc0);
+                byte(&e,sse_imm);
+                store_guest_reg(&e,&block->exit_contract,reg);
+            } else if(sse_kind==PW_SSE_PINSRW) {
+                load_guest_xmm(&e,reg);
+                if(operand.mod==3) {
+                    load_guest_reg_ecx(&e,&block->exit_contract,operand.rm);
+                    /* Destination XMM0 in the reg field, the loaded word in
+                     * ECX as r/m. */
+                    byte(&e,0x66);byte(&e,0x0f);byte(&e,0xc4);byte(&e,0xc1);
+                } else {
+                    effective_address(&e,&operand,&block->exit_contract);
+                    memory_address_width(&e,0,2u);
+                    byte(&e,0x66);byte(&e,0x0f);byte(&e,0xc4);byte(&e,0x00);
+                }
+                byte(&e,sse_imm);
+                store_guest_xmm(&e,reg);
+            } else if(sse_kind==PW_SSE_XMM_IMM) {
+                load_guest_xmm(&e,reg);
+                if(operand.mod==3) {
+                    load_guest_xmm1(&e,operand.rm);
+                    if(sse_prefix)byte(&e,sse_prefix);
+                    byte(&e,0x0f);byte(&e,sse_opcode);byte(&e,0xc1);
+                } else {
+                    effective_address(&e,&operand,&block->exit_contract);
+                    memory_address_width(&e,0,(unsigned)sse_mem_bytes);
+                    if(sse_prefix)byte(&e,sse_prefix);
+                    byte(&e,0x0f);byte(&e,sse_opcode);byte(&e,0x00);
+                }
+                byte(&e,sse_imm);
+                store_guest_xmm(&e,reg);
+            } else { /* PW_SSE_STORE_RM */
+                load_guest_xmm(&e,reg);
+                if(operand.mod==3) {
+                    /* Register-to-register movement only (the merging scalar
+                     * forms are refused at decode time), so the copy is
+                     * symmetric and the destination can be written back. */
+                    load_guest_xmm1(&e,operand.rm);
+                    if(sse_prefix)byte(&e,sse_prefix);
+                    byte(&e,0x0f);byte(&e,sse_opcode);byte(&e,0xc1);
+                    store_guest_xmm(&e,operand.rm);
+                } else {
+                    effective_address(&e,&operand,&block->exit_contract);
+                    memory_address_width(&e,2,(unsigned)sse_mem_bytes);
+                    if(sse_prefix)byte(&e,sse_prefix);
+                    byte(&e,0x0f);byte(&e,sse_opcode);byte(&e,0x00);
+                }
+            }
         } else if(bit_op) {
             /*
              * BT/BTS/BTR/BTC. The host has the same instructions, including

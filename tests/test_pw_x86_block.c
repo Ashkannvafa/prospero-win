@@ -815,6 +815,158 @@ static void lock_prefix_tests(void)
     state.memory_count=0;
     state.stack_low=low;state.stack_high=high;
 }
+/* Fills one guest XMM register from a 4-dword pattern. */
+static void set_xmm(unsigned reg, uint32_t d0, uint32_t d1, uint32_t d2,
+                    uint32_t d3)
+{
+    uint32_t words[4];
+
+    words[0] = d0; words[1] = d1; words[2] = d2; words[3] = d3;
+    memcpy(state.fp.xmm[reg], words, sizeof(words));
+}
+
+static int xmm_is(unsigned reg, uint32_t d0, uint32_t d1, uint32_t d2,
+                  uint32_t d3)
+{
+    uint32_t words[4];
+
+    memcpy(words, state.fp.xmm[reg], sizeof(words));
+    return words[0] == d0 && words[1] == d1 && words[2] == d2 && words[3] == d3;
+}
+
+/*
+ * The SSE slice and the bit-scan family. Guest XMM state is ordinary guest
+ * memory, so the tests can read it directly; each case is also run through
+ * every residency/lazy-flag combination because that is what caught the
+ * earlier cmov defect.
+ */
+static void sse_and_scan_tests(void)
+{
+    const uint32_t low=state.stack_low;
+    const uint8_t movd_load[]={0x66,0x0f,0x6e,0xc0};      /* movd xmm0,eax */
+    const uint8_t movd_store[]={0x66,0x0f,0x7e,0xc0};     /* movd eax,xmm0 */
+    const uint8_t movdqu_reg[]={0xf3,0x0f,0x6f,0xd1};     /* movdqu xmm2,xmm1 */
+    const uint8_t movdqu_mem[]={0xf3,0x0f,0x6f,0x00};     /* movdqu xmm0,[eax] */
+    const uint8_t punpckldq[]={0x66,0x0f,0x62,0xc0};      /* punpckldq xmm0,xmm0 */
+    const uint8_t punpcklqdq[]={0x66,0x0f,0x6c,0xd0};     /* punpcklqdq xmm2,xmm0 */
+    const uint8_t pxor[]={0x66,0x0f,0xef,0xc1};           /* pxor xmm0,xmm1 */
+    const uint8_t movups_store[]={0x0f,0x11,0x10};        /* movups [eax],xmm2 */
+    const uint8_t movq_store[]={0x66,0x0f,0xd6,0x00};     /* movq [eax],xmm0 */
+    const uint8_t movss_load[]={0xf3,0x0f,0x10,0x08};     /* movss xmm1,[eax] */
+    const uint8_t movsd_load[]={0xf2,0x0f,0x10,0x08};     /* movsd xmm1,[eax] */
+    const uint8_t movq_load[]={0xf3,0x0f,0x7e,0x00};      /* movq xmm0,[eax] */
+    const uint8_t pshufd[]={0x66,0x0f,0x70,0xc0,0x00};
+    const uint8_t pextrw[]={0x66,0x0f,0xc5,0xc8,0x01};
+    const uint8_t pinsrw[]={0x66,0x0f,0xc4,0xc1,0x02};
+    const uint8_t bsr[]={0x0f,0xbd,0xca};
+    const uint8_t bsf[]={0x0f,0xbc,0xca};
+    const uint8_t bsr16[]={0x66,0x0f,0xbd,0xc2};
+
+    state.memory_count=0;
+    memset(state.fp.xmm,0,sizeof(state.fp.xmm));
+    /* movd xmm0, eax zeroes everything above the low dword. */
+    state.gpr[0]=0x11223344;state.fp.xmm[0][4]=0xaa;state.eflags=0xad7;
+    assert(run(movd_load,sizeof(movd_load),0x8000)==0);
+    assert(xmm_is(0,0x11223344,0,0,0) && state.eflags==0xad7);
+    set_xmm(0,0x55667788,0x99aabbcc,0xddeeff00,0x12345678);
+    assert(run(movd_store,sizeof(movd_store),0x8010)==0);
+    assert(state.gpr[0]==0x55667788);
+    /* Register-to-register copies and the lane shuffles. */
+    set_xmm(1,0x11111111,0x22222222,0x33333333,0x44444444);
+    memset(state.fp.xmm[2],0,sizeof(state.fp.xmm[2]));
+    assert(run(movdqu_reg,sizeof(movdqu_reg),0x8020)==0);
+    assert(xmm_is(2,0x11111111,0x22222222,0x33333333,0x44444444));
+    set_xmm(0,0xaaaaaaaa,0xbbbbbbbb,0xcccccccc,0xdddddddd);
+    assert(run(punpckldq,sizeof(punpckldq),0x8030)==0);
+    assert(xmm_is(0,0xaaaaaaaa,0xaaaaaaaa,0xbbbbbbbb,0xbbbbbbbb));
+    set_xmm(2,0x01010101,0x02020202,0x03030303,0x04040404);
+    set_xmm(0,0x05050505,0x06060606,0x07070707,0x08080808);
+    assert(run(punpcklqdq,sizeof(punpcklqdq),0x8040)==0);
+    assert(xmm_is(2,0x01010101,0x02020202,0x05050505,0x06060606));
+    set_xmm(0,0xf0f0f0f0,0x0f0f0f0f,0xffffffff,0x00000000);
+    set_xmm(1,0x0000ffff,0xffff0000,0x12345678,0x87654321);
+    assert(run(pxor,sizeof(pxor),0x8050)==0);
+    assert(xmm_is(0,0xf0f00f0f,0xf0f00f0f,0xedcba987,0x87654321));
+    /* 16-byte and 8-byte stores into guest memory, and the scalar loads. */
+    memset((void *)(uintptr_t)low,0,32);
+    state.gpr[0]=low;set_xmm(2,1,2,3,4);
+    assert(run(movups_store,sizeof(movups_store),0x8060)==0);
+    uint32_t words[4];memcpy(words,(void *)(uintptr_t)low,sizeof(words));
+    assert(words[0]==1 && words[1]==2 && words[2]==3 && words[3]==4);
+    set_xmm(0,5,6,7,8);
+    state.gpr[0]=low+16;
+    assert(run(movq_store,sizeof(movq_store),0x8070)==0);
+    memcpy(words,(void *)(uintptr_t)(low+16),sizeof(words));
+    assert(words[0]==5 && words[1]==6 && words[2]==0 && words[3]==0);
+    memcpy(words,(void *)(uintptr_t)low,sizeof(words));
+    state.gpr[0]=low;set_xmm(1,0x11111111,0x22222222,0x33333333,0x44444444);
+    assert(run(movdqu_mem,sizeof(movdqu_mem),0x8080)==0);
+    assert(xmm_is(0,1,2,3,4));
+    memset(state.fp.xmm[1],0x5a,sizeof(state.fp.xmm[1]));
+    assert(run(movss_load,sizeof(movss_load),0x8090)==0);
+    assert(xmm_is(1,1,0,0,0));
+    memset(state.fp.xmm[1],0x5a,sizeof(state.fp.xmm[1]));
+    assert(run(movsd_load,sizeof(movsd_load),0x80a0)==0);
+    assert(xmm_is(1,1,2,0,0));
+    memset(state.fp.xmm[0],0x5a,sizeof(state.fp.xmm[0]));
+    assert(run(movq_load,sizeof(movq_load),0x80b0)==0);
+    assert(xmm_is(0,1,2,0,0));
+    /* Broadcast, extract and insert. */
+    set_xmm(0,0xdeadbeef,0xfeedface,0x0badf00d,0xcafebabe);
+    assert(run(pshufd,sizeof(pshufd),0x80c0)==0);
+    assert(xmm_is(0,0xdeadbeef,0xdeadbeef,0xdeadbeef,0xdeadbeef));
+    state.gpr[0]=0xffffffff;
+    assert(run(pextrw,sizeof(pextrw),0x80d0)==0);
+    /* ModRM c8 selects ECX as the destination; word 1 of 0xdeadbeef is dead. */
+    assert(state.gpr[1]==0x0000dead);
+    state.gpr[1]=0x1234;
+    assert(run(pinsrw,sizeof(pinsrw),0x80e0)==0);
+    assert(xmm_is(0,0xdeadbeef,0xdead1234,0xdeadbeef,0xdeadbeef));
+    /* BSF/BSR: index in the destination, ZF from the source, and a zero
+     * source leaves the destination unchanged. */
+    state.gpr[2]=0x1000;state.gpr[1]=0xffffffff;state.eflags=0x202;
+    assert(run(bsr,sizeof(bsr),0x8100)==0);
+    assert(state.gpr[1]==12 && (state.eflags&0x40)==0);
+    /* 0xdeadbeef has bit 0 set, so BSF reports index 0. */
+    state.gpr[2]=0xdeadbeef;state.gpr[1]=0xffffffff;state.eflags=0x202;
+    assert(run(bsf,sizeof(bsf),0x8110)==0);
+    assert(state.gpr[1]==0 && (state.eflags&0x40)==0);
+    state.gpr[2]=0;state.gpr[1]=0x55;state.eflags=0x202;
+    assert(run(bsr,sizeof(bsr),0x8120)==0);
+    assert(state.gpr[1]==0x55 && (state.eflags&0x40)!=0);
+    state.gpr[2]=0x8000;state.gpr[0]=0xffffffff;state.eflags=0x202;
+    assert(run(bsr16,sizeof(bsr16),0x8130)==0);
+    assert(state.gpr[0]==0xffff000f);
+    /* Every one of them must behave identically in all engine modes. */
+    for(unsigned residency=0;residency<2;residency++)
+        for(unsigned lazy=0;lazy<2;lazy++) {
+            memset(state.fp.xmm,0,sizeof(state.fp.xmm));
+            state.gpr[0]=0x11223344;state.eflags=0x202;
+            assert(run_mode(movd_load,sizeof(movd_load),0x8200,residency,lazy)==0);
+            assert(xmm_is(0,0x11223344,0,0,0));
+            set_xmm(0,0xaaaa0001,0xaaaa0002,0xaaaa0003,0xaaaa0004);
+            assert(run_mode(punpckldq,sizeof(punpckldq),0x8210,residency,lazy)==0);
+            assert(xmm_is(0,0xaaaa0001,0xaaaa0001,0xaaaa0002,0xaaaa0002));
+            state.gpr[2]=0x40;state.gpr[1]=0;
+            assert(run_mode(bsr,sizeof(bsr),0x8220,residency,lazy)==0);
+            assert(state.gpr[1]==6 && (state.eflags&0x40)==0);
+        }
+    /* MMX encodings of the same opcodes, the merging register forms and an
+     * out-of-region 16-byte store all stay refused. */
+    uint8_t scratch[4096];PwX86Block block;
+    const uint8_t mmx_movq[]={0x0f,0x6f,0xc1};
+    const uint8_t movq_reg[]={0xf3,0x0f,0x7e,0xc1};
+    const uint8_t movss_reg[]={0xf3,0x0f,0x10,0xc1};
+    const uint8_t movups_oob[]={0x0f,0x11,0x00};
+    assert(pw_x86_translate(mmx_movq,sizeof(mmx_movq),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(movq_reg,sizeof(movq_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(movss_reg,sizeof(movss_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    state.memory_count=0;
+    state.gpr[0]=0x50000000;set_xmm(0,1,2,3,4);
+    assert(run(movups_oob,sizeof(movups_oob),0x8300)==-1);
+    assert(state.fault_address==0x50000000 && state.fault_width==16);
+}
+
 static void bit_and_cmov_tests(void)
 {
     const uint32_t low=state.stack_low,high=state.stack_high;
@@ -1206,6 +1358,7 @@ int main(int argc, char **argv)
     absolute_tests();
     lock_prefix_tests();
     bit_and_cmov_tests();
+    sse_and_scan_tests();
     optimization_safety_tests();
     push_operand_tests();
     logical_test_tests();

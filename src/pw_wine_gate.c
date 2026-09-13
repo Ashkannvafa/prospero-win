@@ -522,11 +522,12 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
 static int declare_guest_memory(PwX86State *state, const PwLoader *loader,
                                 uint32_t stack_base, uint32_t stack_bytes,
                                 const PwVmRegion *thread_block,
-                                const PwVmRegion *process_block)
+                                const PwVmRegion *process_block,
+                                const PwVmRegion *parameters_block)
 {
     uint32_t used = 0u;
 
-    if (loader->module_count * 2u + 3u > PW_X86_MEMORY_REGIONS)
+    if (loader->module_count * 2u + 4u > PW_X86_MEMORY_REGIONS)
         return PW_ERR_LIMIT;
     state->stack_low = stack_base;
     state->stack_high = stack_base + stack_bytes;
@@ -549,6 +550,15 @@ static int declare_guest_memory(PwX86State *state, const PwLoader *loader,
             .low = (uint32_t)(uintptr_t)process_block->exec_base,
             .high = (uint32_t)((uintptr_t)process_block->exec_base +
                                process_block->bytes),
+            .permissions = PW_X86_READ | PW_X86_WRITE,
+        };
+    }
+    if (parameters_block && parameters_block->write_base) {
+        /* The zeroed process-parameters page PEB->ProcessParameters points at. */
+        state->memory[used++] = (PwX86Memory){
+            .low = (uint32_t)(uintptr_t)parameters_block->exec_base,
+            .high = (uint32_t)((uintptr_t)parameters_block->exec_base +
+                               parameters_block->bytes),
             .permissions = PW_X86_READ | PW_X86_WRITE,
         };
     }
@@ -644,6 +654,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     PwVmRegion stack;
     PwVmRegion teb;
     PwVmRegion peb;
+    PwVmRegion parameters;
     PwWineCallContext calls;
     PwX86State state;
     uint32_t thunks[PW_WINE_GATE_MAX_BOUNDARIES];
@@ -656,6 +667,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     int have_stack = 0;
     int have_teb = 0;
     int have_peb = 0;
+    int have_parameters = 0;
 
     if (!config || !report || !config->provider || !config->backend ||
         config->module_count == 0u ||
@@ -665,6 +677,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     memset(&root_span, 0, sizeof(root_span));
     memset(&teb, 0, sizeof(teb));
     memset(&peb, 0, sizeof(peb));
+    memset(&parameters, 0, sizeof(parameters));
     memset(&calls, 0, sizeof(calls));
     memset(&call, 0, sizeof(call));
     budget = config->step_budget != 0u ? config->step_budget
@@ -882,6 +895,19 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         if (status != PW_OK)
             goto done;
         have_peb = 1;
+        status = allocate_guest_page(config, &low, 0x0c000000u, &parameters,
+                                     &report->parameters_base);
+        if (status != PW_OK)
+            goto done;
+        have_parameters = 1;
+        {
+            uint8_t *peb_block = peb.write_base;
+
+            /* PEB->ProcessParameters (0x10): ntdll reads process parameters
+             * during heap and loader initialisation. The gate provides a
+             * zeroed page rather than a populated structure, and says so. */
+            memcpy(peb_block + 0x10, &report->parameters_base, 4u);
+        }
         {
             uint8_t *block = teb.write_base;
 
@@ -903,7 +929,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     state.fs_base = report->teb_base;
     state.fs_bytes = report->teb_bytes;
     status = declare_guest_memory(&state, &loader, report->stack_base,
-                                  report->stack_bytes, &teb, &peb);
+                                  report->stack_bytes, &teb, &peb,
+                                  &parameters);
     if (status != PW_OK)
         goto done;
     report->guest_regions = state.memory_count;
@@ -993,6 +1020,9 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         }
     }
     report->last_eip = state.eip;
+    report->fault_address = state.fault_address;
+    report->fault_width = state.fault_width;
+    report->fault_write = state.fault_write;
     /*
      * Independent identification of the call that reached the boundary. The
      * stub calls the dispatcher, so the guest return address on top of the
@@ -1058,6 +1088,9 @@ done:
         report->cleanup_mappings++;
     if (have_peb &&
         config->backend->release(config->backend->context, &peb) == PW_OK)
+        report->cleanup_mappings++;
+    if (have_parameters &&
+        config->backend->release(config->backend->context, &parameters) == PW_OK)
         report->cleanup_mappings++;
     for (uint32_t index = 0; index < calls.region_count; ++index) {
         if (calls.low->base.release(calls.low->base.context,

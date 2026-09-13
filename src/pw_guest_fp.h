@@ -10,6 +10,10 @@ typedef struct PwGuestFp {
     uint32_t x87_ip,x87_dp,mxcsr;
     uint8_t x87_st[8][10];
     unsigned initialized;
+    /* The i386 SSE register file, kept in memory like every other piece of
+     * guest state: the emitted code uses host XMM registers only as scratch.
+     * Appended after `initialized` so no earlier offset moves. */
+    uint8_t xmm[8][16];
 } PwGuestFp;
 void pw_guest_fp_init(PwGuestFp *);
 int pw_guest_fp_control(PwGuestFp *,uint32_t value,uint32_t mask,uint32_t *result);
