@@ -40,6 +40,7 @@ int pw_x86_engine_init(PwX86Engine *engine,const PwVmBackend *backend,
     engine->quantum=PW_X86_ENGINE_DEFAULT_QUANTUM;
     engine->chaining_enabled=0;
     engine->residency_enabled=1;
+    engine->lazy_flags_enabled=1;
     engine->initialized=1;return PW_OK;
 }
 
@@ -64,6 +65,13 @@ int pw_x86_engine_set_residency(PwX86Engine *engine, unsigned enabled)
     return PW_OK;
 }
 
+int pw_x86_engine_set_lazy_flags(PwX86Engine *engine, unsigned enabled)
+{
+    if(!engine || !engine->initialized) return PW_ERR_PRECONDITION;
+    engine->lazy_flags_enabled = enabled ? 1 : 0;
+    return PW_OK;
+}
+
 static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry)
 {
     const uint8_t *source=NULL;size_t available=0;
@@ -73,7 +81,7 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
     if(available>PW_X86_ENGINE_MAX_SOURCE)available=PW_X86_ENGINE_MAX_SOURCE;
     uint8_t scratch[PW_X86_ENGINE_MAX_CODE];
     PwX86Block best = {0};
-    int last = pw_x86_translate_ext(source, available, pc, scratch, sizeof(scratch), &best, engine->residency_enabled);
+    int last = pw_x86_translate_ext(source, available, pc, scratch, sizeof(scratch), &best, engine->residency_enabled, engine->lazy_flags_enabled);
     if (last != PW_OK) return last;
     if (!best.instructions) return PW_ERR_TRUNCATED;
     if(best.code_bytes>engine->cache.arena_bytes-engine->cache.cursor)return PW_ERR_LIMIT;
@@ -225,14 +233,12 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
 
 int pw_x86_engine_step(PwX86Engine *engine,PwX86State *state,PwX86StepReport *report)
 {
-    if(!engine || !engine->initialized || !state || !report)return PW_ERR_PRECONDITION;
-    *report=(PwX86StepReport){.guest_pc=state->eip};
-    if(engine->failed)return PW_ERR_STATE;
+    if(!engine || !state || !report || !engine->initialized)return PW_ERR_PRECONDITION;
+    memset(report,0,sizeof(*report));report->guest_pc=state->eip;
 
-    /* Handle pending unlinked exit from previous step */
+    /* Dynamic unlinked chain resolution: if previous step exited via an unlinked slot, link it now */
     if(engine->chaining_enabled && state->last_exit_slot) {
         PwX86LinkSlot *last_slot = (PwX86LinkSlot *)state->last_exit_slot;
-        state->last_exit_slot = 0;
         if(last_slot->target_pc == state->eip && !last_slot->is_linked) {
             PwX86CacheEntry *target_entry = NULL;
             if(pw_x86_cache_lookup_mut(&engine->cache, state->eip, &target_entry) == PW_OK) {
@@ -292,6 +298,9 @@ int pw_x86_engine_step(PwX86Engine *engine,PwX86State *state,PwX86StepReport *re
     engine->reg_stores += state->reg_stores;
     engine->reg_reconciliations += state->reg_reconciliations;
     engine->reg_spills += state->reg_spills;
+    if(state->deferred_flags.known_mask)
+        engine->flags_safepoint_commits++;
+    pw_x86_commit_canonical_flags(state);
 
     if(!invoked) {
         report->retired=state->step_retired;

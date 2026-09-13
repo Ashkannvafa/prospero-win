@@ -51,6 +51,30 @@ static uint64_t bench_now_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+static int bench_switch(const char *name, unsigned fallback, unsigned *value)
+{
+    const char *text = getenv(name);
+    if (!text || !*text) {
+        *value = fallback;
+        return PW_OK;
+    }
+    if (strcmp(text, "0") == 0 || strcmp(text, "1") == 0) {
+        *value = (unsigned)(text[0] - '0');
+        return PW_OK;
+    }
+    fprintf(stderr, "%s must be 0 or 1\n", name);
+    return PW_ERR_PRECONDITION;
+}
+
+static int configure_engine(PwX86Engine *engine, unsigned chaining,
+                            unsigned residency, unsigned lazy_flags)
+{
+    return pw_x86_engine_set_chaining(engine, chaining) == PW_OK &&
+           pw_x86_engine_set_residency(engine, residency) == PW_OK &&
+           pw_x86_engine_set_lazy_flags(engine, lazy_flags) == PW_OK
+               ? PW_OK : PW_ERR_STATE;
+}
+
 static uint32_t hash_step(uint32_t h, uint32_t val)
 {
     h ^= val;
@@ -247,6 +271,11 @@ static int compare_u64(const void *a, const void *b)
 int main(int argc, char **argv)
 {
     const char *filter = argc > 1 ? argv[1] : NULL;
+    unsigned chaining = 0, residency = 1, lazy_flags = 1;
+    if (bench_switch("PW_BENCH_CHAINING", 0, &chaining) != PW_OK ||
+        bench_switch("PW_BENCH_RESIDENCY", 1, &residency) != PW_OK ||
+        bench_switch("PW_BENCH_LAZY_FLAGS", 1, &lazy_flags) != PW_OK)
+        return 1;
     PwVmBackend vm;
     if (pw_vm_posix_backend(&vm) != PW_OK) {
         fprintf(stderr, "failed to get posix vm backend\n");
@@ -293,6 +322,8 @@ int main(int argc, char **argv)
                 fprintf(stderr, "engine init failed\n");
                 return 1;
             }
+            if (configure_engine(&engine, chaining, residency, lazy_flags) != PW_OK)
+                return 1;
             PwX86State s = {.eip = wl->entry_pc, .stack_low = stack_base, .stack_high = stack_base + BENCH_STACK_BYTES};
             s.memory_count = 1;
             s.memory[0] = (PwX86Memory){.low = mem_base, .high = mem_base + BENCH_MEM_BYTES,
@@ -324,6 +355,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "engine init failed\n");
             return 1;
         }
+        if (configure_engine(&engine, chaining, residency, lazy_flags) != PW_OK)
+            return 1;
 
         /* Warmup run */
         {
@@ -384,11 +417,13 @@ int main(int argc, char **argv)
         double ns_per_inst = total_retired ? (double)warm_med_ns / (double)total_retired : 0.0;
         double mips = warm_med_ns ? (double)total_retired * 1000.0 / (double)warm_med_ns : 0.0;
 
-        printf("kind=bench-result workload=%s cold_median_ns=%llu code_bytes=%zu "
+        printf("kind=bench-result workload=%s chaining=%u residency=%u lazy_flags=%u "
+               "cold_median_ns=%llu code_bytes=%zu "
                "compiles=%u retired=%llu dispatches=%llu warm_min_ns=%llu warm_med_ns=%llu "
                "warm_p95_ns=%llu warm_max_ns=%llu ns_per_inst=%.3f mips=%.1f "
                "eax=0x%08x ecx=0x%08x edx=0x%08x ebx=0x%08x checksum=0x%08x\n",
                wl->name,
+               chaining,residency,lazy_flags,
                (unsigned long long)cold_median_ns,
                total_emitted_bytes,
                total_compiled_blocks,

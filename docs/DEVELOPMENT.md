@@ -51,6 +51,15 @@ The default is zero (continuous). A finite test artifact must never be
 mistaken for the production candidate; record both hashes and the runtime
 mode in hardware evidence.
 
+Dynarec feature A/B builds use the same entry point. `PW_DBT_CHAINING`,
+`PW_DBT_RESIDENCY` and `PW_DBT_LAZY_FLAGS` each accept only `0` or `1` and
+default to `1`. Change one switch at a time, keep the private PE input and
+test deadline identical, deploy every file with exact verification, refresh
+ShadowMountPlus, and require `PW_RUNTIME_READY` to report the requested modes.
+Pinball is a variable gameplay workload, so its absolute instruction or frame
+counts are functional evidence rather than a deterministic performance
+benchmark; use `make bench-dynarec` for controlled host comparisons.
+
 ## Working with real binaries
 
 Windows binaries are private build inputs. `.exe` and `.dll` are ignored

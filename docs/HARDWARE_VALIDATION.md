@@ -234,3 +234,41 @@ The exact-title close helper returned success and observed the process gone
 after 100 ms. The transcript therefore ends at transport EOF with no `BYE`, as
 expected for an external system close. This accepts process closure for the
 candidate but deliberately does not claim orderly in-process teardown.
+
+## Chaining, residency and lazy-flags candidate
+
+The repaired three-PR dynarec stack was exercised on the owned FW 12.02 PS5
+with direct chaining and cross-block register residency enabled. The eager
+control used linked ELF SHA-256
+`01ac1dbde52cae4f64fd66c72f72f3008da5fb9887c24f6bf66cb05f71e64377`
+and fSELF SHA-256
+`78819761d9244848e571a1c4142024a7b4426161f3b1c7cab5f13d932315e3a0`.
+The lazy-flags candidate used linked ELF SHA-256
+`eb0e1ebf80055673061a004df84400b30d565fee49bb0edfa36a4338aebb97bd`
+and fSELF SHA-256
+`32c2768dfb9fce90944952b5d80d92741de149e3c8fb873ec1243d6a88114373`.
+Both packages contained the same 67 private PE inputs, were deployed with
+exact read-back verification, and used a 30-second validation-only deadline.
+
+Control runs
+`20260913T154322538Z_PPSA99995_prospero-win_0x4a077077c098` and
+`20260913T154850958Z_PPSA99995_prospero-win_0x4a53e84da274` reported
+`dbt_lazy_flags=0`; candidate runs
+`20260913T154601853Z_PPSA99995_prospero-win_0x4a2c88a2eace`,
+`20260913T154715018Z_PPSA99995_prospero-win_0x4a3d91f33e9a` and
+`20260913T155051616Z_PPSA99995_prospero-win_0x4a7000094369` reported
+`dbt_lazy_flags=1`. Every run reached the Pinball board, produced AGC frames
+and AudioOut blocks, released every reported subsystem and ended gap-free with
+`BYE reason=validation-deadline`. The final candidate run was also observed
+through Remote Play, detected connected Pad samples, retired 115,502,074 guest
+instructions, presented 273 frames and completed 938 audio blocks. Its last
+heartbeat recorded 2,073,632 real deferred-flag commits. The strict runtime
+validator accepted that transcript.
+
+The repeated gameplay runs do not establish a speedup: Pinball's changing
+simulation state made total work vary more than the eager/lazy difference,
+while their first five-second samples were effectively equal. Controlled host
+benchmarks are near-neutral and exact host traces finish with identical CPU
+state in both modes. This evidence therefore accepts correctness, real target
+use of the deferred state and absence of an observable hardware regression;
+it deliberately makes no percentage performance claim.

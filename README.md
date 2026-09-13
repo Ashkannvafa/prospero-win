@@ -49,6 +49,10 @@ semantics, replaces linear DBT-cache scans with hashed lookup and limits W^X
 publication changes to the generated block's pages. Host, sanitizer and native
 build gates pass; hardware A/B pacing validation is still required before this
 is described as a measured fix.
+The DBT also has bounded direct block chaining, deterministic cross-block guest
+register residency and switchable lazy arithmetic flags. Exact host execution
+parity is established; PS5 A/B telemetry remains the gate for any performance
+claim.
 The same candidate calls the real `sceAgcSuspendPoint` after every successful
 AGC submit, matching the lifecycle correction already validated by the Gears
 and Xash3D renderers. This is separate from fence completion: it makes the

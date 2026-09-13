@@ -375,11 +375,13 @@ static void test_deterministic_allocation_output(void)
         0x89, 0xc3,
         0xc3
     };
-    uint8_t out1[256], out2[256];
+    /* Lazy-flag capture is deliberately explicit and can make even a small
+     * block exceed the old 256-byte deterministic-output fixture. */
+    uint8_t out1[1024], out2[1024];
     PwX86Block b1 = {0}, b2 = {0};
 
-    assert(pw_x86_translate_ext(code, sizeof(code), 0x1000, out1, sizeof(out1), &b1, 1) == PW_OK);
-    assert(pw_x86_translate_ext(code, sizeof(code), 0x1000, out2, sizeof(out2), &b2, 1) == PW_OK);
+    assert(pw_x86_translate_ext(code, sizeof(code), 0x1000, out1, sizeof(out1), &b1, 1, 1) == PW_OK);
+    assert(pw_x86_translate_ext(code, sizeof(code), 0x1000, out2, sizeof(out2), &b2, 1, 1) == PW_OK);
 
     assert(b1.code_bytes == b2.code_bytes);
     assert(b1.canonical_entry_offset == b2.canonical_entry_offset);
@@ -541,6 +543,6 @@ int main(void)
     test_matching_chain_preserves_inherited_dirty_value();
 
     assert(vm.release(vm.context, &stack_region) == PW_OK);
-    printf("all 11 tranche B register residency tests passed successfully\n");
+    printf("all 11 register residency tests passed successfully\n");
     return 0;
 }

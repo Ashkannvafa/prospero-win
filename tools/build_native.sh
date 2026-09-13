@@ -23,6 +23,9 @@
 #                          laboratory's other projects share (default 0)
 #   PW_NATIVE_MODE         runtime (default) or gate
 #   PW_TEST_EXIT_AFTER_MS  validation-only orderly runtime exit; 0 disables it
+#   PW_DBT_CHAINING        1 enables direct block chaining (default 1)
+#   PW_DBT_RESIDENCY       1 enables cross-block guest GPR residency (default 1)
+#   PW_DBT_LAZY_FLAGS      1 enables cross-block RAW flag deferral (default 1)
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -36,6 +39,9 @@ use_sample=${PW_SAMPLE:-0}
 compat32_transfer=${PW_COMPAT32_TRANSFER:-0}
 native_mode=${PW_NATIVE_MODE:-runtime}
 test_exit_after_ms=${PW_TEST_EXIT_AFTER_MS:-0}
+dbt_chaining=${PW_DBT_CHAINING:-1}
+dbt_residency=${PW_DBT_RESIDENCY:-1}
+dbt_lazy_flags=${PW_DBT_LAZY_FLAGS:-1}
 
 [[ $use_sample == 0 || $use_sample == 1 ]] || {
     echo "PW_SAMPLE must be 0 or 1" >&2; exit 2; }
@@ -45,6 +51,12 @@ test_exit_after_ms=${PW_TEST_EXIT_AFTER_MS:-0}
     echo "PW_NATIVE_MODE must be runtime or gate" >&2; exit 2; }
 [[ $test_exit_after_ms =~ ^[0-9]+$ && $test_exit_after_ms -le 600000 ]] || {
     echo "PW_TEST_EXIT_AFTER_MS must be an integer from 0 to 600000" >&2; exit 2; }
+for value in "$dbt_chaining" "$dbt_residency" "$dbt_lazy_flags"; do
+    [[ $value == 0 || $value == 1 ]] || {
+        echo "PW_DBT_CHAINING, PW_DBT_RESIDENCY and PW_DBT_LAZY_FLAGS must be 0 or 1" >&2
+        exit 2
+    }
+done
 [[ $root_module =~ ^[A-Za-z0-9_.-]+$ ]] || {
     echo "PW_ROOT_MODULE must be a bare file name" >&2; exit 2; }
 if [[ $use_sample == 0 && -z $stage_input ]]; then
@@ -119,6 +131,9 @@ common=(-O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections
         -DPW_STAGE_DIR='"/app0/win"'
         -DPW_ROOT_MODULE="\"$root_module\""
         -DPW_TEST_EXIT_AFTER_MS="$test_exit_after_ms"
+        -DPW_DBT_CHAINING="$dbt_chaining"
+        -DPW_DBT_RESIDENCY="$dbt_residency"
+        -DPW_DBT_LAZY_FLAGS="$dbt_lazy_flags"
         -DPW_COMPAT32_TRANSFER="$compat32_transfer")
 
 entry=native/runtime_main.c

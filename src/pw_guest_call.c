@@ -86,6 +86,7 @@ int pw_guest_callback_enter(PwGuestCallback *cb,PwX86State *s,uint32_t target,
     next.saved_reg_stores=s->reg_stores;
     next.saved_reg_reconciliations=s->reg_reconciliations;
     next.saved_reg_spills=s->reg_spills;
+    next.saved_deferred_flags=s->deferred_flags;
     next.return_token=token;next.argument_bytes=(uint32_t)bytes;
     next.convention=convention;next.active=1;
     uint32_t new_esp=esp-(uint32_t)total;
@@ -116,5 +117,6 @@ int pw_guest_callback_leave(PwGuestCallback *cb,unsigned bits,uint64_t *result)
     s->reg_stores=cb->saved_reg_stores;
     s->reg_reconciliations=cb->saved_reg_reconciliations;
     s->reg_spills=cb->saved_reg_spills;
+    s->deferred_flags=cb->saved_deferred_flags;
     cb->active=0;*result=value;return PW_OK;
 }

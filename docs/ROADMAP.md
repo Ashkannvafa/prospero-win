@@ -79,6 +79,11 @@ capture alone is not renderer or audio proof.
   open-addressed guest-PC cache.
 - [x] Restrict every DBT W^X publication transition to the pages containing
   newly generated code rather than the complete executable arena.
+- [x] Add bounded direct block chaining through RW link slots, deterministic
+  cross-block GPR residency with reconciliation, and a switchable RAW lazy-
+  flags path with exact eager/lazy host parity.
+- [ ] Measure the linked/resident/lazy configuration on PS5 against its eager
+  control before describing it as a runtime speedup.
 - [x] Define asynchronous WinMM ownership: copied PCM queue, dedicated
   SceAudioOut worker, deferred `WHDR_DONE`/`WOM_DONE`, bounded backpressure and
   synchronized telemetry.

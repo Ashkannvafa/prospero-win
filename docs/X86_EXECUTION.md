@@ -304,5 +304,36 @@ Two cases are deliberately conservative:
   multi-bit shift, OF remains the runtime's preserved undefined value.
 
 These rules are covered by executable regressions in `test_pw_x86_block`.
-Direct block chaining, host-register residency and cross-block lazy flags are
-not part of this tranche; every block still returns through the C dispatcher.
+
+### Linked-block execution
+
+Direct and conditional exits use RW link slots rather than rewriting published
+RX code. A bounded block quantum returns to the dispatcher for services and
+safepoints. Generation reset invalidates every link. Compatible blocks carry up
+to three deterministic guest GPRs in `r8d`-`r10d`; mismatched contracts spill
+through a reconciliation stub before entering the target's canonical entry.
+C helpers and fault boundaries preserve or spill resident values explicitly.
+
+Live arithmetic flags can cross a linked boundary as an eight-byte RAW
+descriptor (`raw_flags`, `known_mask`). Consumers merge only the required guest
+bits inline; no helper call or host control flag installation is involved. The
+engine commits the complete pending subset at every dispatcher safepoint.
+Variable-count shifts and string helpers are explicit ownership boundaries and
+commit before they replace canonical EFLAGS. The standalone `pw_x86_translate`
+API keeps eager EFLAGS semantics because it has no engine safepoint.
+
+The host tracer exposes controlled parity switches:
+
+```sh
+PW_TRACE_CHAINING=1 PW_TRACE_RESIDENCY=1 PW_TRACE_LAZY_FLAGS=1 \
+PW_TRACE_QUANTUM=64 build/host/trace_x86_entry /private/path/app.exe 100000
+```
+
+For the private first target, the four chaining/lazy combinations reached
+identical bounded endpoints: 461,087 retired instructions without chaining and
+1,609,088 with a 64-block quantum, with exact EIP, GPR, FS and EFLAGS parity.
+Lazy mode increased emitted code by less than one percent in that trace
+(935,856 versus 929,488 bytes). Seven paired host runs rounded to 0.11-0.12 s
+in both modes, so this is a correctness and architecture result, not yet a
+claimed speedup. `PW_BENCH_CHAINING`, `PW_BENCH_RESIDENCY` and
+`PW_BENCH_LAZY_FLAGS` provide the same A/B controls for the synthetic suite.

@@ -27,6 +27,7 @@ typedef struct PwGuestCallback {
     uint32_t saved_chain_budget,saved_step_retired,saved_step_transitions;
     uintptr_t saved_last_exit_slot;
     uint32_t saved_reg_loads,saved_reg_stores,saved_reg_reconciliations,saved_reg_spills;
+    PwX86DeferredFlags saved_deferred_flags;
     uint32_t return_token,argument_bytes;
     PwGuestConvention convention;
     unsigned active;

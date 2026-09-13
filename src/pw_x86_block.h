@@ -29,6 +29,11 @@ static inline int pw_x86_contracts_match(const PwX86RegContract *a, const PwX86R
     return 1;
 }
 
+typedef struct PwX86DeferredFlags {
+    uint32_t raw_flags; /* most recent native arithmetic flags, merged by known_mask */
+    uint32_t known_mask;/* deferred subset of CF/PF/AF/ZF/SF/OF; zero means empty */
+} PwX86DeferredFlags;
+
 typedef struct PwX86State {
     uint32_t gpr[8]; /* eax ecx edx ebx esp ebp esi edi */
     uint32_t eip;
@@ -46,7 +51,15 @@ typedef struct PwX86State {
     uint32_t reg_spills;         /* register spills performed in step */
     PwX86Memory memory[PW_X86_MEMORY_REGIONS]; /* live identity-mapped ranges */
     PwGuestFp fp;
+    /* Keep lazy-flag state after the compact generated-code ABI above.  The
+     * emitter addresses these fields with disp32, so adding observability
+     * cannot silently move memory[] beyond a signed disp8. */
+    PwX86DeferredFlags deferred_flags;    /* active deferred flags descriptor */
 } PwX86State;
+
+uint32_t pw_x86_compute_canonical_flags(const PwX86DeferredFlags *df, uint32_t prev_eflags);
+void pw_x86_materialize_flag_bits(PwX86State *state, uint32_t demand_mask);
+void pw_x86_commit_canonical_flags(PwX86State *state);
 
 typedef enum PwX86ExitKind {
     PW_X86_EXIT_NONE = 0,
@@ -106,5 +119,5 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t guest_pc,
                      uint8_t *output, size_t capacity, PwX86Block *block);
 int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t guest_pc,
                          uint8_t *output, size_t capacity, PwX86Block *block,
-                         unsigned residency_enabled);
+                         unsigned residency_enabled, unsigned lazy_flags_enabled);
 #endif

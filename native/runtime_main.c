@@ -37,6 +37,15 @@
 #ifndef PW_TEST_EXIT_AFTER_MS
 #define PW_TEST_EXIT_AFTER_MS 0
 #endif
+#ifndef PW_DBT_CHAINING
+#define PW_DBT_CHAINING 1
+#endif
+#ifndef PW_DBT_RESIDENCY
+#define PW_DBT_RESIDENCY 1
+#endif
+#ifndef PW_DBT_LAZY_FLAGS
+#define PW_DBT_LAZY_FLAGS 1
+#endif
 
 typedef struct NativeServices {
     const PeImage *image;
@@ -395,11 +404,16 @@ int main(int argc,char **argv)
     PwX86Engine engine={0};
     if((status=pw_x86_engine_init(&engine,&vm,cache,8192,4u*1024u*1024u,1,
                                   source_view,&services))!=PW_OK)abort_runtime("dbt",status);
-    (void)pw_x86_engine_set_chaining(&engine, 1);
+    if(pw_x86_engine_set_chaining(&engine,PW_DBT_CHAINING)!=PW_OK ||
+       pw_x86_engine_set_residency(&engine,PW_DBT_RESIDENCY)!=PW_OK ||
+       pw_x86_engine_set_lazy_flags(&engine,PW_DBT_LAZY_FLAGS)!=PW_OK)
+        abort_runtime("dbt-mode",PW_ERR_STATE);
     PwVideoOutPs5 video;
     if((status=pw_videoout_ps5_open(&video))!=PW_OK)abort_runtime("videoout",status);
-    PS5LOG_LOG("PW_RUNTIME_READY imports=%u entry=0x%08x image_bytes=%u",
-               binding.total,state.eip,image.size_of_image);
+    PS5LOG_LOG("PW_RUNTIME_READY imports=%u entry=0x%08x image_bytes=%u "
+               "dbt_chaining=%u dbt_residency=%u dbt_lazy_flags=%u dbt_quantum=%u",
+               binding.total,state.eip,image.size_of_image,PW_DBT_CHAINING,
+               PW_DBT_RESIDENCY,PW_DBT_LAZY_FLAGS,engine.quantum);
     uint64_t events=0,last_heartbeat=now_ns(),last_present=0,last_pad_poll=0;
     uint64_t audio_completion_events=0;
     uint64_t last_loop=0,loop_gap_max_ns=0,loop_gaps_16ms=0,loop_gaps_33ms=0;
@@ -528,6 +542,7 @@ int main(int argc,char **argv)
                 "dbt_lookup_probes=%llu dbt_max_probe=%u dbt_protect_calls=%llu dbt_protect_bytes=%llu "
                 "dbt_links=%llu dbt_linked_transitions=%llu dbt_safepoints=%llu "
                 "dbt_reg_loads=%llu dbt_reg_stores=%llu dbt_reg_reconciliations=%llu dbt_reg_spills=%llu "
+                "dbt_flags_safepoint_commits=%llu "
                 "windows=%u targets=%u visible_source=%u flips=%llu audio_blocks=%llu "
                 "audio_bytes=%llu audio_frames=%llu audio_hash=0x%08x "
                 "audio_enqueues=%llu audio_completions=%llu audio_queue=%u "
@@ -552,6 +567,7 @@ int main(int argc,char **argv)
                 (unsigned long long)engine.reg_stores,
                 (unsigned long long)engine.reg_reconciliations,
                 (unsigned long long)engine.reg_spills,
+                (unsigned long long)engine.flags_safepoint_commits,
                 window_count,
                 counts.target_surfaces,presented,(unsigned long long)video.flips,
                 (unsigned long long)audio_stats.blocks,

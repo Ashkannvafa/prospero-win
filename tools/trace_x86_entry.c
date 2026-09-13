@@ -431,15 +431,17 @@ int main(int argc,char **argv)
     if(pw_x86_engine_init(&engine,&vm,cache_entries,8192,4*1024*1024,1,
                           trace_source,&trace_view)!=PW_OK)goto cleanup;
     have_engine=1;
-    unsigned chaining=0,residency=1,quantum=PW_X86_ENGINE_DEFAULT_QUANTUM;
+    unsigned chaining=0,residency=1,lazy_flags=1,quantum=PW_X86_ENGINE_DEFAULT_QUANTUM;
     if(trace_switch("PW_TRACE_CHAINING",0,&chaining)!=PW_OK ||
        trace_switch("PW_TRACE_RESIDENCY",1,&residency)!=PW_OK ||
+       trace_switch("PW_TRACE_LAZY_FLAGS",1,&lazy_flags)!=PW_OK ||
        trace_u32("PW_TRACE_QUANTUM",PW_X86_ENGINE_DEFAULT_QUANTUM,1,4096,&quantum)!=PW_OK ||
        pw_x86_engine_set_chaining(&engine,chaining)!=PW_OK ||
        pw_x86_engine_set_residency(&engine,residency)!=PW_OK ||
+       pw_x86_engine_set_lazy_flags(&engine,lazy_flags)!=PW_OK ||
        pw_x86_engine_set_quantum(&engine,quantum)!=PW_OK)goto cleanup;
-    printf("kind=host-dbt-mode chaining=%u residency=%u quantum=%u\n",
-           chaining,residency,quantum);
+    printf("kind=host-dbt-mode chaining=%u residency=%u lazy_flags=%u quantum=%u\n",
+           chaining,residency,lazy_flags,quantum);
     unsigned steps=0,events=0;
     uint32_t inspected_word=0;unsigned inspect_ready=0,inspect_changes=0;
     const char *stop="budget";
@@ -524,6 +526,9 @@ int main(int argc,char **argv)
            engine.cache.max_probe,(unsigned long long)engine.compiles,
            (unsigned long long)engine.protection_calls,
            (unsigned long long)engine.protection_bytes);
+    printf("kind=host-dbt-flags safepoint_commits=%llu pending_known=0x%08x\n",
+           (unsigned long long)engine.flags_safepoint_commits,
+           state.deferred_flags.known_mask);
     if(milestone)printf("kind=host-pc-milestone-summary pc=0x%08x seen=%u\n",
                         milestone,milestone_seen);
     if(inspect_address) {

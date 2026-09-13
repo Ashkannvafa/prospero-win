@@ -592,6 +592,6 @@ int main(void)
     test_wx_backend_spy();
 
     assert(vm.release(vm.context, &stack_region) == PW_OK);
-    printf("all 10 tranche A chaining tests passed successfully\n");
+    printf("all 10 direct chaining tests passed successfully\n");
     return 0;
 }
