@@ -7,66 +7,10 @@
 #include "pw_map.h"
 #include "pw_module_name.h"
 #include "pw_guest_call.h"
+#include "pw_guest_vm.h"
 #include "../include/prospero_win_vm.h"
 
 #include <string.h>
-
-enum {
-    /* Two modules of this distribution are under 5 MiB each. */
-    PW_WINE_GATE_LOW_BASE = 0x10000000u,
-    PW_WINE_GATE_MAX_IMAGE = 32u * 1024u * 1024u,
-};
-
-/*
- * A backend that keeps PE32 runtime modules below the guest's 4 GiB
- * boundary. The portable mapper refuses a PE32 image the guest could not
- * address, and a relocatable Wine DLL would otherwise land wherever mmap
- * chooses, so the gate asks for an exact low reservation first and only
- * falls back to the plain one.
- */
-typedef struct PwWineLowBackend {
-    PwVmBackend base;
-    uint32_t cursor;
-} PwWineLowBackend;
-
-static int low_reserve(void *context, size_t bytes, size_t alignment,
-                       PwVmRegion *out)
-{
-    PwWineLowBackend *low = context;
-    uint32_t candidate;
-
-    if ((low->base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u &&
-        bytes != 0u && bytes <= PW_WINE_GATE_MAX_IMAGE) {
-        const uint32_t step = alignment != 0u ? (uint32_t)alignment : 0x1000u;
-        const uint32_t aligned =
-            (low->cursor + step - 1u) & ~(step - 1u);
-
-        for (candidate = aligned;
-             (uint64_t)candidate + bytes <= 0x100000000ull &&
-             candidate < 0x40000000u;
-             candidate += step) {
-            if (low->base.reserve_at(low->base.context, candidate, bytes,
-                                     alignment, out) == PW_OK) {
-                low->cursor = candidate + (uint32_t)bytes;
-                return PW_OK;
-            }
-            if (candidate > 0x40000000u - step)
-                break;
-        }
-        low->cursor = PW_WINE_GATE_LOW_BASE;
-    }
-    return low->base.reserve(low->base.context, bytes, alignment, out);
-}
-
-static void low_backend_init(PwWineLowBackend *low, const PwVmBackend *base)
-{
-    memset(low, 0, sizeof(*low));
-    low->base = *base;
-    low->cursor = PW_WINE_GATE_LOW_BASE;
-    if ((base->capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
-        low->base.reserve = low_reserve;
-    low->base.context = low;
-}
 
 static void copy_text(char *out, size_t out_bytes, const char *text)
 {
@@ -286,7 +230,7 @@ static int guest_span_writable(const PwX86State *state, uint32_t address,
  * (released at cleanup).
  */
 typedef struct PwWineCallContext {
-    PwWineLowBackend *low;
+    PwGuestVm *vm;
     const PwWineGateConfig *config;
     PwWineGateReport *report;
     /* The module that plays the process image: ntdll's loader describes it
@@ -327,7 +271,7 @@ static int reserve_guest_block(PwWineCallContext *calls, uint32_t desired,
                                uint32_t bytes, PwVmRegion *region,
                                uint32_t *base)
 {
-    const PwVmBackend *backend = &calls->low->base;
+    const PwVmBackend *backend = &calls->vm->base;
     const uint32_t page = (uint32_t)backend->page_bytes;
     const uint32_t aligned = (bytes + page - 1u) & ~(page - 1u);
     int status;
@@ -498,11 +442,11 @@ static int gate_nt_allocate_virtual_memory(PwWineCallContext *calls,
         *status = PW_NT_CONFLICTING_ADDRESSES;
         return PW_OK;
     }
-    result = calls->low->base.commit(calls->low->base.context, &region, 0u,
+    result = calls->vm->base.commit(calls->vm->base.context, &region, 0u,
                                      region.bytes,
                                      PW_PROT_READ | PW_PROT_WRITE);
     if (result != PW_OK) {
-        (void) calls->low->base.release(calls->low->base.context, &region);
+        (void) calls->vm->base.release(calls->vm->base.context, &region);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
@@ -515,7 +459,7 @@ static int gate_nt_allocate_virtual_memory(PwWineCallContext *calls,
         PwX86State *state = access_context;
 
         if (state->memory_count >= PW_X86_MEMORY_REGIONS) {
-            (void) calls->low->base.release(calls->low->base.context, &region);
+            (void) calls->vm->base.release(calls->vm->base.context, &region);
             *status = PW_NT_INVALID_PARAMETER;
             return PW_OK;
         }
@@ -631,7 +575,7 @@ static int gate_nt_free_virtual_memory(PwWineCallContext *calls,
             *status = PW_NT_UNABLE_TO_FREE_VM;
             return PW_OK;
         }
-        if (calls->low->base.release(calls->low->base.context, &region) !=
+        if (calls->vm->base.release(calls->vm->base.context, &region) !=
             PW_OK) {
             *status = PW_NT_INVALID_PARAMETER;
             return PW_OK;
@@ -2353,15 +2297,15 @@ static int declare_guest_memory(PwX86State *state, const PwLoader *loader,
  * initialization entry as its first argument.
  */
 static int allocate_guest_page(const PwWineGateConfig *config,
-                               PwWineLowBackend *low, uint32_t base,
+                               PwGuestVm *guest_vm, uint32_t base,
                                PwVmRegion *region, uint32_t *address)
 {
     int status;
 
-    if ((low->base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
-        status = low->base.reserve_at(low->base.context, base,
-                                      PW_WINE_GATE_STACK_BYTES,
-                                      low->base.page_bytes, region);
+    if ((guest_vm->base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
+        status = guest_vm->base.reserve_at(guest_vm->base.context, base,
+                                           PW_WINE_GATE_STACK_BYTES,
+                                           guest_vm->base.page_bytes, region);
     else
         status = config->backend->reserve(config->backend->context,
                                           PW_WINE_GATE_STACK_BYTES,
@@ -2476,7 +2420,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     static PwExportResolver resolver;
     static PwX86CacheEntry cache[PW_WINE_GATE_CACHE_ENTRIES];
 
-    PwWineLowBackend low;
+    PwGuestVm guest_vm;
     PwX86Engine engine;
     PwImportBindReport bind;
     PeExportDirectory directory;
@@ -2516,7 +2460,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     if (budget > PW_WINE_GATE_MAX_STEPS)
         return PW_ERR_PRECONDITION;
     report->stop = PW_WINE_STOP_GATE_ERROR;
-    low_backend_init(&low, config->backend);
+    pw_guest_vm_init(&guest_vm, config->backend);
 
     /* Fingerprint every configured module before mapping anything. */
     for (uint32_t index = 0; index < config->module_count; ++index) {
@@ -2530,7 +2474,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             return PW_ERR_NOT_FOUND;
     }
 
-    status = pw_loader_init(&loader, config->provider, &low.base);
+    status = pw_loader_init(&loader, config->provider, pw_guest_vm_backend(&guest_vm));
     if (status != PW_OK)
         return status;
     have_loader = 1;
@@ -2680,10 +2624,10 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                                                  : 0x0f000000u;
         int reserved = PW_ERR_VM;
 
-        if ((low.base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
-            reserved = low.base.reserve_at(low.base.context, base,
-                                           PW_WINE_GATE_STACK_BYTES,
-                                           low.base.page_bytes, &stack);
+        if ((guest_vm.base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
+            reserved = guest_vm.base.reserve_at(guest_vm.base.context, base,
+                                                PW_WINE_GATE_STACK_BYTES,
+                                                guest_vm.base.page_bytes, &stack);
         if (reserved != PW_OK)
             reserved = config->backend->reserve(config->backend->context,
                                                PW_WINE_GATE_STACK_BYTES,
@@ -2715,18 +2659,18 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         uint32_t stack_high =
             report->stack_base + report->stack_bytes;
 
-        status = allocate_guest_page(config, &low, 0x0e000000u, &teb,
+        status = allocate_guest_page(config, &guest_vm, 0x0e000000u, &teb,
                                      &report->teb_base);
         if (status != PW_OK)
             goto done;
         have_teb = 1;
         report->teb_bytes = (uint32_t)teb.bytes;
-        status = allocate_guest_page(config, &low, 0x0d000000u, &peb,
+        status = allocate_guest_page(config, &guest_vm, 0x0d000000u, &peb,
                                      &report->peb_base);
         if (status != PW_OK)
             goto done;
         have_peb = 1;
-        status = allocate_guest_page(config, &low, 0x0c000000u, &parameters,
+        status = allocate_guest_page(config, &guest_vm, 0x0c000000u, &parameters,
                                      &report->parameters_base);
         if (status != PW_OK)
             goto done;
@@ -2812,7 +2756,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         memcpy((void *)(uintptr_t)state.gpr[4], &token, 4u);
     }
 
-    status = pw_x86_engine_init(&engine, &low.base, cache,
+    status = pw_x86_engine_init(&engine, pw_guest_vm_backend(&guest_vm), cache,
                                 PW_WINE_GATE_CACHE_ENTRIES,
                                 PW_WINE_GATE_ARENA_BYTES, 1u,
                                 gate_source_view, &loader);
@@ -2822,7 +2766,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     report->files_configured = config->files != NULL;
     report->registry_configured = config->registry != NULL;
     report->objects_configured = config->objects != NULL;
-    calls.low = &low;
+    calls.vm = &guest_vm;
     calls.config = config;
     calls.report = report;
     calls.root = pw_loader_module(&loader, 0u);
@@ -2973,7 +2917,7 @@ done:
      * block ntdll replaces and releases), so it is released below with them
      * and only once, whether or not the guest already gave it back. */
     for (uint32_t index = 0; index < calls.region_count; ++index) {
-        if (calls.low->base.release(calls.low->base.context,
+        if (calls.vm->base.release(calls.vm->base.context,
                                     &calls.regions[index]) == PW_OK)
             report->cleanup_mappings++;
     }
@@ -2987,6 +2931,7 @@ done:
     if (status == PW_OK)
         status = pw_wine_stop_is_acceptance(report->stop) ? PW_OK
                                                           : PW_ERR_UNSUPPORTED;
+    report->low_exhausted = (uint32_t)pw_guest_vm_exhausted(&guest_vm);
     report->status = status;
     return status;
 }

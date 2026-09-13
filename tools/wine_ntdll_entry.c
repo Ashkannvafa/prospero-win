@@ -596,6 +596,10 @@ int main(int argc, char **argv)
             report.cleanup_mappings >= report.module_count) ? "ok"
                                                            : "incomplete",
            pw_result_name(report.status));
+    /* A low reservation that ran out of candidates falls back to an address a
+     * PE32 image cannot use; the evidence says so instead of leaving the
+     * rejection unexplained. */
+    printf("kind=host-wine-low exhausted=%u\n", report.low_exhausted);
     if (config.bridge_calls) {
         char file_path[2u * (PW_WINE_GATE_MAX_PATH + 1u)];
         char key_path[2u * (PW_WINE_GATE_MAX_PATH + 1u)];

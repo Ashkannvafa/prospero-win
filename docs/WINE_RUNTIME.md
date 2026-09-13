@@ -290,14 +290,20 @@ compared instead of guessed). The commit case is the one that proves the
 rollback: the reservation the backend made is given straight back, so the
 number of live heap mappings the backend holds at the end is zero whether the
 call succeeded or failed, and the guest is never told about memory it cannot
-use. Two contracts this work made visible are recorded here rather than
-hidden: the gate's low-address wrapper *replaces* the vtable's `context` field
-with a pointer to its own struct, so a backend implementation must keep its
-state somewhere else; and a backend that refuses every candidate makes that
-wrapper walk the whole `0x10000000..0x40000000` window (196 608 candidates at
-4 KiB) before falling back to a non-exact reservation. Both belong to the
-pending gate extraction, where the low backend becomes an owned unit with an
-explicit contract.
+use. Two contracts this work made visible are now fixed rather than documented
+around. The gate's low-address wrapper used to *replace* the vtable's `context`
+field with a pointer to its own struct, so any backend that keeps state there
+was corrupted - invisible with today's stateless posix backend, fatal with the
+next one. And a backend that refused every candidate made one reservation walk
+the whole `0x10000000..0x40000000` window (196 608 candidates at 4 KiB) before
+falling back. Both live in `src/pw_guest_vm.[ch]` now: the unit keeps the
+caller's vtable *and its context* exactly as it received them, forwards every
+call with the backend's own context, wraps only the callbacks the backend
+actually has, and bounds the candidate scan to `PW_GUEST_VM_MAX_CANDIDATES`,
+reporting exhaustion in the evidence (`kind=host-wine-low exhausted=`) so a
+PE32 mapping that lands on the fallback has a stated reason.
+`tests/test_pw_guest_vm.c` covers the policy, the bound and the context
+contract with a backend double that asserts on its own context.
 
 ### What ntdll initialization reaches now
 

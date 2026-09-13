@@ -261,6 +261,7 @@ typedef struct PwWineGateReport {
     uint32_t stack_base;
     uint32_t stack_bytes;
     uint32_t guest_regions;         /* declared DBT memory regions */
+    uint32_t low_exhausted;         /* a low reservation ran out of candidates */
     uint32_t teb_base;              /* minimal guest TEB (FS base) */
     uint32_t teb_bytes;
     uint32_t peb_base;              /* minimal guest PEB (first argument) */
