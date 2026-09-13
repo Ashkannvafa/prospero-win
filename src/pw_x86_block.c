@@ -869,6 +869,7 @@ typedef struct DecodedInst {
     unsigned bit_scan;              /* 0f bc/bd: BSF or BSR */
     uint8_t bit_scan_opcode;
     unsigned bit_scan_word;         /* the 0x66 (16-bit) form */
+    unsigned shift_word;            /* 0x66 shift/rotate group */
     unsigned conditional;
     unsigned extend;
     unsigned setcc;
@@ -1080,6 +1081,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         uint8_t sse_prefix=0,sse_opcode=0,sse_imm=0;
         unsigned bit_scan=0,bit_scan_word=0;
         uint8_t bit_scan_opcode=0;
+        unsigned shift_word=0;
         unsigned extend_word_destination=0;
         unsigned x87=0,x87_width=0,x87_write=0,x87_register=0;
         unsigned string_op=0,string_width=0,string_repeat=0;
@@ -1293,6 +1295,26 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
             word_operand=1;
             can_fault=1;
             flags_def=0x001;
+        } else if(op==0x66 && bytes-cursor>=3 &&
+                  (source[cursor+1]==0xc1 || source[cursor+1]==0xd1 ||
+                   source[cursor+1]==0xd3)) {
+            /* 16-bit shift/rotate group. The destination's upper 16 bits are
+             * untouched, and the count is masked to four bits rather than
+             * five, which also changes which counts preserve the flags. */
+            int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            if(operand.reg!=4 && operand.reg!=5 && operand.reg!=7)
+                DECODE_FAIL(PW_ERR_UNSUPPORTED);
+            shift_word=1;
+            length=2+operand.bytes+(source[cursor+1]==0xc1);
+            can_fault=(operand.mod!=3);
+            if(source[cursor+1]==0xc1 && length<=bytes-cursor) {
+                unsigned count=source[cursor+length-1]&15;
+                flags_def=count==0?0:count==1?0x8c5:0x0c5;
+            } else {
+                flags_def=0x8c5;
+                if(source[cursor+1]==0xd3)flags_use=0x8c5;
+            }
         } else if(op==0x66 && bytes-cursor>=3 && source[cursor+1]==0x0f) {
             /* SSE with a mandatory 0x66 prefix. */
             int result=decode_sse(0x66u,0u,source+cursor+1,bytes-cursor-1,
@@ -1502,6 +1524,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->bit_scan = bit_scan;
         d->bit_scan_opcode = bit_scan_opcode;
         d->bit_scan_word = bit_scan_word;
+        d->shift_word = shift_word;
         d->conditional = conditional;
         d->extend = extend;
         d->setcc = setcc;
@@ -1634,6 +1657,7 @@ analyze_and_emit:
         unsigned bit_scan = d->bit_scan;
         uint8_t bit_scan_opcode = d->bit_scan_opcode;
         unsigned bit_scan_word = d->bit_scan_word;
+        unsigned shift_word = d->shift_word;
         unsigned conditional = d->conditional;
         unsigned extend = d->extend;
         unsigned setcc = d->setcc;
@@ -1864,16 +1888,19 @@ analyze_and_emit:
             block->exit_contract.dirty_mask = 0;
             x87_call(&e,x87-1,x87_register);
             emit_load_all_resident(&e, &block->exit_contract);
-        } else if(op==0xc1 || op==0xd1 || op==0xd3) {
+        } else if(op==0xc1 || op==0xd1 || op==0xd3 || shift_word) {
             /* A zero-count shift preserves all arithmetic flags and wider
              * counts retain implementation-policy bits. Canonicalize the
              * previous producer before this eager variable-mask path. */
+            const uint8_t shift_op=(uint8_t)(shift_word?source[cursor+1]:op);
+            const unsigned shift_width=shift_word?2u:4u;
             emit_commit_flags(&e);
             if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
-            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,2,4);}
-            if(op==0xd3){load_guest_reg_ecx(&e, &block->exit_contract, 1);}
-            else {byte(&e,0xb9);word(&e,op==0xd1?1:source[cursor+length-1]);}
-            byte(&e,0x83);byte(&e,0xe1);byte(&e,31); /* masked count */
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,2,shift_width);}
+            if(shift_op==0xd3){load_guest_reg_ecx(&e, &block->exit_contract, 1);}
+            else {byte(&e,0xb9);word(&e,shift_op==0xd1?1:source[cursor+length-1]);}
+            /* 16-bit shifts mask the count to four bits, 32-bit to five. */
+            byte(&e,0x83);byte(&e,0xe1);byte(&e,shift_word?15:31);
             /* esi selects only defined flags: none for zero, OF only for one.
              * Preserve undefined AF and multi-bit OF deterministically. */
             byte(&e,0xbe);word(&e,0xc5);
@@ -1883,6 +1910,7 @@ analyze_and_emit:
             byte(&e,0xba);word(&e,0x8c5);
             byte(&e,0x83);byte(&e,0xf9);byte(&e,1);
             byte(&e,0x0f);byte(&e,0x44);byte(&e,0xf2);
+            if(shift_word)byte(&e,0x66);
             byte(&e,0xd3);byte(&e,(operand.mod==3?0xc0:0)|(operand.reg<<3));
             if(operand.mod==3)store_guest_reg(&e, &block->exit_contract, operand.rm);
             if (!d->flags_dead) {

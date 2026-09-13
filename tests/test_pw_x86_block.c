@@ -861,6 +861,9 @@ static void sse_and_scan_tests(void)
     const uint8_t bsr[]={0x0f,0xbd,0xca};
     const uint8_t bsf[]={0x0f,0xbc,0xca};
     const uint8_t bsr16[]={0x66,0x0f,0xbd,0xc2};
+    const uint8_t shr16[]={0x66,0xd1,0xea};               /* shr dx,1 */
+    const uint8_t shl16_imm[]={0x66,0xc1,0xe0,0x04};      /* shl ax,4 */
+    const uint8_t shr16_cl[]={0x66,0xd3,0xe8};            /* shr ax,cl */
 
     state.memory_count=0;
     memset(state.fp.xmm,0,sizeof(state.fp.xmm));
@@ -937,6 +940,21 @@ static void sse_and_scan_tests(void)
     state.gpr[2]=0x8000;state.gpr[0]=0xffffffff;state.eflags=0x202;
     assert(run(bsr16,sizeof(bsr16),0x8130)==0);
     assert(state.gpr[0]==0xffff000f);
+    /* The 16-bit shift group: only the low word changes, the count is masked
+     * to four bits, and a masked-zero count preserves every flag. */
+    state.gpr[2]=0x00070008;state.eflags=0x202|1;
+    assert(run(shr16,sizeof(shr16),0x8140)==0);
+    assert(state.gpr[2]==0x00070004);
+    assert((state.eflags&1)==0 && (state.eflags&0x40)==0);
+    state.gpr[0]=0x0000ffff;state.eflags=0x202;
+    assert(run(shl16_imm,sizeof(shl16_imm),0x8150)==0);
+    assert(state.gpr[0]==0x0000fff0 && (state.eflags&0x40)==0);
+    state.gpr[0]=0x00000001;state.gpr[1]=16;state.eflags=0xad7;
+    assert(run(shr16_cl,sizeof(shr16_cl),0x8160)==0);
+    assert(state.gpr[0]==0x00000001 && state.eflags==0xad7); /* count 16 & 15 == 0 */
+    state.gpr[0]=0x00008000;state.gpr[1]=1;state.eflags=0x202;
+    assert(run(shr16_cl,sizeof(shr16_cl),0x8170)==0);
+    assert(state.gpr[0]==0x00004000 && (state.eflags&1)==0);
     /* Every one of them must behave identically in all engine modes. */
     for(unsigned residency=0;residency<2;residency++)
         for(unsigned lazy=0;lazy<2;lazy++) {

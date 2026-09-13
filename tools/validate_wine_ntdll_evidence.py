@@ -210,7 +210,8 @@ def validate(records: dict[str, list[dict[str, str]]],
     syscall = number(run, "syscall", "run")
     if run["stop"] != ACCEPTED_STOP:
         if run["stop"] not in BRIDGED_STOPS and \
-                run["stop"] != "unsupported-instruction":
+                run["stop"] != "unsupported-instruction" and \
+                run["stop"] != "memory-bounds":
             raise Failure(f"the gate stopped with {run['stop']}")
         serviced = records.get("calls", [])
         if len(serviced) != 1:
@@ -252,6 +253,33 @@ def validate(records: dict[str, list[dict[str, str]]],
                     stop_address >= ntdll_base + \
                     number(ntdll, "image_bytes", "ntdll.dll"):
                 raise Failure("the instruction stop is not inside ntdll")
+        elif run["stop"] == "memory-bounds":
+            # A classified memory stop during development: the bridge serviced
+            # every call, nothing was refused, and the guest dereferenced an
+            # address outside every mapped module - the shape a missing
+            # process-environment field produces. It is evidence about the
+            # stop, never an acceptance.
+            for serviced_call in sequence:
+                if serviced_call["outcome"] != "handled":
+                    raise Failure("a run that stopped on a memory bound may "
+                                  "not report a refused call")
+            fault = one(records, "fault")
+            require_fields(fault, {"address", "width", "write"}, "fault")
+            address = number(fault, "address", "fault")
+            width = number(fault, "width", "fault")
+            if address == 0 or width not in (1, 2, 4, 8, 16):
+                raise Failure("the fault record does not describe an access")
+            for name, record in by_name.items():
+                base = number(record, "base", name)
+                span = number(record, "image_bytes", name)
+                if address >= base and address < base + span:
+                    raise Failure("the reported fault is inside a mapped "
+                                  "module, which is not a classified stop")
+            stop_address = number(run, "stop_address", "run")
+            if stop_address < ntdll_base or \
+                    stop_address >= ntdll_base + \
+                    number(ntdll, "image_bytes", "ntdll.dll"):
+                raise Failure("the memory stop is not inside ntdll")
         else:
             expected = BRIDGED_STOPS[run["stop"]]
             if last["outcome"] != expected:

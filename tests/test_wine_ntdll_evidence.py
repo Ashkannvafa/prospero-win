@@ -208,8 +208,8 @@ class Case(unittest.TestCase):
 
     def test_wrong_stop(self) -> None:
         def mutate(records):
-            records["run"][0]["stop"] = "memory-bounds"
-        self.expect_failure("the gate stopped with memory-bounds", mutate)
+            records["run"][0]["stop"] = "returned-to-caller"
+        self.expect_failure("the gate stopped with returned-to-caller", mutate)
 
     def test_instruction_stop_without_a_bridge(self) -> None:
         def mutate(records):
@@ -406,6 +406,56 @@ class Case(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             self.run_validation(records)
         self.assertIn("last call outcome is handled", str(caught.exception))
+
+    # --- classified memory stops --------------------------------------
+
+    def memory_stop_records(self) -> dict:
+        """A run that serviced calls and then dereferenced a null guest field."""
+        records = self.bridged_records()
+        records["run"][0].update(stop="memory-bounds",
+                                 stop_address=hex(NTDLL_BASE + 0x24EE6),
+                                 last_eip=hex(NTDLL_BASE + 0x24EE6))
+        records["verdict"][0].update(stop="memory-bounds")
+        records["fault"] = [{"address": "0x000007ca", "width": "2",
+                             "write": "0"}]
+        return records
+
+    def test_accepts_a_classified_memory_stop(self) -> None:
+        notes = self.run_validation(self.memory_stop_records())
+        self.assertTrue(any("bridged:" in note for note in notes))
+
+    def test_memory_stop_needs_a_fault_record(self) -> None:
+        records = self.memory_stop_records()
+        del records["fault"]
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("expected exactly one fault record", str(caught.exception))
+
+    def test_memory_stop_inside_a_module_is_not_classified(self) -> None:
+        records = self.memory_stop_records()
+        records["fault"][0]["address"] = hex(NTDLL_BASE + 0x1000)
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("inside a mapped module", str(caught.exception))
+
+    def test_memory_stop_with_a_refused_call(self) -> None:
+        records = self.memory_stop_records()
+        records["call-seq"].append({
+            "index": "1", "id": "0x00000019",
+            "name": "NtQueryInformationProcess", "args": "20",
+            "stub_return": hex(NTDLL_BASE + 0xD420),
+            "return": hex(NTDLL_BASE + 0x4EF03), "status": "0xc0000002",
+            "outcome": "unimplemented", "argument": "0"})
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("may not report a refused call", str(caught.exception))
+
+    def test_memory_stop_must_name_an_access_width(self) -> None:
+        records = self.memory_stop_records()
+        records["fault"][0]["width"] = "3"
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("does not describe an access", str(caught.exception))
 
 
 if __name__ == "__main__":

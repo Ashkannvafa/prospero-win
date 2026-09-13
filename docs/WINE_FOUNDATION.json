@@ -28,7 +28,7 @@
       "id": "ia32-dbt",
       "status": "validated",
       "depends_on": ["pe-loader"],
-      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator now also covers FS-prefixed absolute dword operands, LOCK-prefixed group-1 memory read-modify-write, BT/BTS/BTR/BTC, CMOVcc, the SSE data-movement/lane slice (movd/movq/movdqa/movdqu/movups/movaps/movss/movsd, punpck/packss, pshufd and friends, pextrw/pinsrw) and BSF/BSR, each with architectural tests and residency/lazy-flag parity where the form allows it. With the Unix-call bridge enabled, real ntdll initialization now retires 8577 instructions, services three NtAllocateVirtualMemory calls and maps 88 KiB of guest memory before meeting the next untranslated family.",
+      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator now also covers FS-prefixed absolute dword operands, LOCK-prefixed group-1 memory read-modify-write, BT/BTS/BTR/BTC, CMOVcc, the SSE data-movement/lane slice (movd/movq/movdqa/movdqu/movups/movaps/movss/movsd, punpck/packss, pshufd and friends, pextrw/pinsrw), BSF/BSR and the 16-bit shift group, each with architectural tests and residency/lazy-flag parity where the form allows it. With the Unix-call bridge enabled, real ntdll initialization runs 8582 instructions, services three NtAllocateVirtualMemory calls and maps 88 KiB of guest memory before it needs a populated process environment (CurrentDirectory.Buffer is null in the gate's zeroed process-parameters page).",
       "exit_criteria": ["wine-ntdll-instruction-closure", "sse2", "indirect-branch-cache", "multi-thread-code-cache"]
     },
     {

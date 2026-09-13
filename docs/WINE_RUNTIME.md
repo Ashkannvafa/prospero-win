@@ -277,9 +277,10 @@ executed before, and each stop then named the next missing family. Current
 state of that path with `--bridge 1`:
 
 ```text
-retired 8577 instructions over 1440 dispatches and 252 translated blocks
+retired 8582 instructions over 1440 dispatches and 253 translated blocks
 3 NtAllocateVirtualMemory calls serviced, 2 guest regions mapped (88 KiB)
-stops at ntdll RVA 0x24ee6 on the next family the translator does not cover
+stops at ntdll RVA 0x28ef7 with a classified memory bound: the guest read
+2 bytes at 0x7ca, i.e. CurrentDirectory.Buffer was null
 ```
 
 The families added for that path, each with architectural tests:
@@ -299,6 +300,12 @@ The families added for that path, each with architectural tests:
   index comes from the host instruction, a zero source leaves the destination
   unchanged deterministically (the ISA leaves it undefined) while ZF still
   reports the zero, and only ZF is written.
+- **The 16-bit shift group** (`66 D1`/`D3`/`C1` with the `shl`/`shr`/`sar`
+  registers): the destination's upper 16 bits are untouched, the count is
+  masked to four bits rather than five - which also changes which counts
+  preserve the flags - and the flag policy matches the 32-bit path
+  (`count == 0` preserves everything, `count == 1` sets OF, wider counts keep
+  the deterministic subset).
 - The memory guard accepts 16-byte accesses now, which is the width of the SSE
   loads and stores, and records the address, width and direction of a refused
   access, so a `memory-bounds` stop names the fault instead of only its kind.
@@ -317,3 +324,24 @@ expectations (upper-bit zeroing, lane order, 16-byte guard behaviour, and the
 same instructions through all four residency/lazy-flag combinations) rather
 than by the native oracle, because the emitted host instruction *is* the
 instruction the oracle would execute.
+
+### Where the run now stops, and why that is not an opcode
+
+The last stop is not another instruction family. `_RtlGetCurrentDirectory_U`
+reads `PEB->ProcessParameters->CurrentDirectory` and dereferences `Buffer`;
+the gate's process-parameters page is zeroed, so `Buffer` is null and the
+dispatcher classifies the read as `memory-bounds` at address `0x7ca` with
+width 2. In other words: real ntdll initialization now runs until it needs a
+**populated process environment** - the system root, the current directory,
+the environment block, the command line - which is the
+`wine-process-startup` exit criterion in the foundation ledger, not a gap in
+instruction coverage.
+
+The evidence contract reflects that honestly. A `memory-bounds` stop is
+accepted by the validator only when the calls record is present, every call
+was handled, the `fault` record names a non-zero access of an allowed width,
+the fault address lies outside every mapped module (so it is the guest
+dereferencing something it was never given, not the guard refusing mapped
+memory) and the stop address is inside ntdll. Nothing about it is reported as
+acceptance: the verdict still says the run did not reach the Unix-call
+boundary.
