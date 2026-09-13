@@ -281,6 +281,24 @@ injects each of those failures - an unwritable `*RegionSize`, an unwritable
 ownership, live region count, declared bytes, cleanup count and the guest's own
 outputs are exactly what they were.
 
+`tests/test_pw_wine_vm_transactions.c` goes under the calls themselves: it
+wraps the real backend in a double that fails one step on demand and counts
+only the calls that belong to the guest's heap window, and it injects a refused
+`reserve_at`, a refused `commit`, a refused `release` and an exhausted
+declared-region table (with a control run per mode, so the counters can be
+compared instead of guessed). The commit case is the one that proves the
+rollback: the reservation the backend made is given straight back, so the
+number of live heap mappings the backend holds at the end is zero whether the
+call succeeded or failed, and the guest is never told about memory it cannot
+use. Two contracts this work made visible are recorded here rather than
+hidden: the gate's low-address wrapper *replaces* the vtable's `context` field
+with a pointer to its own struct, so a backend implementation must keep its
+state somewhere else; and a backend that refuses every candidate makes that
+wrapper walk the whole `0x10000000..0x40000000` window (196 608 candidates at
+4 KiB) before falling back to a non-exact reservation. Both belong to the
+pending gate extraction, where the low backend becomes an owned unit with an
+explicit contract.
+
 ### What ntdll initialization reaches now
 
 Servicing the first calls pushed real ntdll code into the DBT that nothing had

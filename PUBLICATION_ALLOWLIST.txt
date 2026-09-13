@@ -240,3 +240,4 @@ tests/test_pw_wine_registry.c
 tests/pw_unhandled_call.h
 tests/test_pw_wine_objects.c
 tests/test_pw_wine_process_info.c
+tests/test_pw_wine_vm_transactions.c
