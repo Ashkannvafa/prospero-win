@@ -212,7 +212,8 @@ def validate(records: dict[str, list[dict[str, str]]],
         if run["stop"] not in BRIDGED_STOPS and \
                 run["stop"] != "unsupported-instruction" and \
                 run["stop"] != "memory-bounds" and \
-                run["stop"] != "cache-limit":
+                run["stop"] != "cache-limit" and \
+                run["stop"] != "returned-to-caller":
             raise Failure(f"the gate stopped with {run['stop']}")
         serviced = records.get("calls", [])
         if len(serviced) != 1:
@@ -288,6 +289,17 @@ def validate(records: dict[str, list[dict[str, str]]],
                 if serviced_call["outcome"] != "handled":
                     raise Failure("a run that stopped on the translation "
                                   "arena may not report a refused call")
+        elif run["stop"] == "returned-to-caller":
+            # The guest jumped to address zero: a null call, which is the same
+            # class of finding as the null read above. Only exactly zero is
+            # accepted, and only when nothing was refused.
+            for serviced_call in sequence:
+                if serviced_call["outcome"] != "handled":
+                    raise Failure("a run that jumped to null may not report a "
+                                  "refused call")
+            if number(run, "stop_address", "run") != 0:
+                raise Failure("a returned-to-caller stop must be a null jump "
+                              "to be classified")
         else:
             expected = BRIDGED_STOPS[run["stop"]]
             if last["outcome"] != expected:

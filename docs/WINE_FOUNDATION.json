@@ -160,7 +160,7 @@
       "depends_on": [
         "nt-objects-waits"
       ],
-      "evidence": "Title-confined read/seek and INI access exist. For Wine, NtOpenFile (0x0033) is now the first Unix call the loader issues and the first one with no handler: the bridge identifies it by number, name and argument width and refuses it rather than inventing a result, so the file-object, path-translation and sharing contracts are the next implementation step. Directory enumeration, overlapped I/O and broad NT path semantics remain.",
+      "evidence": "Title-confined read/seek and INI access exist. For Wine, the Unix-call bridge now has a bounded file service: NtOpenFile, NtReadFile, NtQueryInformationFile (FileStandardInformation) and NtClose are serviced behind a gate-owned handle table, with every guest pointer validated through the dispatcher's accessor and a path translation that accepts only single components under C:\\windows\\system32 or C:\\windows, so traversal is refused before the platform is consulted. The host side is a pluggable service, so the portable core still makes no file-system call. The loader's first open is the Windows directory itself, which is refused today: directory objects, broader NT path semantics, sharing, directory enumeration and overlapped I/O remain.",
       "exit_criteria": [
         "dos-device-map",
         "nt-path-normalization",

@@ -235,3 +235,4 @@ src/pw_unix_call.c
 src/pw_unix_call.h
 tests/test_pw_wine_gate_bridge.c
 tests/test_unix_call_table.py
+tests/test_pw_wine_file_service.c

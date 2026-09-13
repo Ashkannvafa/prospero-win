@@ -18,9 +18,70 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 
 static PwWineGateReport report;
+
+/*
+ * Host file service below the Unix-call boundary. The gate has already
+ * translated the guest path into a canonical name inside the runtime
+ * distribution; this only opens, reads and closes it, and it never sees a
+ * guest pointer.
+ */
+static PwWineFileStatus host_file_open(void *context, const char *name,
+                                       uint64_t *size, void **token)
+{
+    char path[512];
+    FILE *file;
+    long length;
+
+    if (snprintf(path, sizeof(path), "%s/%s", (const char *)context, name) >=
+        (int)sizeof(path))
+        return PW_WINE_FILE_ERROR;
+    file = fopen(path, "rb");
+    if (!file)
+        return errno == EACCES ? PW_WINE_FILE_DENIED : PW_WINE_FILE_NOT_FOUND;
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return PW_WINE_FILE_ERROR;
+    }
+    length = ftell(file);
+    if (length < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return PW_WINE_FILE_ERROR;
+    }
+    *size = (uint64_t)length;
+    *token = file;
+    return PW_WINE_FILE_OK;
+}
+
+static PwWineFileStatus host_file_read(void *context, void *token,
+                                       uint64_t offset, void *bytes,
+                                       uint32_t size, uint32_t *read_bytes)
+{
+    FILE *file = token;
+
+    (void)context;
+    if (!file || fseek(file, (long)offset, SEEK_SET) != 0)
+        return PW_WINE_FILE_ERROR;
+    *read_bytes = (uint32_t)fread(bytes, 1u, size, file);
+    return PW_WINE_FILE_OK;
+}
+
+static void host_file_close(void *context, void *token)
+{
+    (void)context;
+    if (token)
+        fclose(token);
+}
+
+static const PwWineFileService host_files = {
+    .context = NULL, .open = host_file_open, .read = host_file_read,
+    .close = host_file_close,
+};
+
+
 
 static void trace_step(void *context, const PwX86State *state)
 {
@@ -98,6 +159,14 @@ int main(int argc, char **argv)
     memset(&config, 0, sizeof(config));
     config.provider = &provider;
     config.backend = &vm;
+    {
+        static PwWineFileService files = host_files;
+        static char runtime_path[512];
+
+        memcpy(runtime_path, runtime, strlen(runtime) + 1u);
+        files.context = runtime_path;
+        config.files = &files;
+    }
     config.root_module = root;
     config.entry_module = entry_module;
     config.entry_symbol = entry_symbol;
@@ -195,12 +264,18 @@ int main(int argc, char **argv)
     if (config.bridge_calls) {
         printf("kind=host-wine-calls serviced=%u handled=%llu unimplemented=%llu "
                "unknown=%llu rejected=%llu allocations=%u allocated_bytes=%u "
-               "regions=%u\n", report.calls_serviced,
+               "regions=%u files=%u opens=%llu reads=%llu bytes=%llu closes=%llu refusals=%llu last=%s\n", report.calls_serviced,
                (unsigned long long)report.calls.handled,
                (unsigned long long)report.calls.unimplemented,
                (unsigned long long)report.calls.unknown,
                (unsigned long long)report.calls.rejected, report.allocations,
-               report.allocated_bytes, report.call_regions);
+               report.allocated_bytes, report.call_regions,
+               report.files_configured, (unsigned long long)report.file_opens,
+               (unsigned long long)report.file_reads,
+               (unsigned long long)report.file_bytes,
+               (unsigned long long)report.file_closes,
+               (unsigned long long)report.file_refusals,
+               report.last_file[0] ? report.last_file : "-");
         for (uint32_t index = 0; index < report.calls.records; ++index) {
             const PwUnixCallRecord *record = &report.calls.sequence[index];
 

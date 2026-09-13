@@ -259,6 +259,12 @@ typedef struct PwWineCallContext {
     uint32_t limit;
     PwVmRegion regions[PW_WINE_GATE_MAX_CALL_REGIONS];
     uint32_t region_count;
+    struct PwWineHandle {
+        void *token;
+        uint64_t size;
+        uint64_t offset;
+        uint8_t used;
+    } handles[PW_WINE_GATE_MAX_HANDLES];
 } PwWineCallContext;
 
 static int reserve_guest_block(PwWineCallContext *calls, uint32_t desired,
@@ -450,6 +456,351 @@ static int gate_nt_allocate_virtual_memory(PwWineCallContext *calls,
 }
 
 /*
+ * Platform file service plumbing. Handles are gate-owned indices so a guest
+ * cannot forge one: the value carries a fixed base and the slot has to be
+ * live, and every guest buffer is reached through the dispatcher's validated
+ * accessor.
+ */
+static uint32_t file_handle_value(uint32_t index)
+{
+    return 0x100u + index;
+}
+
+static int file_handle_lookup(PwWineCallContext *calls, uint32_t value,
+                              uint32_t *index)
+{
+    if (value < 0x100u || value - 0x100u >= PW_WINE_GATE_MAX_HANDLES)
+        return PW_ERR_NOT_FOUND;
+    if (!calls->handles[value - 0x100u].used)
+        return PW_ERR_NOT_FOUND;
+    *index = value - 0x100u;
+    return PW_OK;
+}
+
+static int file_handle_alloc(PwWineCallContext *calls, void *token,
+                             uint64_t size, uint32_t *value)
+{
+    for (uint32_t index = 0; index < PW_WINE_GATE_MAX_HANDLES; ++index) {
+        if (calls->handles[index].used)
+            continue;
+        calls->handles[index] = (struct PwWineHandle){
+            .token = token, .size = size, .offset = 0u, .used = 1u,
+        };
+        *value = file_handle_value(index);
+        calls->report->file_handles++;
+        return PW_OK;
+    }
+    return PW_ERR_LIMIT;
+}
+
+static int file_handle_release(PwWineCallContext *calls, uint32_t value)
+{
+    uint32_t index = 0u;
+
+    if (file_handle_lookup(calls, value, &index) != PW_OK)
+        return PW_ERR_NOT_FOUND;
+    if (calls->config->files && calls->handles[index].token)
+        calls->config->files->close(calls->config->files->context,
+                                    calls->handles[index].token);
+    memset(&calls->handles[index], 0, sizeof(calls->handles[index]));
+    calls->report->file_closes++;
+    if (calls->report->file_handles)
+        calls->report->file_handles--;
+    return PW_OK;
+}
+
+static char ascii_lower(char value)
+{
+    return value >= 'A' && value <= 'Z' ? (char)(value + 32) : value;
+}
+
+static int prefix_matches(const char *text, const char *prefix, size_t *used)
+{
+    size_t index = 0u;
+
+    for (; prefix[index] != '\0'; ++index) {
+        if (ascii_lower(text[index]) != ascii_lower(prefix[index]))
+            return 0;
+    }
+    if (used)
+        *used = index;
+    return 1;
+}
+
+/*
+ * Translates a guest DOS/NT path into a canonical file name inside the
+ * runtime distribution, or fails. Only the two prefixes a Wine loader uses
+ * are accepted, the remainder must be a single path component, and the result
+ * is lower-cased, so ".." or an absolute host path cannot reach the service.
+ */
+static int translate_runtime_path(const char *path, char *out, size_t out_bytes,
+                                  uint32_t *status)
+{
+    const char *rest = path;
+    size_t used = 0u;
+    size_t length = 0u;
+
+    if (prefix_matches(rest, "\\??\\", &used))
+        rest += used;
+    if (prefix_matches(rest, "C:\\windows\\system32\\", &used) ||
+        prefix_matches(rest, "C:\\windows\\", &used))
+        rest += used;
+    else {
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        return PW_ERR_NOT_FOUND;
+    }
+    while (rest[length] != '\0') {
+        const char character = rest[length];
+
+        if (character == '\\' || character == '/' || character == ':' ||
+            character == '\0' || length + 1u >= out_bytes) {
+            *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+            return PW_ERR_MALFORMED;
+        }
+        out[length] = ascii_lower(character);
+        ++length;
+    }
+    if (length == 0u || (length >= 2u && out[length - 1u] == '.' &&
+                         out[length - 2u] == '.')) {
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        return PW_ERR_MALFORMED;
+    }
+    out[length] = '\0';
+    return PW_OK;
+}
+
+/* Reads a guest UNICODE_STRING and converts it to ASCII. */
+static int read_guest_unicode(PwUnixCallAccess guest, void *context,
+                              uint32_t address, char *out, size_t out_bytes)
+{
+    uint8_t header[8];
+    uint32_t buffer = 0u;
+    uint16_t length = 0u;
+
+    if (guest(context, address, header, sizeof(header), 0) != PW_OK)
+        return PW_ERR_MALFORMED;
+    memcpy(&length, header, 2u);
+    memcpy(&buffer, header + 4u, 4u);
+    if (length == 0u || (length & 1u) != 0u || buffer == 0u ||
+        length / 2u + 1u > out_bytes)
+        return PW_ERR_MALFORMED;
+    for (uint32_t index = 0; index < length / 2u; ++index) {
+        uint16_t unit = 0u;
+
+        if (guest(context, buffer + index * 2u, &unit, 2u, 0) != PW_OK)
+            return PW_ERR_MALFORMED;
+        if (unit > 0x7fu)
+            return PW_ERR_UNSUPPORTED;   /* the runtime paths are ASCII */
+        out[index] = (char)unit;
+    }
+    out[length / 2u] = '\0';
+    return PW_OK;
+}
+
+static void write_io_status(PwUnixCallAccess guest, void *context,
+                            uint32_t address, uint32_t status,
+                            uint64_t information)
+{
+    uint8_t block[8];
+
+    memcpy(block, &status, 4u);
+    memcpy(block + 4u, &information, 4u);
+    (void)guest(context, address, block, sizeof(block), 1);
+}
+
+/*
+ * NtOpenFile for the runtime distribution. The accepted shape is the one a
+ * loader uses: an OBJECT_ATTRIBUTES with a UNICODE_STRING name under the
+ * Windows directory. Anything else is answered with a real NTSTATUS.
+ */
+static int gate_nt_open_file(PwWineCallContext *calls,
+                             const PwUnixCallFrame *frame,
+                             PwUnixCallAccess guest, void *context,
+                             uint32_t *status, uint32_t *argument_index)
+{
+    uint8_t attributes[24];
+    const uint32_t handle_pointer = frame->args[0];
+    const uint32_t attributes_pointer = frame->args[2];
+    const uint32_t io_pointer = frame->args[3];
+    uint32_t name_pointer = 0u;
+    char wide[2u * PW_WINE_GATE_MAX_PATH];
+    char name[PW_WINE_GATE_MAX_PATH + 1];
+    uint64_t size = 0u;
+    void *token = NULL;
+    uint32_t handle = 0u;
+
+    if (attributes_pointer == 0u || io_pointer == 0u || handle_pointer == 0u) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    if (guest(context, attributes_pointer, attributes, sizeof(attributes),
+              0) != PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    memcpy(&name_pointer, attributes + 8u, 4u);
+    if (name_pointer == 0u) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    if (read_guest_unicode(guest, context, name_pointer, wide, sizeof(wide)) !=
+        PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    if (translate_runtime_path(wide, name, sizeof(name), status) != PW_OK) {
+        const size_t length = strlen(wide);
+
+        if (length <= PW_WINE_GATE_MAX_PATH)
+            memcpy(calls->report->last_file, wide, length + 1u);
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    if (!calls->config->files) {
+        *status = PW_NT_NOT_IMPLEMENTED;
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    switch (calls->config->files->open(calls->config->files->context, name,
+                                       &size, &token)) {
+    case PW_WINE_FILE_OK:
+        break;
+    case PW_WINE_FILE_NOT_FOUND:
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        calls->report->file_refusals++;
+        return PW_OK;
+    case PW_WINE_FILE_DENIED:
+        *status = PW_NT_ACCESS_DENIED;
+        calls->report->file_refusals++;
+        return PW_OK;
+    default:
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    if (file_handle_alloc(calls, token, size, &handle) != PW_OK) {
+        calls->config->files->close(calls->config->files->context, token);
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    if (guest(context, handle_pointer, &handle, 4u, 1) != PW_OK) {
+        (void)file_handle_release(calls, handle);
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    write_io_status(guest, context, io_pointer, PW_NT_SUCCESS, 0u);
+    memcpy(calls->report->last_file, name, strlen(name) + 1u);
+    calls->report->file_opens++;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+static int gate_nt_read_file(PwWineCallContext *calls,
+                             const PwUnixCallFrame *frame,
+                             PwUnixCallAccess guest, void *context,
+                             uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t handle = frame->args[0];
+    const uint32_t io_pointer = frame->args[4];
+    const uint32_t buffer = frame->args[5];
+    const uint32_t length = frame->args[6];
+    const uint32_t offset_pointer = frame->args[7];
+    uint32_t index = 0u;
+    uint64_t offset = 0u;
+    uint8_t staging[PW_WINE_GATE_MAX_READ];
+    uint32_t read_bytes = 0u;
+
+    if (file_handle_lookup(calls, handle, &index) != PW_OK) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (io_pointer == 0u || buffer == 0u || length == 0u) {
+        *argument_index = 5u;
+        return PW_ERR_MALFORMED;
+    }
+    if (length > PW_WINE_GATE_MAX_READ) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    offset = calls->handles[index].offset;
+    if (offset_pointer != 0u) {
+        uint8_t raw[8];
+        uint32_t low = 0u, high = 0u;
+
+        if (guest(context, offset_pointer, raw, sizeof(raw), 0) != PW_OK) {
+            *argument_index = 7u;
+            return PW_ERR_MALFORMED;
+        }
+        memcpy(&low, raw, 4u);
+        memcpy(&high, raw + 4u, 4u);
+        offset = (uint64_t)low | ((uint64_t)high << 32);
+    }
+    if (offset > calls->handles[index].size) {
+        write_io_status(guest, context, io_pointer, PW_NT_END_OF_FILE, 0u);
+        *status = PW_NT_SUCCESS;
+        return PW_OK;
+    }
+    if (!calls->config->files ||
+        calls->config->files->read(calls->config->files->context,
+                                   calls->handles[index].token, offset, staging,
+                                   length, &read_bytes) != PW_WINE_FILE_OK) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (read_bytes != 0u &&
+        guest(context, buffer, staging, read_bytes, 1) != PW_OK) {
+        *argument_index = 6u;
+        return PW_ERR_MALFORMED;
+    }
+    calls->handles[index].offset = offset + read_bytes;
+    write_io_status(guest, context, io_pointer, PW_NT_SUCCESS, read_bytes);
+    calls->report->file_reads++;
+    calls->report->file_bytes += read_bytes;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+static int gate_nt_query_information_file(PwWineCallContext *calls,
+                                          const PwUnixCallFrame *frame,
+                                          PwUnixCallAccess guest, void *context,
+                                          uint32_t *status,
+                                          uint32_t *argument_index)
+{
+    const uint32_t handle = frame->args[0];
+    const uint32_t io_pointer = frame->args[1];
+    const uint32_t information_pointer = frame->args[2];
+    const uint32_t length = frame->args[3];
+    const uint32_t information_class = frame->args[4];
+    uint8_t block[22];
+    uint32_t index = 0u;
+    uint32_t written;
+
+    if (file_handle_lookup(calls, handle, &index) != PW_OK) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (information_class != 5u) {         /* FileStandardInformation */
+        *status = PW_NT_INVALID_INFO_CLASS;
+        return PW_OK;
+    }
+    memset(block, 0, sizeof(block));
+    memcpy(block, &calls->handles[index].size, 8u);        /* AllocationSize */
+    memcpy(block + 8u, &calls->handles[index].size, 8u);   /* EndOfFile */
+    written = length < sizeof(block) ? length : sizeof(block);
+    if (written != 0u &&
+        (information_pointer == 0u ||
+         guest(context, information_pointer, block, written, 1) != PW_OK)) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    if (io_pointer != 0u)
+        write_io_status(guest, context, io_pointer, PW_NT_SUCCESS, written);
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
  * Services one intercepted Unix call. PW_WINE_STOP_NONE means the guest may
  * continue: the handler's NTSTATUS is in EAX, the stdcall frame is popped and
  * EIP returns to the stub, exactly as Wine's own dispatcher would leave it.
@@ -479,15 +830,42 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
                             argument_index, PW_UNIX_CALL_REJECTED);
         return PW_WINE_STOP_UNIX_CALL_REJECTED;
     }
-    if (info->id != 0x0018u) {
-        /* A known call number with no handler yet: the frame is understood
-         * and reported, but the guest must not continue past it. */
-        pw_unix_call_record(&report->calls, &frame, info, PW_NT_NOT_IMPLEMENTED,
-                            0u, PW_UNIX_CALL_UNIMPLEMENTED);
-        return PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED;
+    /* The switch below services what has a handler; a known number without
+     * one falls through to the unimplemented stop, so the frame is still
+     * understood and reported and the guest does not continue past it. */
+    switch (info->id) {
+    case 0x0018u:
+        result = gate_nt_allocate_virtual_memory(calls, &frame,
+                                                 gate_guest_access, state,
+                                                 &status, &argument_index);
+        break;
+    case 0x0033u:
+        result = gate_nt_open_file(calls, &frame, gate_guest_access, state,
+                                   &status, &argument_index);
+        break;
+    case 0x0006u:
+        result = gate_nt_read_file(calls, &frame, gate_guest_access, state,
+                                   &status, &argument_index);
+        break;
+    case 0x0011u:
+        result = gate_nt_query_information_file(calls, &frame,
+                                                gate_guest_access, state,
+                                                &status, &argument_index);
+        break;
+    case 0x000fu:
+        if (file_handle_release(calls, frame.args[0]) == PW_OK)
+            status = PW_NT_SUCCESS;
+        else
+            status = PW_NT_INVALID_HANDLE;
+        result = PW_OK;
+        break;
+    default:
+        /* A known call number with no handler: it is reported as
+         * unimplemented rather than as a refusal of the bridge. */
+        status = PW_NT_NOT_IMPLEMENTED;
+        result = PW_OK;
+        break;
     }
-    result = gate_nt_allocate_virtual_memory(calls, &frame, gate_guest_access,
-                                             state, &status, &argument_index);
     if (result != PW_OK) {
         pw_unix_call_record(&report->calls, &frame, info, status,
                             argument_index, PW_UNIX_CALL_REJECTED);
@@ -1047,6 +1425,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     if (status != PW_OK)
         goto done;
     have_engine = 1;
+    report->files_configured = config->files != NULL;
     calls.low = &low;
     calls.config = config;
     calls.report = report;
@@ -1175,6 +1554,10 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 
 done:
     report->status = status;
+    for (uint32_t index = 0; index < PW_WINE_GATE_MAX_HANDLES; ++index) {
+        if (calls.handles[index].used)
+            (void)file_handle_release(&calls, file_handle_value(index));
+    }
     if (have_engine) {
         if (pw_x86_engine_destroy(&engine) == PW_OK)
             report->cleanup_translations++;

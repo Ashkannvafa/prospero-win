@@ -208,8 +208,8 @@ class Case(unittest.TestCase):
 
     def test_wrong_stop(self) -> None:
         def mutate(records):
-            records["run"][0]["stop"] = "returned-to-caller"
-        self.expect_failure("the gate stopped with returned-to-caller", mutate)
+            records["run"][0]["stop"] = "decode-failure"
+        self.expect_failure("the gate stopped with decode-failure", mutate)
 
     def test_instruction_stop_without_a_bridge(self) -> None:
         def mutate(records):
@@ -479,6 +479,26 @@ class Case(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             self.run_validation(records)
         self.assertIn("may not report a refused call", str(caught.exception))
+
+    def test_accepts_a_classified_null_jump(self) -> None:
+        records = self.memory_stop_records()
+        del records["fault"]
+        records["run"][0].update(stop="returned-to-caller", stop_address="0x00000000",
+                                 last_eip="0x00000000")
+        records["verdict"][0]["stop"] = "returned-to-caller"
+        notes = self.run_validation(records)
+        self.assertTrue(any("bridged:" in note for note in notes))
+
+    def test_null_jump_must_be_exactly_zero(self) -> None:
+        records = self.memory_stop_records()
+        del records["fault"]
+        records["run"][0].update(stop="returned-to-caller",
+                                 stop_address="0x00001000",
+                                 last_eip="0x00001000")
+        records["verdict"][0]["stop"] = "returned-to-caller"
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("must be a null jump", str(caught.exception))
 
 
 if __name__ == "__main__":

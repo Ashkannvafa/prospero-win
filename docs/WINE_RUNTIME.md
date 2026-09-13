@@ -387,3 +387,62 @@ So the next work is concrete and architectural rather than an instruction
 family: implement the file/open path (`NtOpenFile` and the calls that follow
 it) behind the same table, with guest-pointer validation and a documented
 mapping onto the gate's read-only runtime directory.
+
+### The first platform service: files
+
+`NtOpenFile` was the first Unix call with no handler, so the bridge now has a
+file service below it. The gate owns a bounded handle table and translates the
+guest path; the runner owns the host side through a small interface
+(`PwWineFileService`: open, read, close), so the portable core still contains
+no file-system call.
+
+Handlers and their shape:
+
+```text
+NtOpenFile              (0x0033) OBJECT_ATTRIBUTES + UNICODE_STRING name,
+                                 handle and IO_STATUS_BLOCK written back
+NtReadFile              (0x0006) handle, IO status, buffer, length, offset
+NtQueryInformationFile  (0x0011) FileStandardInformation only (sizes)
+NtClose                 (0x000f) releases a gate-owned handle
+```
+
+Rules the gate enforces before the platform is ever asked:
+
+- only `C:\windows\system32\<name>` and `C:\windows\<name>` are accepted,
+  with an optional `\??\` prefix;
+- the remainder must be a single path component, lower-cased, so `..`, a
+  separator, a drive letter or an absolute host path cannot reach the service;
+- every guest pointer (the OBJECT_ATTRIBUTES, the UNICODE_STRING, its buffer,
+  the handle slot, the IO status block, the read buffer) is read or written
+  through the dispatcher's validated accessor;
+- reads are bounded per call, handles are gate-owned indices (`0x100 + slot`),
+  and any handle the gate does not own answers `STATUS_INVALID_HANDLE`.
+
+Everything else is answered with a real NTSTATUS - a name outside the runtime
+namespace gives `STATUS_OBJECT_NAME_NOT_FOUND`, a value error gives
+`STATUS_INVALID_PARAMETER`, an unsupported information class gives
+`STATUS_INVALID_INFO_CLASS` - because that is the contract the guest expects.
+Handles are released at cleanup, and the counters (`opens`, `reads`, `bytes`,
+`closes`, `refusals`, `last`) are part of the evidence.
+
+`tests/test_pw_wine_file_service.c` proves the whole path without a real file:
+a synthetic module builds a UNICODE_STRING and an OBJECT_ATTRIBUTES for
+`C:\windows\system32\test.dll` in its own data section (with the base
+relocations a real image has), calls NtOpenFile, reads the file into a guest
+buffer, closes the handle and then attempts
+`C:\windows\system32\..\..\etc`. The first three calls succeed, the guest
+observes the handle and the IO status blocks, and the escaping path is refused
+*by the gate* - the platform service is never asked to open it.
+
+On the real runtime the loader's first open is the Windows **directory**
+itself:
+
+```text
+4th call: NtOpenFile "\??\C:\windows" -> STATUS_OBJECT_NAME_NOT_FOUND
+retired 14918 instructions, 3041 dispatches, 580 translated blocks
+stop: returned-to-caller at EIP 0 (the loader's failure path jumps to null)
+```
+
+So the next step is a directory object: accepting that open and answering
+`FileStandardInformation` with `Directory = 1` is what should let the loader
+continue past this point.

@@ -45,7 +45,35 @@ enum {
     /* Where the NT allocator hands out guest memory that ntdll asks for. */
     PW_WINE_GATE_HEAP_BASE = 0x20000000u,
     PW_WINE_GATE_HEAP_LIMIT = 0x30000000u,
+    PW_WINE_GATE_MAX_HANDLES = 16,
+    PW_WINE_GATE_MAX_PATH = 160,
+    PW_WINE_GATE_MAX_READ = 64u * 1024u,
 };
+
+/*
+ * Platform file service below the Unix-call boundary. The gate translates a
+ * guest DOS/NT path to a name inside the configured runtime distribution and
+ * then asks this service to open, read and close it; the gate itself never
+ * touches a host file system call. Everything a handler reads or writes in
+ * guest memory still goes through the dispatcher's validated accessor.
+ */
+typedef enum PwWineFileStatus {
+    PW_WINE_FILE_OK = 0,
+    PW_WINE_FILE_NOT_FOUND = 1,
+    PW_WINE_FILE_DENIED = 2,
+    PW_WINE_FILE_ERROR = 3,
+} PwWineFileStatus;
+
+typedef struct PwWineFileService {
+    void *context;
+    /* name is a canonical lower-case file name inside the runtime root. */
+    PwWineFileStatus (*open)(void *context, const char *name, uint64_t *size,
+                             void **token);
+    PwWineFileStatus (*read)(void *context, void *token, uint64_t offset,
+                             void *bytes, uint32_t size,
+                             uint32_t *read_bytes);
+    void (*close)(void *context, void *token);
+} PwWineFileService;
 
 typedef enum PwWineStop {
     PW_WINE_STOP_NONE = 0,
@@ -83,6 +111,7 @@ typedef struct PwWineModuleRecord {
 typedef struct PwWineGateConfig {
     const PwFileProvider *provider;
     const PwVmBackend *backend;
+    const PwWineFileService *files;  /* NULL refuses every open */
     /* Optional per-dispatch trace, so a mode difference can be localised to
      * the block that produced it. */
     void (*trace)(void *context, const PwX86State *state);
@@ -148,6 +177,14 @@ typedef struct PwWineGateReport {
     uint32_t allocations;
     uint32_t allocated_bytes;
     uint32_t call_regions;          /* guest regions this run mapped for NT */
+    uint64_t file_opens;
+    uint64_t file_reads;
+    uint64_t file_bytes;
+    uint64_t file_closes;
+    uint64_t file_refusals;
+    uint32_t file_handles;
+    uint32_t files_configured;
+    char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t dispatches;
     uint64_t retired;
     uint64_t translated_blocks;
