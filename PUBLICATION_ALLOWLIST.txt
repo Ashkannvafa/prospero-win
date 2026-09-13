@@ -1,4 +1,6 @@
 dev.conf.example
+.github/workflows/ci.yml
+CONTRIBUTING.md
 docs/ARCHITECTURE.md
 docs/COMPAT32_PHASE0A.md
 docs/DEVELOPMENT.md
@@ -11,6 +13,7 @@ docs/WINE_REUSE_AUDIT.md
 docs/X86_EXECUTION.md
 docs/PE_MAPPING_PHASE0.md
 docs/PINBALL_TARGET.md
+docs/README.md
 docs/ROADMAP.md
 docs/TELEMETRY.md
 .gitignore
@@ -197,3 +200,4 @@ tests/test_pw_state_ps5.c
 tests/test_pw_agc_submit_lifecycle.c
 tools/bench_dynarec.c
 tests/test_dynarec_bench.py
+tests/test_docs_links.py

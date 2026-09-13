@@ -4,8 +4,8 @@
 
 prospero-win is LGPL-2.1-or-later; see `LICENSE` and `LICENSING.md`. Every
 source file carries an SPDX identifier. The vendored `ps5log` client below
-is the laboratory's own code, under the same terms as its origin, and is
-digest-pinned rather than modified here.
+is distributed under the same terms and digest-pinned rather than modified
+implicitly.
 
 ## Independently authored
 
@@ -27,12 +27,11 @@ name occurrences only. No source file, PDB, game resource or executable is
 vendored. Copyright in that external project remains with Andrey Muzychenko
 and its contributors.
 
-## Reused from the laboratory
+## Reused components
 
-- `native/ps5log/` is a verbatim copy of the `ps5log/1` client from the
-  private laboratory's `projects/logging_server/client/`. It is pinned by
-  SHA-256 in `tools/audit_publication.py`, so editing it here — which would
-  silently fork the canonical client — fails the audit.
+- `native/ps5log/` is the vendored `ps5log/1` client used by the native
+  runtime. It is pinned by SHA-256 in `tools/audit_publication.py`; an
+  intentional update must revise the client and its recorded digests together.
 - The native shell, linker script, CRT and signing tool come from
   [BlackBearReloaded's PS5 Native App Boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate),
   pinned by commit in `tools/build_native.sh` and fetched at build time.

@@ -76,6 +76,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	@set -e; for test in $(addprefix $(BUILD)/,$(TESTS)); do $$test; done
 	python3 tests/test_title_identity.py
 	python3 tests/test_icon.py
+	python3 tests/test_docs_links.py
 	python3 tests/test_native_contract.py
 	python3 tests/test_make_test_pe.py
 	python3 tests/test_validate_pe_map_evidence.py

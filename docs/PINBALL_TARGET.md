@@ -181,9 +181,10 @@ open for remaining fidelity, performance, long-soak and release work; that
 polish boundary does not reduce the platform layer from a playable hardware
 baseline to an unproven prototype.
 
-Canonical files are xash/platform_ps5/audio_ps5.c/.h and in_ps5.c/.h;
-SNDDMA adapter s_ps5.c remains engine-specific. SCEAUDIOOUT_PHASE5.md,
-SCEPAD_PHASE5.md and HARDWARE_VALIDATION.md document FW 12.02 evidence.
+The reusable design came from the public ps5-xash3d audio and input adapters;
+its engine-specific SNDDMA bridge is not part of prospero-win. This project's
+[hardware validation](HARDWARE_VALIDATION.md), [guest ABI](GUEST_ABI.md) and
+[architecture](ARCHITECTURE.md) documents describe the adopted contracts.
 
 - Audio: reuse the PCM ring/worker lifecycle, blocking-output ownership,
   whole 256-frame submission, resampling continuity and teardown tests.

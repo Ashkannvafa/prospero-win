@@ -1,101 +1,69 @@
 # prospero-win
 
-An experimental Windows compatibility runtime for PlayStation 5. It maps
-Windows PE images, translates 32-bit x86 code to x86-64, supplies reviewed
-Win32/CRT services and connects guest graphics and audio to native PS5
-backends.
+prospero-win is an experimental Windows compatibility runtime for PlayStation
+5 homebrew. It maps Windows PE images, translates 32-bit x86 code to x86-64,
+provides reviewed Win32 and CRT services, and connects guest graphics, audio
+and input to native PS5 backends.
 
-The first compatibility target is the owner's original Windows XP Space Cadet
-`PINBALL.EXE`, executed without recompilation. It is a bring-up target for the
-general runtime, not a project-specific architecture. DRM, anti-cheat and
-kernel drivers are out of scope.
+The first compatibility target is the original Windows Space Cadet Pinball
+executable, running without recompilation. Pinball is a bring-up target for the
+general runtime, not a project-specific architecture. DRM, anti-cheat, kernel
+drivers and distribution of proprietary game files are out of scope.
 
-## Current milestone
+## Current status
 
-prospero-win has reached its **first playable title** on an owned PS5 with FW
-12.02:
+On an owned PS5 running firmware 12.02, Pinball is the first playable title:
 
-- the original PE32 image executes continuously through the x86 DBT;
-- its main window and animated table are composed by the GDI compatibility
-  layer and presented at 1920×1080 through AGC DMA and VideoOut;
-- its MMIO/WaveMix/WinMM path submits original game PCM to SceAudioOut;
-- `ps5log/1` records artifact identity, instruction/API progress, AGC flips,
-  PCM bytes/frames/hash and any classified abort;
-- Remote Play evidence contains 1080p60 H.264 video and captured AAC audio;
-- close and relaunch work without rebooting the console;
-- the reusable ScePad adapter translates chronological DualSense samples into
-  Win32 key-down/up messages and neutralizes held keys on disconnect, input
-  interception, controller-generation changes and shutdown; `Create` posts an
-  orderly `WM_QUIT` instead of masquerading as a guest keyboard key;
-- versioned, checksummed registry state is atomically saved under the title's
-  persistent `/download0` storage and has been reloaded on a later launch;
-- the target's `wavemix.inf` is parsed through the confined file provider;
-- a bounded validation build has demonstrated an orderly teardown of Pad,
-  AudioOut, GDI, VideoOut, AGC direct memory, DBT, PE image and guest VM.
+- the PE32 image executes through the IA-32 dynamic binary translator;
+- GDI output is composed and presented at 1920x1080 through AGC and VideoOut;
+- WinMM and WaveMix PCM reaches SceAudioOut through an asynchronous worker;
+- DualSense input is translated into Win32 key messages;
+- registry state persists in title-owned storage;
+- close and relaunch work without rebooting the console.
 
-The current production fSELF SHA-256 is
-`baed8c4fc70d10c7c63fba9822611df1e9edd241db2c885eb1d025701e1f7782`.
-See [HARDWARE_VALIDATION.md](docs/HARDWARE_VALIDATION.md) for correlated
-continuous and orderly-exit evidence and its limitations.
+The DBT includes hashed block lookup, direct block chaining, cross-block guest
+register residency, dead-flag elimination and real lazy arithmetic flags.
+Exact eager/lazy host traces finish with identical guest CPU state. Bounded
+hardware runs also reach video, audio and input teardown cleanly. These results
+establish correctness and no observed regression; they do not yet establish a
+percentage performance gain.
 
-Physical gameplay has confirmed plunger launch, both flippers, scoring, ball
-loss, pause/resume and manual new-game restart without an unintended runtime
-exit. This establishes a first-playable compatibility result, not a finished
-Pinball port or broad Windows compatibility; intermittent pacing and
-presentation polish remain open.
-The current performance candidate moves WinMM playback to a bounded,
-dedicated SceAudioOut worker, preserves deferred `WHDR_DONE`/`WOM_DONE`
-semantics, replaces linear DBT-cache scans with hashed lookup and limits W^X
-publication changes to the generated block's pages. Host, sanitizer and native
-build gates pass; hardware A/B pacing validation is still required before this
-is described as a measured fix.
-The DBT also has bounded direct block chaining, deterministic cross-block guest
-register residency and switchable lazy arithmetic flags. Exact host execution
-parity is established; PS5 A/B telemetry remains the gate for any performance
-claim.
-The same candidate calls the real `sceAgcSuspendPoint` after every successful
-AGC submit, matching the lifecycle correction already validated by the Gears
-and Xash3D renderers. This is separate from fence completion: it makes the
-queue suspendable when the PS5 closes the title. The exact fSELF has passed two
-close cycles and an intervening relaunch without the former system error;
-hardware A/B pacing measurement remains separate and pending.
-The original game defaults music off; its single optional `MCI_OPEN` request is
-reported honestly as no MIDI device, while its required WaveMix PCM effects
-remain active. The next compatibility milestone is a second independent
-Windows title that exposes and removes target-specific assumptions. Broad
-Win32 compatibility and a general D3D backend are later work.
+This is not broad Windows compatibility. The implemented surface is currently
+PE32/IA-32 with the Win32, GDI and WinMM services required by the first target.
+PE64 and Direct3D are not implemented.
 
-## Build and inspect
+## Build and test
 
 ```sh
-make all          # host contracts plus publication audit
-make sanitize     # clean ASan/UBSan rebuild
-make inspect-only PE_INPUT=/private/path/PINBALL.EXE
+make all
+make sanitize
+make inspect-only PE_INPUT=/private/path/APPLICATION.EXE
+```
 
-# Native package; private game files are staged into ignored dist/ only.
+To build a native package, provide your own legally obtained Windows files
+from an external directory:
+
+```sh
 PW_FOUNDATION_READY=1 \
-PW_STAGE_INPUT=/private/path/pinball_xp \
-PW_ROOT_MODULE=pinball.exe \
+PW_STAGE_INPUT=/private/path/application \
+PW_ROOT_MODULE=application.exe \
 tools/build_native.sh
 ```
 
-No Windows executable, resource, vendor SDK blob, telemetry transcript or
-capture belongs in this repository. Tests generate synthetic PE fixtures,
-and the fail-closed publication audit enforces that boundary.
+Private applications are copied only into the ignored `dist/` build tree.
+The fail-closed publication audit rejects Windows binaries, captures, telemetry
+transcripts, private paths and unreviewed files from the repository.
 
 ## Documentation
 
-[Roadmap](docs/ROADMAP.md) ·
-[hardware validation](docs/HARDWARE_VALIDATION.md) ·
-[architecture](docs/ARCHITECTURE.md) ·
-[Pinball target](docs/PINBALL_TARGET.md) ·
-[x86 execution](docs/X86_EXECUTION.md) ·
-[guest ABI](docs/GUEST_ABI.md) ·
-[GDI](docs/GDI.md) ·
-[telemetry](docs/TELEMETRY.md) ·
-[development](docs/DEVELOPMENT.md) ·
-[Wine reuse audit](docs/WINE_REUSE_AUDIT.md)
+Start with the [documentation index](docs/README.md), then see the
+[architecture](docs/ARCHITECTURE.md), [compatibility roadmap](docs/ROADMAP.md),
+[hardware evidence](docs/HARDWARE_VALIDATION.md) and
+[development workflow](docs/DEVELOPMENT.md).
 
-Licensed LGPL-2.1-or-later. See [LICENSING.md](LICENSING.md) and
-[NOTICE.md](NOTICE.md). `PPSA99995` is a local development identifier, not an
-official Sony assignment.
+Contributions are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) before
+opening a change.
+
+prospero-win is licensed under LGPL-2.1-or-later. See
+[LICENSING.md](LICENSING.md) and [NOTICE.md](NOTICE.md). `PPSA99995` is a
+local development identifier, not an official Sony assignment.

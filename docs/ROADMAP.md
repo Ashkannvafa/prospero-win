@@ -1,141 +1,66 @@
-# Roadmap
+# Compatibility roadmap
 
-prospero-win is an experimental Windows compatibility runtime for PS5. Its
-milestones describe runtime capability, not a Pinball port. The owner's
-original x86 Windows Space Cadet `PINBALL.EXE` is the first compatibility
-target executed without recompilation; subsequent targets must exercise the
-same reusable loader, DBT, Win32 and native-backend architecture.
+The roadmap describes public compatibility milestones. It is not a promise of
+dates or a list of internal experiments.
 
-Runtime iteration validates coherent subsystems discovered from static
-inventory, public reference source and private local analysis; it is not
-one-API-at-a-time scope discovery. Every hardware result requires an exact
-artifact hash, `ps5log/1` telemetry and an independently checked result. Visual
-capture alone is not renderer or audio proof.
+## Status vocabulary
 
-## Compatibility status vocabulary
+- **Bring-up**: all required PE images map, relocate and bind, and guest
+  execution reaches application initialization.
+- **First frame**: the application presents its first recognizable frame.
+- **In-game**: changing application graphics and required audio are present.
+- **First playable**: the primary interaction loop works with native input.
+- **Validated**: a repeatable hardware run satisfies its documented evidence
+  gate and cleanup contract.
 
-- **Bring-up:** enough loader, CPU and platform infrastructure exists to begin
-  executing a Windows target reproducibly.
-- **Boots:** the target reaches its application entry and sustained message
-  loop without a classified runtime abort.
-- **First frame:** output originating in the target reaches native PS5
-  presentation with verified ownership and completion.
-- **In-game:** the target produces changing graphics and its required audio
-  path, but interaction or timing may still prevent meaningful play.
-- **First playable:** core interaction and state transitions work with usable
-  timing. This is neither a polished release nor broad compatibility.
-- **Compatibility expansion:** additional independent targets expose and
-  remove target-specific assumptions by subsystem.
-- **3D API bring-up:** Direct3D frontends, shaders, descriptors, formats,
-  synchronization and residency begin running over a PS5 GPU backend.
+## Current baseline
 
-## Completed bring-up
+- PE32 image graph mapping, relocations and reviewed imports.
+- IA-32 to x86-64 dynamic translation with bounded W^X publication.
+- Hashed block lookup, direct chaining, register residency, dead-flag
+  elimination and lazy arithmetic flags.
+- Reusable Win32, User32, GDI, registry, WinMM, Pad and callback foundations.
+- Native AGC/VideoOut presentation, asynchronous SceAudioOut and structured
+  `ps5log/1` telemetry.
+- Space Cadet Pinball: **First playable** and hardware-validated as the first
+  target.
 
-- [x] **Target inventory.** Exact binary identity, PE32 layout, 207 static
-  imports, resources and public-PDB/source-oracle correlation are recorded
-  without publishing proprietary data.
-- [x] **x86 execution foundation.** A generation-scoped x86-to-x86-64 DBT
-  with bounded guest memory, isolated guest flags/x87 state, RW-to-RX
-  publication, cache invalidation and differential/unit regressions executes
-  the first target.
-- [x] **First boot.** PE mapping, IAT binding, CRT/heap/registry/resource
-  services and guest callbacks reach `WinMain` and sustain the original
-  message loop.
-- [x] **Window and message bring-up.** Transactional window creation, nested
-  WndProc callbacks, queues, painting, timers/waits and deterministic synthetic
-  key messages run on host and PS5.
-- [x] **First frame.** The original GDI surface is composed on CPU, tiled for
-  PS5 scanout, copied by AGC DMA and flipped through VideoOut. Fence
-  completion, flips and changing frame hashes are observable.
-- [x] **In-game / visible and audible.** The animated table and original
-  WaveMix PCM path run together on FW 12.02. The audio adapter converts the
-  requested 11025 Hz unsigned 8-bit mono stream to SceAudioOut's 48000 Hz
-  signed 16-bit stereo blocks. Correlated 1080p60/AAC Remote Play evidence,
-  artifact identity and telemetry are recorded in HARDWARE_VALIDATION.md.
+## Next compatibility release
 
-## First playable title: Space Cadet Pinball
+1. Add a second independent PE32 GDI application to expose target-specific
+   assumptions.
+2. Introduce deterministic target-side DBT benchmarks for chaining, register
+   residency, lazy flags and indirect branches.
+3. Reduce reconciliation and spill traffic using measured workloads.
+4. Expand User32, GDI, WinMM and CRT behavior only through reusable contracts
+   with Wine-compatible semantics and application-independent tests.
+5. Stabilize packaging, contributor documentation and release automation.
 
-- [x] The ScePad/Win32 adapter maps plunger, both flippers, three nudges,
-  pause/resume and new game with exact key transitions and neutralization.
-  `Create` posts `WM_QUIT` directly for an orderly guest/runtime exit.
-- [x] Physical play has confirmed Cross launch, both shoulder flippers,
-  scoring, ball loss, Options pause/resume and Square new-game restart without
-  an unintended runtime exit.
-- [x] Bottom-up DIB subrects use the correct source origin, the focused
-  top-level owner wins presentation and empty `PeekMessage` iterations yield
-  rather than busy-spin.
-- [x] Registry preferences and scores use a versioned checksummed format with
-  atomic `/download0` replacement; a later hardware launch reloaded 473 bytes.
-  `wavemix.inf` uses a bounded parser and confined file route.
-- [x] Strict continuous validation passed beyond ten minutes with 8,733
-  changing-frame flips and 901 audio blocks. Bounded runs prove orderly
-  teardown of all owned subsystems.
-- [ ] Intermittent motion/pacing and remaining presentation details need
-  profiling and polish. They do not invalidate the first-playable result.
+## 3D applications
 
-## Active: runtime performance foundation
+The first 3D milestone is a reusable Direct3D 9 frontend targeting the native
+PS5 graphics backend. Earlier Direct3D applications can later use established
+D3D8-to-D3D9 translation where licensing and behavior permit. Work begins with
+small synthetic API tests before attempting a complete game.
 
-- [x] Replace linear translated-block lookup with a generation-scoped,
-  open-addressed guest-PC cache.
-- [x] Restrict every DBT W^X publication transition to the pages containing
-  newly generated code rather than the complete executable arena.
-- [x] Add bounded direct block chaining through RW link slots, deterministic
-  cross-block GPR residency with reconciliation, and a switchable RAW lazy-
-  flags path with exact eager/lazy host parity.
-- [ ] Measure the linked/resident/lazy configuration on PS5 against its eager
-  control before describing it as a runtime speedup.
-- [x] Define asynchronous WinMM ownership: copied PCM queue, dedicated
-  SceAudioOut worker, deferred `WHDR_DONE`/`WOM_DONE`, bounded backpressure and
-  synchronized telemetry.
-- [ ] Validate the exact asynchronous candidate on hardware with collision
-  audio, zero queue-full/output-error events and materially reduced main-loop
-  gaps. Until that A/B run, the implementation is host-verified, not a claimed
-  pacing fix.
-- [ ] Move CPU presentation work behind a separate ownership boundary after
-  measuring hashing, tiling, DMA submission and vblank wait independently.
+This milestone requires:
 
-## Active: compatibility expansion
+- resource and lifetime models independent of any single title;
+- shader translation with explicit gfx1013 capability gates;
+- render-state and synchronization tests;
+- deterministic visual and telemetry evidence;
+- no dependency on proprietary shaders or SDK blobs.
 
-- [ ] Select a second independent Windows program or game using objective
-  loader, CPU, import and graphics-API criteria.
-- [ ] Run it through the same inventory and bring-up gates without title-name
-  branches or hard-coded application behavior.
-- [ ] Generalize only the CRT/User32/GDI/WinMM contracts exposed by evidence,
-  with synthetic fixtures and cross-target regressions.
-- [ ] Track per-title status using the vocabulary above so one successful title
-  cannot be mistaken for project completion.
+## Later work
 
-## Later: 3D API bring-up
+- Broader multimedia and filesystem compatibility.
+- More complete exception, thread and synchronization behavior.
+- PE64/x86-64 loading and ABI support.
+- Additional graphics APIs only after the D3D9 backend is stable.
 
-- [ ] Evaluate DXVK's D3D8/9 frontends against either a Vulkan-on-AGC layer or
-  a narrower direct backend. DXVK is not a call-name translation table:
-  shaders, descriptors, formats, synchronization and resource residency remain
-  substantial engineering work.
-- [ ] Promote a D3D target through first frame, in-game and first playable only
-  when hardware telemetry proves each boundary.
+## Non-goals
 
-## Known boundaries
-
-- The current frame path uses CPU GDI composition and PS5 tile conversion;
-  AGC accelerates the final DMA/presentation step. It is not D3D acceleration.
-- The current x86 engine is target-capable, not a complete IA-32 CPU or Windows
-  process model. Exceptions, SSE breadth, TLS and dynamic module semantics are
-  incomplete.
-- `SOUND59.WAV`, requested by Pinball's plunger mapping, is absent from the
-  owner's original asset set. Other original effects produce validated PCM;
-  the runtime does not fabricate a replacement.
-- Windows binaries/resources, decompiler output and raw captures stay private.
-  Only project-authored source, synthetic fixtures and reviewed facts are
-  publishable.
-
-## Engineering gates
-
-- `make test audit` before project commits and `make check` before lab commits.
-- ASan/UBSan after loader, DBT, ABI, GDI or audio ownership changes.
-- Threaded audio changes additionally require the blocking-output regression:
-  submit must return while the synthetic device is held, and completion must
-  remain absent until the worker releases the final block.
-- Exact stdcall/cdecl stack-balance tests for every adapter. The `mmioClose`
-  regression is permanent because its two-argument ABI previously consumed a
-  saved guest register and silently disconnected valid WaveMix buffers.
-- Topic branches and pull requests only; never push directly to `main`.
+- DRM or anti-cheat bypass.
+- Kernel drivers.
+- Shipping proprietary executables, DLLs, shaders, captures or SDK material.
+- Claiming compatibility from static imports or a single screenshot.
