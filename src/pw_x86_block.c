@@ -169,34 +169,70 @@ static void condition_value(Emitter *e,unsigned condition)
     word(e,(uint32_t)fn);word(e,(uint32_t)(fn>>32));
     byte(e,0xff);byte(e,0xd0);byte(e,0x5f);
 }
-static void conditional_target(Emitter *e,unsigned condition,uint32_t next,uint32_t target)
+static void emit_chain_exit(Emitter *e, uint32_t count, uint32_t target_pc,
+                            size_t *patch_offset, size_t *stub_offset)
 {
-    store(e,offsetof(PwX86State,eip),next);
+    /* 1. add dword ptr [rdi + step_retired], count */
+    byte(e, 0x83); byte(e, 0x47); byte(e, offsetof(PwX86State, step_retired)); byte(e, (uint8_t)count);
+    /* 2. dec dword ptr [rdi + chain_budget] */
+    byte(e, 0xff); byte(e, 0x4f); byte(e, offsetof(PwX86State, chain_budget));
+    /* 3. jz safepoint (jump forward 21 bytes: past inc, movabs, test, jz, jmp) */
+    byte(e, 0x74); byte(e, 21);
+    /* 4. inc dword ptr [rdi + step_transitions] */
+    byte(e, 0xff); byte(e, 0x47); byte(e, offsetof(PwX86State, step_transitions));
+    /* 5. movabs $0, %r11 (10 bytes: 49 bb <8 bytes>) */
+    byte(e, 0x49); byte(e, 0xbb);
+    *patch_offset = e->n;
+    for (int i = 0; i < 8; i++) byte(e, 0);
+    /* 6. test %r11, %r11 (3 bytes: 4d 85 db) */
+    byte(e, 0x4d); byte(e, 0x85); byte(e, 0xdb);
+    /* 7. jz unlinked_stub (2 bytes: 74 03) */
+    byte(e, 0x74); byte(e, 3);
+    /* 8. jmp *(%r11) (3 bytes: 41 ff 23) */
+    byte(e, 0x41); byte(e, 0xff); byte(e, 0x23);
+    /* 9. safepoint_exit: movq $0, last_exit_slot(%rdi) */
+    byte(e, 0x48); byte(e, 0xc7); byte(e, 0x47); byte(e, offsetof(PwX86State, last_exit_slot));
+    word(e, 0);
+    /* jmp common (2 bytes: eb 04) */
+    byte(e, 0xeb); byte(e, 4);
+    /* 10. unlinked_stub: movq %r11, last_exit_slot(%rdi) (4 bytes: 4c 89 5f <disp8>) */
+    *stub_offset = e->n;
+    byte(e, 0x4c); byte(e, 0x89); byte(e, 0x5f); byte(e, offsetof(PwX86State, last_exit_slot));
+    /* 11. common_exit: */
+    store(e, offsetof(PwX86State, eip), target_pc);
+    byte(e, 0x31); byte(e, 0xc0); byte(e, 0xc3); /* xor eax, eax; ret */
+}
+
+static void conditional_target(Emitter *e, unsigned condition, uint32_t next, uint32_t target,
+                               PwX86Block *block, uint32_t count)
+{
     unsigned c = condition >> 1;
     unsigned invert = condition & 1;
+    uint8_t jump_op = invert ? 0x74 : 0x75;
     if (c == 0) { /* OF: bit 11 in eflags (bit 3 of byte [rdi+53]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags)+1);byte(e,0x08);
-        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+        byte(e,jump_op);byte(e,54);
     } else if (c == 1) { /* CF: bit 0 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x01);
-        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+        byte(e,jump_op);byte(e,54);
     } else if (c == 2) { /* ZF: bit 6 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x40);
-        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+        byte(e,jump_op);byte(e,54);
     } else if (c == 3) { /* CF || ZF: bits 0, 6 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x41);
-        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+        byte(e,jump_op);byte(e,54);
     } else if (c == 4) { /* SF: bit 7 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x80);
-        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+        byte(e,jump_op);byte(e,54);
     } else if (c == 5) { /* PF: bit 2 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x04);
-        byte(e,invert ? 0x75 : 0x74);byte(e,7);
+        byte(e,jump_op);byte(e,54);
     } else {
         condition_value(e,condition);
-        byte(e,0x85);byte(e,0xc0);byte(e,0x74);byte(e,7);
+        byte(e,0x85);byte(e,0xc0);byte(e,0x75);byte(e,54);
     }
-    store(e,offsetof(PwX86State,eip),target);
+    emit_chain_exit(e, count, next, &block->exit.fallthrough_patch_offset, &block->exit.fallthrough_stub_offset);
+    emit_chain_exit(e, count, target, &block->exit.target_patch_offset, &block->exit.target_stub_offset);
 }
 static void stack_address(Emitter *e, int push)
 {
@@ -1117,7 +1153,11 @@ analyze_and_emit:
         } else if(conditional) {
             unsigned condition=(op==0x0f?source[cursor+1]:op)&15;
             uint32_t delta=op==0x0f?read32(source+cursor+2):(uint32_t)(int32_t)(int8_t)source[cursor+1];
-            conditional_target(&e,condition,next,next+delta);terminal=1;
+            block->exit.kind = PW_X86_EXIT_CONDITIONAL;
+            block->exit.chainable = 1;
+            block->exit.target_pc = next + delta;
+            block->exit.fallthrough_pc = next;
+            conditional_target(&e,condition,next,next+delta,block,count);terminal=1;
         } else if(op==0xff && operand.reg<2) {
             if(operand.mod==3)load_eax(&e,operand.rm*4);
             else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
@@ -1248,6 +1288,12 @@ analyze_and_emit:
                                       : read32(source+cursor+1);
             next += delta;
             terminal = 1;
+            if (op == 0xeb || op == 0xe9) {
+                block->exit.kind = PW_X86_EXIT_DIRECT_JUMP;
+                block->exit.chainable = 1;
+                block->exit.target_pc = next;
+                emit_chain_exit(&e, count, next, &block->exit.target_patch_offset, &block->exit.target_stub_offset);
+            }
         } else if (op == 0xc3 || op==0xc2) {
             stack_address(&e,0);
             byte(&e,0x8b); byte(&e,0x08); /* ecx = guest return */
@@ -1260,10 +1306,16 @@ analyze_and_emit:
             byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             terminal = 1;
         }
-        if (op != 0xc3 && op!=0xc2 && op!=0xff && !conditional) store(&e,offsetof(PwX86State,eip),next);
+        if (op != 0xc3 && op!=0xc2 && op!=0xff && !conditional && op != 0xeb && op != 0xe9) store(&e,offsetof(PwX86State,eip),next);
         block->instruction_ends[i]=(uint16_t)(cursor + length);
     }
-    success(&e);
+    if (!block->exit.chainable) {
+        block->exit.kind = PW_X86_EXIT_DYNAMIC;
+        block->exit.chainable = 0;
+        byte(&e, 0x83); byte(&e, 0x47); byte(&e, offsetof(PwX86State, step_retired)); byte(&e, (uint8_t)count);
+        byte(&e, 0x48); byte(&e, 0xc7); byte(&e, 0x47); byte(&e, offsetof(PwX86State, last_exit_slot)); word(&e, 0);
+        success(&e);
+    }
     if (e.failed) return PW_ERR_LIMIT;
     block->source_bytes = insts[count-1].cursor + insts[count-1].length;
     block->code_bytes = e.n;

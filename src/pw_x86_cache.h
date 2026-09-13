@@ -3,11 +3,20 @@
 #define PW_X86_CACHE_H
 #include "pw_x86_block.h"
 
+typedef struct PwX86LinkSlot {
+    void *target_code;           /* host code entry or stub address */
+    uint32_t target_pc;          /* guest PC targeted by this exit */
+    uint32_t source_pc;          /* guest PC of source block */
+    unsigned is_linked;          /* 1 if pointing to a compiled block, 0 if stub */
+} PwX86LinkSlot;
+
 typedef struct PwX86CacheEntry {
     uint32_t guest_pc,generation;
     size_t code_offset,code_bytes,source_bytes;
     uint32_t instructions;
     uint16_t instruction_ends[32];
+    PwX86ExitDesc exit;
+    PwX86LinkSlot link_slots[2]; /* 0: target, 1: fallthrough */
     unsigned used;
 } PwX86CacheEntry;
 
@@ -25,6 +34,7 @@ typedef struct PwX86Cache {
  * while its immutable guest image mapping is alive. */
 int pw_x86_cache_init(PwX86Cache *,PwX86CacheEntry *,uint32_t,size_t,uint32_t);
 int pw_x86_cache_lookup(PwX86Cache *,uint32_t,const PwX86CacheEntry **);
+int pw_x86_cache_lookup_mut(PwX86Cache *,uint32_t,PwX86CacheEntry **);
 int pw_x86_cache_publish(PwX86Cache *,uint32_t,const PwX86Block *,size_t,
                          const PwX86CacheEntry **);
 int pw_x86_cache_reset(PwX86Cache *,uint32_t);

@@ -1,0 +1,597 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+#include "../src/pw_x86_engine.h"
+#include "../src/pw_vm_posix.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef struct TestSource {
+    uint32_t base;
+    const uint8_t *data;
+    size_t bytes;
+} TestSource;
+
+static int test_source_view(void *opaque, uint32_t pc, const uint8_t **data, size_t *bytes)
+{
+    TestSource *s = (TestSource *)opaque;
+    if (pc < s->base || (uint64_t)pc >= s->base + s->bytes) return PW_ERR_NOT_FOUND;
+    size_t offset = pc - s->base;
+    *data = s->data + offset;
+    *bytes = s->bytes - offset;
+    return PW_OK;
+}
+
+/* 1. Two-block and multi-block unconditional chains */
+static void test_unconditional_chains(void)
+{
+    /*
+     * 0x1000: mov eax, 10; jmp 0x1010
+     * 0x1010: add eax, 20; jmp 0x1020
+     * 0x1020: add eax, 30; ret
+     */
+    uint8_t code[64];
+    memset(code, 0x90, sizeof(code));
+    /* 0x1000 (offset 0): b8 0a 00 00 00 (mov eax, 10); e9 06 00 00 00 (jmp 0x1010) */
+    code[0] = 0xb8; code[1] = 10; code[2] = 0; code[3] = 0; code[4] = 0;
+    code[5] = 0xe9; code[6] = 6; code[7] = 0; code[8] = 0; code[9] = 0;
+    /* 0x1010 (offset 16): 83 c0 14 (add eax, 20); e9 08 00 00 00 (jmp 0x1020) */
+    code[16] = 0x83; code[17] = 0xc0; code[18] = 20;
+    code[19] = 0xe9; code[20] = 8; code[21] = 0; code[22] = 0; code[23] = 0;
+    /* 0x1020 (offset 32): 83 c0 1e (add eax, 30); c3 (ret) */
+    code[32] = 0x83; code[33] = 0xc0; code[34] = 30;
+    code[35] = 0xc3;
+
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x99999999; /* return address */
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine, 1) == PW_OK);
+
+    /* First run: compile blocks on demand */
+    PwX86StepReport step;
+    /* Step 1: compiles 0x1000, runs it, exits unlinked to 0x1010 */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.eip == 0x1010);
+    assert(state.gpr[0] == 10);
+
+    /* Step 2: compiles 0x1010, runs it, exits unlinked to 0x1020 */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.eip == 0x1020);
+    assert(state.gpr[0] == 30);
+
+    /* Step 3: compiles 0x1020, runs it, ret exits cleanly */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.eip == 0x99999999);
+    assert(state.gpr[0] == 60);
+
+    /* Now all 3 blocks are compiled and backward-linked! Run from 0x1000 again in a single chained step */
+    state.eip = 0x1000;
+    state.gpr[0] = 0;
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x99999999;
+
+    uint64_t prev_transitions = engine.linked_transitions;
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.eip == 0x99999999);
+    assert(state.gpr[0] == 60);
+    assert(engine.linked_transitions - prev_transitions >= 2);
+
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/* 2. Both sides of conditional exits and later linking of the cold side */
+static void test_conditional_both_sides(void)
+{
+    /*
+     * 0x1000: test ecx, ecx; jz 0x1020; mov edx, 1; ret (fallthrough: edx = 1)
+     * 0x1020: mov edx, 2; ret                            (taken: edx = 2)
+     */
+    uint8_t code[64];
+    memset(code, 0x90, sizeof(code));
+    /* 0x1000: 85 c9 (test ecx, ecx); 74 1c (jz 0x1020 -> rel offset 28); ba 01 00 00 00 (mov edx, 1); c3 (ret) */
+    code[0] = 0x85; code[1] = 0xc9;
+    code[2] = 0x74; code[3] = 0x1c;
+    code[4] = 0xba; code[5] = 1; code[6] = 0; code[7] = 0; code[8] = 0;
+    code[9] = 0xc3;
+    /* 0x1020: ba 02 00 00 00 (mov edx, 2); c3 (ret) */
+    code[32] = 0xba; code[33] = 2; code[34] = 0; code[35] = 0; code[36] = 0;
+    code[37] = 0xc3;
+
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x88888888;
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine, 1) == PW_OK);
+
+    PwX86StepReport step;
+    /* First: ecx = 1 -> fallthrough path taken (not zero) -> exits to 0x1004 */
+    state.gpr[1] = 1;
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    if (state.eip == 0x1004) {
+        assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    }
+    assert(state.gpr[2] == 1);
+    assert(state.eip == 0x88888888);
+
+    /* Second: ecx = 0 -> taken branch (cold side) taken -> exits to 0x1020 */
+    state.eip = 0x1000;
+    state.gpr[1] = 0;
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x88888888;
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    /* 0x1020 compiled on demand, step completed */
+    if (state.eip == 0x1020) {
+        assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    }
+    assert(state.gpr[2] == 2);
+    assert(state.eip == 0x88888888);
+
+    /* Now both sides are compiled; re-run fallthrough side to verify full chaining */
+    state.eip = 0x1000;
+    state.gpr[1] = 1;
+    state.gpr[2] = 0;
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x88888888;
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[2] == 1);
+    assert(state.eip == 0x88888888);
+
+    /* Re-run taken side to verify full chaining */
+    state.eip = 0x1000;
+    state.gpr[1] = 0;
+    state.gpr[2] = 0;
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x88888888;
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[2] == 2);
+    assert(state.eip == 0x88888888);
+
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/* 3. Backward loop budget/safepoint enforcement */
+static void test_backward_loop_safepoint(void)
+{
+    /*
+     * 0x1000: inc eax; dec ecx; jnz 0x1000; ret
+     * 40 (inc eax); 49 (dec ecx); 75 fa (jnz -6 -> 0x1000); c3 (ret)
+     */
+    uint8_t loop[] = {0x40, 0x49, 0x75, 0xfc, 0xc3};
+    TestSource src = {0x1000, loop, sizeof(loop)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x77777777;
+    state.gpr[0] = 0;    /* eax = 0 */
+    state.gpr[1] = 100;  /* ecx = 100 iterations */
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine, 1) == PW_OK);
+    assert(pw_x86_engine_set_quantum(&engine, 32) == PW_OK); /* Quantum = 32 */
+
+    PwX86StepReport step;
+    /* Step 1: should execute 32 iterations and safepoint yield */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 32);
+    assert(state.gpr[1] == 68);
+    assert(state.eip == 0x1000); /* safepoint returns to loop start */
+    assert(engine.safepoint_returns == 1);
+
+    /* Step 2: another 32 iterations */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 64);
+    assert(state.gpr[1] == 36);
+    assert(state.eip == 0x1000);
+    assert(engine.safepoint_returns == 2);
+
+    /* Step 3: another 32 iterations */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 96);
+    assert(state.gpr[1] == 4);
+    assert(state.eip == 0x1000);
+    assert(engine.safepoint_returns == 3);
+
+    /* Step 4: finishes the remaining 4 iterations and exits via ret */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    if (state.eip == 0x1004) {
+        assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    }
+    assert(state.gpr[0] == 100);
+    assert(state.gpr[1] == 0);
+    assert(state.eip == 0x77777777);
+
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/* 4. Unresolved-target fallback followed by successful link */
+static void test_unresolved_target_fallback(void)
+{
+    /* 0x1000: jmp 0x1010; 0x1010: mov eax, 42; ret */
+    uint8_t code[32];
+    memset(code, 0x90, sizeof(code));
+    code[0] = 0xeb; code[1] = 0x0e; /* 0x1000: jmp 0x1010 */
+    code[16] = 0xb8; code[17] = 42; code[18] = 0; code[19] = 0; code[20] = 0; code[21] = 0xc3;
+
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x66666666;
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine, 1) == PW_OK);
+
+    PwX86StepReport step;
+    /* Step 1: 0x1000 compiles. 0x1010 not in cache. Unlinked fallback stub triggers. */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.eip == 0x1010);
+    assert(state.last_exit_slot != 0);
+
+    /* Step 2: 0x1010 compiles, backward link resolves the pending slot */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 42);
+    assert(state.eip == 0x66666666);
+    assert(engine.successful_links >= 1);
+
+    /* Step 3: Run from 0x1000 again -> direct chain executes without unlinked fallback */
+    state.eip = 0x1000;
+    state.gpr[0] = 0;
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x66666666;
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 42);
+    assert(state.eip == 0x66666666);
+    assert(state.last_exit_slot == 0);
+
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/* 5. Reset/generation invalidation, including stale-target non-execution */
+static void test_generation_reset_invalidation(void)
+{
+    uint8_t code[32];
+    memset(code, 0x90, sizeof(code));
+    code[0] = 0xeb; code[1] = 0x0e; /* jmp 0x1010 */
+    code[16] = 0xb8; code[17] = 77; code[18] = 0; code[19] = 0; code[20] = 0; code[21] = 0xc3;
+
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x55555555;
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine, 1) == PW_OK);
+
+    PwX86StepReport step;
+    /* Compile both blocks and link */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(engine.successful_links >= 1);
+
+    /* Reset engine with new generation 2 */
+    assert(pw_x86_engine_reset(&engine, 2) == PW_OK);
+    assert(engine.unlinks >= 1);
+
+    /* Verify that entry slots were invalidated */
+    for (size_t i = 0; i < 16; i++) {
+        assert(!entries[i].used);
+        assert(!entries[i].link_slots[0].is_linked);
+    }
+
+    /* Mutate source to prove stale code is not executed */
+    code[17] = 99;
+    state.eip = 0x1000;
+    state.gpr[0] = 0;
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x55555555;
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 99); /* New code was compiled and executed! */
+
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/* 6. Link-publication failure and rollback */
+static int failing_protect(void *ctx, const PwVmRegion *region, size_t off, size_t bytes, unsigned prot)
+{
+    /* Fail when sealing executable code */
+    if (prot == (PW_PROT_READ | PW_PROT_EXEC)) return PW_ERR_VM;
+    PwVmBackend vm;
+    if (pw_vm_posix_backend(&vm) != PW_OK) return PW_ERR_VM;
+    return vm.protect(ctx, region, off, bytes, prot);
+}
+
+static void test_publication_failure_rollback(void)
+{
+    uint8_t code[] = {0x90, 0xc3};
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000};
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1, test_source_view, &src) == PW_OK);
+
+    /* Substitute protect with failing protect */
+    PwVmBackend failing_vm = vm;
+    failing_vm.protect = failing_protect;
+    engine.backend = &failing_vm;
+
+    PwX86StepReport step;
+    int status = pw_x86_engine_step(&engine, &state, &step);
+    assert(status == PW_ERR_VM);
+    assert(engine.failed == 1);
+
+    /* Restore real backend to clean up */
+    engine.backend = &vm;
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/* 7. Exact retirement/EIP/state parity against unchained execution */
+static void test_retirement_parity(void)
+{
+    /* Complex sequence: ALU, conditional branch, arithmetic flags, loop */
+    uint8_t code[] = {
+        /* 0x1000: loop_start */
+        0x05, 0x37, 0x13, 0x00, 0x00,       /* add eax, 0x1337 */
+        0x31, 0xc2,                         /* xor edx, eax */
+        0x29, 0xd8,                         /* sub eax, ebx */
+        0x81, 0xe2, 0xff, 0xff, 0xff, 0x7f, /* and edx, 0x7fffffff */
+        0x40,                               /* inc eax */
+        0x49,                               /* dec ecx */
+        0x75, 0xed,                         /* jnz 0x1000 (-19) */
+        0xc3                                /* ret */
+    };
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+
+    /* 1. Unchained run */
+    PwX86Engine engine_unchained;
+    PwX86CacheEntry entries_u[16];
+    assert(pw_x86_engine_init(&engine_unchained, &vm, entries_u, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine_unchained, 0) == PW_OK);
+
+    PwX86State state_u = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    state_u.gpr[0] = 0x12345678;
+    state_u.gpr[1] = 50; /* 50 iterations */
+    state_u.gpr[2] = 0xdeadbeef;
+    state_u.gpr[3] = 0x3;
+    state_u.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state_u.gpr[4] = 0x44444444;
+
+    uint64_t unchained_dispatches = 0;
+    while (state_u.eip >= 0x1000 && state_u.eip < 0x1000 + sizeof(code)) {
+        PwX86StepReport rep;
+        assert(pw_x86_engine_step(&engine_unchained, &state_u, &rep) == PW_OK);
+        unchained_dispatches++;
+    }
+
+    /* 2. Chained run */
+    PwX86Engine engine_chained;
+    PwX86CacheEntry entries_c[16];
+    assert(pw_x86_engine_init(&engine_chained, &vm, entries_c, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine_chained, 1) == PW_OK);
+
+    PwX86State state_c = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    state_c.gpr[0] = 0x12345678;
+    state_c.gpr[1] = 50;
+    state_c.gpr[2] = 0xdeadbeef;
+    state_c.gpr[3] = 0x3;
+    state_c.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state_c.gpr[4] = 0x44444444;
+
+    uint64_t chained_dispatches = 0;
+    while (state_c.eip >= 0x1000 && state_c.eip < 0x1000 + sizeof(code)) {
+        PwX86StepReport rep;
+        assert(pw_x86_engine_step(&engine_chained, &state_c, &rep) == PW_OK);
+        chained_dispatches++;
+    }
+
+    /* Exact parity assertion */
+    for (int i = 0; i < 8; i++) {
+        assert(state_u.gpr[i] == state_c.gpr[i]);
+    }
+    assert(state_u.eip == state_c.eip);
+    assert(state_u.eflags == state_c.eflags);
+    assert(engine_unchained.retired_instructions == engine_chained.retired_instructions);
+
+    /* Material reduction in dispatcher entries */
+    assert(chained_dispatches < unchained_dispatches);
+
+    assert(pw_x86_engine_destroy(&engine_unchained) == PW_OK);
+    assert(pw_x86_engine_destroy(&engine_chained) == PW_OK);
+}
+
+/* 8. Imports, indirect control flow, faults and x87 traps remaining unchained */
+static void test_unchained_operations(void)
+{
+    PwVmBackend vm;
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+
+    /* Indirect jump: ff e0 (jmp eax) */
+    uint8_t ind_jmp[] = {0xff, 0xe0};
+    TestSource src1 = {0x1000, ind_jmp, sizeof(ind_jmp)};
+    PwX86Engine eng1;
+    PwX86CacheEntry ent1[4];
+    assert(pw_x86_engine_init(&eng1, &vm, ent1, 4, 65536, 1, test_source_view, &src1) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&eng1, 1) == PW_OK);
+    PwX86State s1 = {.eip = 0x1000};
+    s1.gpr[0] = 0x1050;
+    PwX86StepReport rep1;
+    assert(pw_x86_engine_step(&eng1, &s1, &rep1) == PW_OK);
+    assert(s1.eip == 0x1050);
+    assert(eng1.linked_transitions == 0); /* Unchained */
+    assert(pw_x86_engine_destroy(&eng1) == PW_OK);
+
+    /* Memory fault: mov esp, 0; push esp */
+    uint8_t fault[] = {0xbc, 0, 0, 0, 0, 0x50};
+    TestSource src2 = {0x2000, fault, sizeof(fault)};
+    PwX86Engine eng2;
+    PwX86CacheEntry ent2[4];
+    assert(pw_x86_engine_init(&eng2, &vm, ent2, 4, 65536, 1, test_source_view, &src2) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&eng2, 1) == PW_OK);
+    PwX86State s2 = {.eip = 0x2000};
+    PwX86StepReport rep2;
+    assert(pw_x86_engine_step(&eng2, &s2, &rep2) == PW_ERR_VM);
+    assert(s2.eip == 0x2005); /* Precise faulting PC */
+    assert(eng2.linked_transitions == 0);
+    assert(pw_x86_engine_destroy(&eng2) == PW_OK);
+
+    /* x87 trap */
+    uint8_t x87_trap[] = {0xd9, 0xe8, 0xd9, 0xee, 0xde, 0xf9};
+    TestSource src3 = {0x3000, x87_trap, sizeof(x87_trap)};
+    PwX86Engine eng3;
+    PwX86CacheEntry ent3[4];
+    assert(pw_x86_engine_init(&eng3, &vm, ent3, 4, 65536, 1, test_source_view, &src3) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&eng3, 1) == PW_OK);
+    PwX86State s3 = {.eip = 0x3000};
+    pw_guest_fp_init(&s3.fp);
+    s3.fp.x87_control = (uint16_t)(s3.fp.x87_control & ~4u);
+    PwX86StepReport rep3;
+    assert(pw_x86_engine_step(&eng3, &s3, &rep3) == PW_ERR_X87_TRAP);
+    assert(s3.eip == 0x3004);
+    assert(eng3.linked_transitions == 0);
+    assert(pw_x86_engine_destroy(&eng3) == PW_OK);
+}
+
+/* 9. Code arena exhaustion */
+static void test_code_arena_exhaustion(void)
+{
+    /* 4096-byte arena */
+    uint8_t nops[64];
+    memset(nops, 0x90, sizeof(nops));
+    nops[63] = 0xc3;
+
+    TestSource src = {0x1000, nops, sizeof(nops)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[64];
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 64, 4096, 1, test_source_view, &src) == PW_OK);
+
+    int hit_limit = 0;
+    for (uint32_t pc = 0x1000; pc < 0x1000 + 64; pc++) {
+        PwX86State s = {.eip = pc, .stack_low = 0x03000000, .stack_high = 0x03010000};
+        s.gpr[4] = 0x0300ff00;
+        *(uint32_t *)(uintptr_t)s.gpr[4] = 0x11111111;
+        PwX86StepReport rep;
+        int status = pw_x86_engine_step(&engine, &s, &rep);
+        if (status == PW_ERR_LIMIT) {
+            hit_limit = 1;
+            break;
+        }
+        assert(status == PW_OK);
+    }
+    assert(hit_limit == 1);
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/* 10. W^X backend spy proving no RWX state and bounded transitions */
+typedef struct WxSpy {
+    PwVmBackend real;
+    uint32_t protect_calls;
+    uint32_t rw_transitions;
+    uint32_t rx_transitions;
+} WxSpy;
+
+static int wx_spy_protect(void *ctx, const PwVmRegion *region, size_t off, size_t bytes, unsigned prot)
+{
+    WxSpy *spy = (WxSpy *)ctx;
+    spy->protect_calls++;
+
+    /* Strict W^X invariant: NEVER both WRITE and EXEC */
+    assert((prot & (PW_PROT_WRITE | PW_PROT_EXEC)) != (PW_PROT_WRITE | PW_PROT_EXEC));
+
+    if (prot & PW_PROT_WRITE) spy->rw_transitions++;
+    if (prot & PW_PROT_EXEC) spy->rx_transitions++;
+
+    return spy->real.protect(spy->real.context, region, off, bytes, prot);
+}
+
+static void test_wx_backend_spy(void)
+{
+    uint8_t loop[] = {0x40, 0xeb, 0xfd};
+    TestSource src = {0x1000, loop, sizeof(loop)};
+
+    WxSpy spy = {0};
+    assert(pw_vm_posix_backend(&spy.real) == PW_OK);
+
+    PwVmBackend spy_backend = spy.real;
+    spy_backend.context = &spy;
+    spy_backend.protect = wx_spy_protect;
+
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    assert(pw_x86_engine_init(&engine, &spy_backend, entries, 16, 65536, 1, test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine, 1) == PW_OK);
+    assert(pw_x86_engine_set_quantum(&engine, 10) == PW_OK);
+
+    uint32_t initial_protects = spy.protect_calls;
+
+    PwX86State state = {.eip = 0x1000};
+    PwX86StepReport rep;
+    assert(pw_x86_engine_step(&engine, &state, &rep) == PW_OK);
+
+    /* Compiling 1 block requires exactly 2 transitions: RW to copy, RX to seal */
+    assert(spy.protect_calls - initial_protects == 2);
+    assert(spy.rw_transitions >= 1);
+    assert(spy.rx_transitions >= 1);
+
+    /*
+     * Link slot updates happen in RW memory (link_slots array), NOT via mprotect!
+     * Subsequent step with chaining must perform ZERO new protect calls!
+     */
+    uint32_t protect_after_compile = spy.protect_calls;
+    assert(pw_x86_engine_step(&engine, &state, &rep) == PW_OK);
+    assert(spy.protect_calls == protect_after_compile);
+
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+int main(void)
+{
+    PwVmBackend vm;
+    PwVmRegion stack_region;
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(vm.reserve_at(vm.context, 0x03000000, 65536, vm.page_bytes, &stack_region) == PW_OK);
+    assert(vm.commit(vm.context, &stack_region, 0, stack_region.bytes, PW_PROT_READ | PW_PROT_WRITE) == PW_OK);
+
+    test_unconditional_chains();
+    test_conditional_both_sides();
+    test_backward_loop_safepoint();
+    test_unresolved_target_fallback();
+    test_generation_reset_invalidation();
+    test_publication_failure_rollback();
+    test_retirement_parity();
+    test_unchained_operations();
+    test_code_arena_exhaustion();
+    test_wx_backend_spy();
+
+    assert(vm.release(vm.context, &stack_region) == PW_OK);
+    printf("all 10 tranche A chaining tests passed successfully\n");
+    return 0;
+}

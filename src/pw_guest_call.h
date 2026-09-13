@@ -24,6 +24,8 @@ int pw_guest_call_finish(PwGuestCall *call,unsigned integer_bits,uint64_t value)
 typedef struct PwGuestCallback {
     PwX86State *state;
     uint32_t saved_gpr[8],saved_eip,saved_flags,stack_low,stack_high;
+    uint32_t saved_chain_budget,saved_step_retired,saved_step_transitions;
+    uintptr_t saved_last_exit_slot;
     uint32_t return_token,argument_bytes;
     PwGuestConvention convention;
     unsigned active;

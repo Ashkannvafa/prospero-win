@@ -395,6 +395,7 @@ int main(int argc,char **argv)
     PwX86Engine engine={0};
     if((status=pw_x86_engine_init(&engine,&vm,cache,8192,4u*1024u*1024u,1,
                                   source_view,&services))!=PW_OK)abort_runtime("dbt",status);
+    (void)pw_x86_engine_set_chaining(&engine, 1);
     PwVideoOutPs5 video;
     if((status=pw_videoout_ps5_open(&video))!=PW_OK)abort_runtime("videoout",status);
     PS5LOG_LOG("PW_RUNTIME_READY imports=%u entry=0x%08x image_bytes=%u",
@@ -525,6 +526,7 @@ int main(int argc,char **argv)
             PS5LOG_LOG("PW_RUNTIME_HEARTBEAT schema=2 events=%llu retired=%llu calls=%u waits=%llu "
                 "dbt_dispatches=%llu dbt_compiles=%llu dbt_hits=%llu dbt_misses=%llu "
                 "dbt_lookup_probes=%llu dbt_max_probe=%u dbt_protect_calls=%llu dbt_protect_bytes=%llu "
+                "dbt_links=%llu dbt_linked_transitions=%llu dbt_safepoints=%llu "
                 "windows=%u targets=%u visible_source=%u flips=%llu audio_blocks=%llu "
                 "audio_bytes=%llu audio_frames=%llu audio_hash=0x%08x "
                 "audio_enqueues=%llu audio_completions=%llu audio_queue=%u "
@@ -541,7 +543,11 @@ int main(int argc,char **argv)
                 (unsigned long long)engine.cache.hits,(unsigned long long)engine.cache.misses,
                 (unsigned long long)engine.cache.lookup_probes,engine.cache.max_probe,
                 (unsigned long long)engine.protection_calls,
-                (unsigned long long)engine.protection_bytes,window_count,
+                (unsigned long long)engine.protection_bytes,
+                (unsigned long long)engine.successful_links,
+                (unsigned long long)engine.linked_transitions,
+                (unsigned long long)engine.safepoint_returns,
+                window_count,
                 counts.target_surfaces,presented,(unsigned long long)video.flips,
                 (unsigned long long)audio_stats.blocks,
                 (unsigned long long)audio_stats.input_bytes,

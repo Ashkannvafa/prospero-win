@@ -28,6 +28,11 @@ int pw_x86_cache_init(PwX86Cache *cache,PwX86CacheEntry *entries,uint32_t capaci
 
 int pw_x86_cache_lookup(PwX86Cache *cache,uint32_t guest_pc,const PwX86CacheEntry **entry)
 {
+    return pw_x86_cache_lookup_mut(cache,guest_pc,(PwX86CacheEntry **)entry);
+}
+
+int pw_x86_cache_lookup_mut(PwX86Cache *cache,uint32_t guest_pc,PwX86CacheEntry **entry)
+{
     if(!cache || !cache->entries || !cache->generation || !entry)
         return PW_ERR_PRECONDITION;
     uint32_t slot=first_slot(cache,guest_pc);
@@ -67,7 +72,11 @@ int pw_x86_cache_publish(PwX86Cache *cache,uint32_t guest_pc,const PwX86Block *b
     cache->entries[slot]=(PwX86CacheEntry){
         .guest_pc=guest_pc,.generation=cache->generation,.code_offset=code_offset,
         .code_bytes=block->code_bytes,.source_bytes=block->source_bytes,
-        .instructions=block->instructions,.used=1};
+        .instructions=block->instructions,.exit=block->exit,.used=1};
+    cache->entries[slot].link_slots[0]=(PwX86LinkSlot){
+        .target_pc=block->exit.target_pc,.source_pc=guest_pc,.target_code=NULL,.is_linked=0};
+    cache->entries[slot].link_slots[1]=(PwX86LinkSlot){
+        .target_pc=block->exit.fallthrough_pc,.source_pc=guest_pc,.target_code=NULL,.is_linked=0};
     memcpy(cache->entries[slot].instruction_ends,block->instruction_ends,
            block->instructions*sizeof(block->instruction_ends[0]));
     size_t end=code_offset+block->code_bytes;

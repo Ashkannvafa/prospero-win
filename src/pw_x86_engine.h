@@ -26,8 +26,15 @@ typedef struct PwX86Engine {
     void *source_opaque;
     uint64_t dispatches,retired_instructions,compiles;
     uint64_t protection_calls,protection_bytes;
+    uint64_t attempted_links, successful_links;
+    uint64_t linked_transitions, dispatcher_transitions;
+    uint64_t unlinks, safepoint_returns;
+    uint32_t quantum;
+    unsigned chaining_enabled;
     unsigned sealed,failed,initialized;
 } PwX86Engine;
+
+enum { PW_X86_ENGINE_DEFAULT_QUANTUM = 64 };
 
 /* The engine owns its code region but not entries or source memory. It is a
  * single-dispatcher object: reset/destroy require no executing block. Code
@@ -35,6 +42,8 @@ typedef struct PwX86Engine {
 int pw_x86_engine_init(PwX86Engine *,const PwVmBackend *,
                        PwX86CacheEntry *,uint32_t,size_t,uint32_t,
                        PwX86SourceView,void *);
+int pw_x86_engine_set_quantum(PwX86Engine *, uint32_t);
+int pw_x86_engine_set_chaining(PwX86Engine *, unsigned);
 int pw_x86_engine_step(PwX86Engine *,PwX86State *,PwX86StepReport *);
 int pw_x86_engine_reset(PwX86Engine *,uint32_t);
 int pw_x86_engine_destroy(PwX86Engine *);

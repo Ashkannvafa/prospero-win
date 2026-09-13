@@ -19,9 +19,31 @@ typedef struct PwX86State {
     uint32_t fs_base, fs_bytes; /* guest-owned RW thread region, not host FS */
     uint32_t eflags; /* guest flags; never installed as host control flags */
     unsigned memory_count;
+    uint32_t chain_budget;       /* remaining blocks in current chain quantum */
+    uint32_t step_retired;       /* cumulative instructions retired in current dispatch step */
+    uint32_t step_transitions;   /* linked block-to-block transitions in current step */
+    uintptr_t last_exit_slot;    /* address of link slot that triggered unlinked exit (or 0) */
     PwX86Memory memory[PW_X86_MEMORY_REGIONS]; /* live identity-mapped ranges */
     PwGuestFp fp;
 } PwX86State;
+
+typedef enum PwX86ExitKind {
+    PW_X86_EXIT_NONE = 0,
+    PW_X86_EXIT_DIRECT_JUMP,   /* Direct unconditional branch: jmp rel8/rel32 */
+    PW_X86_EXIT_CONDITIONAL,   /* Conditional branch: jcc rel8/rel32 */
+    PW_X86_EXIT_DYNAMIC        /* Call, ret, indirect, trap, fault, max block length */
+} PwX86ExitKind;
+
+typedef struct PwX86ExitDesc {
+    PwX86ExitKind kind;
+    unsigned chainable;
+    uint32_t target_pc;         /* taken or direct jump target guest PC */
+    uint32_t fallthrough_pc;    /* not-taken target guest PC (if conditional) */
+    size_t target_patch_offset; /* offset in emitted code of 64-bit slot pointer for target */
+    size_t fallthrough_patch_offset; /* offset in emitted code of 64-bit slot pointer for fallthrough */
+    size_t target_stub_offset;  /* offset in emitted code of unlinked exit stub for target */
+    size_t fallthrough_stub_offset; /* offset in emitted code of unlinked exit stub for fallthrough */
+} PwX86ExitDesc;
 
 typedef struct PwX86Block {
     size_t source_bytes, code_bytes;
@@ -29,6 +51,7 @@ typedef struct PwX86Block {
     /* End offset of each guest instruction. This lets the dispatcher report
      * the precise retired prefix when a generated memory guard exits early. */
     uint16_t instruction_ends[32];
+    PwX86ExitDesc exit;
 } PwX86Block;
 
 /* Initial bounded DBT subset: push immediate/register/memory, pop register,
