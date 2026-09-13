@@ -9,6 +9,7 @@
 #include "pw_guest_call.h"
 #include "pw_guest_vm.h"
 #include "pw_guest_process.h"
+#include "pw_nt_handle.h"
 #include "../include/prospero_win_vm.h"
 
 #include <string.h>
@@ -245,28 +246,9 @@ typedef struct PwWineCallContext {
      * benefit (0). Only the first kind counts against the live byte limit. */
     uint8_t region_owned[PW_WINE_GATE_MAX_CALL_REGIONS];
     uint32_t region_count;
-    struct PwWineHandle {
-        void *token;
-        uint64_t size;
-        uint64_t offset;
-        /* What the handle names, so one table can carry files, directories
-         * and registry keys and each handler can refuse the wrong kind. */
-        uint8_t kind;
-        uint8_t used;
-        /* For a registry key or an object: its canonical path, which is what
-         * a relative open is resolved against. */
-        char path[PW_WINE_GATE_MAX_PATH + 1];
-    } handles[PW_WINE_GATE_MAX_HANDLES];
+    PwNtHandleTable handles;
 } PwWineCallContext;
 
-enum PwWineHandleKind {
-    PW_WINE_HANDLE_NONE = 0,
-    PW_WINE_HANDLE_FILE = 1,
-    PW_WINE_HANDLE_DIRECTORY = 2,
-    PW_WINE_HANDLE_KEY = 3,
-    PW_WINE_HANDLE_OBJECT_DIRECTORY = 4,
-    PW_WINE_HANDLE_SECTION = 5,
-};
 
 static int reserve_guest_block(PwWineCallContext *calls, uint32_t desired,
                                uint32_t bytes, PwVmRegion *region,
@@ -824,65 +806,64 @@ static int gate_nt_query_system_information(PwWineCallContext *calls,
  * live, and every guest buffer is reached through the dispatcher's validated
  * accessor.
  */
-static uint32_t file_handle_value(uint32_t index)
+/*
+ * Handles are gate-owned and typed. The value the guest sees is opaque and
+ * generation-safe, so a handle it kept from a released slot is refused rather
+ * than naming whatever was allocated next; the table itself lives in
+ * src/pw_nt_handle.[ch].
+ */
+static int file_handle_alloc(PwWineCallContext *calls, const PwNtObject *object,
+                             unsigned kind, uint32_t *value)
 {
-    return 0x100u + index;
+    const int status =
+        pw_nt_handle_alloc(&calls->handles, kind, object, value);
+
+    calls->report->file_handles = calls->handles.live;
+    return status;
 }
 
 static int file_handle_lookup(PwWineCallContext *calls, uint32_t value,
-                              uint32_t *index)
+                              PwNtObject **object, unsigned *kind)
 {
-    if (value < 0x100u || value - 0x100u >= PW_WINE_GATE_MAX_HANDLES)
-        return PW_ERR_NOT_FOUND;
-    if (!calls->handles[value - 0x100u].used)
-        return PW_ERR_NOT_FOUND;
-    *index = value - 0x100u;
-    return PW_OK;
-}
-
-static int file_handle_alloc(PwWineCallContext *calls, void *token,
-                             uint64_t size, unsigned kind, uint32_t *value)
-{
-    for (uint32_t index = 0; index < PW_WINE_GATE_MAX_HANDLES; ++index) {
-        if (calls->handles[index].used)
-            continue;
-        calls->handles[index] = (struct PwWineHandle){
-            .token = token, .size = size, .offset = 0u,
-            .kind = (uint8_t)kind, .used = 1u,
-        };
-        *value = file_handle_value(index);
-        calls->report->file_handles++;
-        return PW_OK;
-    }
-    return PW_ERR_LIMIT;
+    return pw_nt_handle_lookup(&calls->handles, value, object, kind);
 }
 
 static int file_handle_release(PwWineCallContext *calls, uint32_t value)
 {
-    uint32_t index = 0u;
+    PwNtObject released;
+    unsigned kind = PW_NT_HANDLE_NONE;
 
-    if (file_handle_lookup(calls, value, &index) != PW_OK)
+    memset(&released, 0, sizeof(released));
+    if (pw_nt_handle_release(&calls->handles, value, &released, &kind) != PW_OK)
         return PW_ERR_NOT_FOUND;
-    if (calls->handles[index].token) {
-        if (calls->handles[index].kind == PW_WINE_HANDLE_FILE &&
-            calls->config->files)
+    if (released.token) {
+        if (kind == PW_NT_HANDLE_FILE && calls->config->files)
             calls->config->files->close(calls->config->files->context,
-                                        calls->handles[index].token);
-        else if (calls->handles[index].kind == PW_WINE_HANDLE_KEY &&
-                 calls->config->registry)
+                                        released.token);
+        else if (kind == PW_NT_HANDLE_KEY && calls->config->registry)
             calls->config->registry->close(calls->config->registry->context,
-                                           calls->handles[index].token);
-        else if ((calls->handles[index].kind == PW_WINE_HANDLE_OBJECT_DIRECTORY ||
-                  calls->handles[index].kind == PW_WINE_HANDLE_SECTION) &&
-                 calls->config->objects)
+                                           released.token);
+        else if ((kind == PW_NT_HANDLE_OBJECT_DIRECTORY ||
+                  kind == PW_NT_HANDLE_SECTION) && calls->config->objects)
             calls->config->objects->close(calls->config->objects->context,
-                                          calls->handles[index].token);
+                                          released.token);
     }
-    memset(&calls->handles[index], 0, sizeof(calls->handles[index]));
     calls->report->file_closes++;
-    if (calls->report->file_handles)
-        calls->report->file_handles--;
+    calls->report->file_handles = calls->handles.live;
     return PW_OK;
+}
+
+/* What a handle names, built once at the call site. */
+static PwNtObject file_object(void *token, uint64_t size, const char *path)
+{
+    PwNtObject object;
+
+    memset(&object, 0, sizeof(object));
+    object.token = token;
+    object.size = size;
+    if (path)
+        memcpy(object.path, path, strlen(path) + 1u);
+    return object;
 }
 
 static char ascii_lower(char value)
@@ -1021,8 +1002,9 @@ static int open_directory_handle(PwWineCallContext *calls, const char *reported,
 {
     uint32_t handle = 0u;
 
-    if (file_handle_alloc(calls, NULL, 0u, PW_WINE_HANDLE_DIRECTORY,
-                          &handle) != PW_OK) {
+    const PwNtObject handle_object = file_object(NULL, 0u, NULL);
+    if (file_handle_alloc(calls, &handle_object,
+                          PW_NT_HANDLE_DIRECTORY, &handle) != PW_OK) {
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
@@ -1119,8 +1101,9 @@ static int gate_nt_open_file(PwWineCallContext *calls,
         calls->report->file_refusals++;
         return PW_OK;
     }
-    if (file_handle_alloc(calls, token, size, PW_WINE_HANDLE_FILE,
-                          &handle) != PW_OK) {
+    const PwNtObject handle_object = file_object(token, size, NULL);
+    if (file_handle_alloc(calls, &handle_object,
+                          PW_NT_HANDLE_FILE, &handle) != PW_OK) {
         calls->config->files->close(calls->config->files->context, token);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
@@ -1147,21 +1130,22 @@ static int gate_nt_read_file(PwWineCallContext *calls,
     const uint32_t buffer = frame->args[5];
     const uint32_t length = frame->args[6];
     const uint32_t offset_pointer = frame->args[7];
-    uint32_t index = 0u;
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
     uint64_t offset = 0u;
     uint8_t staging[PW_WINE_GATE_MAX_READ];
     uint32_t read_bytes = 0u;
 
-    if (file_handle_lookup(calls, handle, &index) != PW_OK) {
+    if (file_handle_lookup(calls, handle, &object, &kind) != PW_OK) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
-    if (calls->handles[index].kind == PW_WINE_HANDLE_DIRECTORY) {
+    if (kind == PW_NT_HANDLE_DIRECTORY) {
         *status = PW_NT_INVALID_DEVICE_REQUEST;
         calls->report->file_refusals++;
         return PW_OK;
     }
-    if (calls->handles[index].kind != PW_WINE_HANDLE_FILE) {
+    if (kind != PW_NT_HANDLE_FILE) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
@@ -1174,7 +1158,7 @@ static int gate_nt_read_file(PwWineCallContext *calls,
         calls->report->file_refusals++;
         return PW_OK;
     }
-    offset = calls->handles[index].offset;
+    offset = object->offset;
     if (offset_pointer != 0u) {
         uint8_t raw[8];
         uint32_t low = 0u, high = 0u;
@@ -1187,15 +1171,15 @@ static int gate_nt_read_file(PwWineCallContext *calls,
         memcpy(&high, raw + 4u, 4u);
         offset = (uint64_t)low | ((uint64_t)high << 32);
     }
-    if (offset > calls->handles[index].size) {
+    if (offset > object->size) {
         write_io_status(guest, context, io_pointer, PW_NT_END_OF_FILE, 0u);
         *status = PW_NT_SUCCESS;
         return PW_OK;
     }
     if (!calls->config->files ||
         calls->config->files->read(calls->config->files->context,
-                                   calls->handles[index].token, offset, staging,
-                                   length, &read_bytes) != PW_WINE_FILE_OK) {
+                                   object->token, offset, staging, length,
+                                   &read_bytes) != PW_WINE_FILE_OK) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
@@ -1204,7 +1188,7 @@ static int gate_nt_read_file(PwWineCallContext *calls,
         *argument_index = 6u;
         return PW_ERR_MALFORMED;
     }
-    calls->handles[index].offset = offset + read_bytes;
+    object->offset = offset + read_bytes;
     write_io_status(guest, context, io_pointer, PW_NT_SUCCESS, read_bytes);
     calls->report->file_reads++;
     calls->report->file_bytes += read_bytes;
@@ -1224,15 +1208,16 @@ static int gate_nt_query_information_file(PwWineCallContext *calls,
     const uint32_t length = frame->args[3];
     const uint32_t information_class = frame->args[4];
     uint8_t block[22];
-    uint32_t index = 0u;
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
     uint32_t written;
 
-    if (file_handle_lookup(calls, handle, &index) != PW_OK) {
+    if (file_handle_lookup(calls, handle, &object, &kind) != PW_OK) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
-    if (calls->handles[index].kind != PW_WINE_HANDLE_FILE &&
-        calls->handles[index].kind != PW_WINE_HANDLE_DIRECTORY) {
+    if (kind != PW_NT_HANDLE_FILE &&
+        kind != PW_NT_HANDLE_DIRECTORY) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
@@ -1241,10 +1226,10 @@ static int gate_nt_query_information_file(PwWineCallContext *calls,
         return PW_OK;
     }
     memset(block, 0, sizeof(block));
-    memcpy(block, &calls->handles[index].size, 8u);        /* AllocationSize */
-    memcpy(block + 8u, &calls->handles[index].size, 8u);   /* EndOfFile */
+    memcpy(block, &object->size, 8u);        /* AllocationSize */
+    memcpy(block + 8u, &object->size, 8u);   /* EndOfFile */
     block[21] =
-        calls->handles[index].kind == PW_WINE_HANDLE_DIRECTORY ? 1u : 0u;
+        kind == PW_NT_HANDLE_DIRECTORY ? 1u : 0u;
     written = length < sizeof(block) ? length : sizeof(block);
     if (written != 0u &&
         (information_pointer == 0u ||
@@ -1287,19 +1272,20 @@ static int gate_nt_query_volume_information_file(PwWineCallContext *calls,
     const uint32_t information_pointer = frame->args[2];
     const uint32_t length = frame->args[3];
     const uint32_t information_class = frame->args[4];
-    uint32_t index = 0u;
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
     uint8_t block[8];
     const uint32_t device_type = PW_WINE_DEVICE_DISK_FILE_SYSTEM;
     const uint32_t characteristics = 0u;
 
-    if (file_handle_lookup(calls, handle, &index) != PW_OK) {
+    if (file_handle_lookup(calls, handle, &object, &kind) != PW_OK) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
     /* A key is not a file object: the volume information classes describe a
      * device the handle is not attached to. */
-    if (calls->handles[index].kind != PW_WINE_HANDLE_FILE &&
-        calls->handles[index].kind != PW_WINE_HANDLE_DIRECTORY) {
+    if (kind != PW_NT_HANDLE_FILE &&
+        kind != PW_NT_HANDLE_DIRECTORY) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
@@ -1349,7 +1335,8 @@ static int resolve_registry_key(PwWineCallContext *calls,
     uint32_t root_handle = 0u;
     char name[PW_WINE_GATE_MAX_PATH + 1];
     char relative[PW_WINE_GATE_MAX_PATH + 1];
-    uint32_t index = 0u;
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
 
     if (attributes_pointer == 0u) {
         *argument_index = 3u;
@@ -1384,20 +1371,20 @@ static int resolve_registry_key(PwWineCallContext *calls,
     } else {
         size_t used = 0u;
 
-        if (file_handle_lookup(calls, root_handle, &index) != PW_OK ||
-            calls->handles[index].kind != PW_WINE_HANDLE_KEY) {
+        if (file_handle_lookup(calls, root_handle, &object, &kind) != PW_OK ||
+            kind != PW_NT_HANDLE_KEY) {
             *status = PW_NT_INVALID_HANDLE;
             return PW_OK;
         }
         /* A relative name is resolved against the key's canonical path and
          * then revalidated as a whole, so it cannot leave the namespace. */
-        used = strlen(calls->handles[index].path);
+        used = strlen(object->path);
         if (used + strlen(name) + 2u > sizeof(relative)) {
             *status = PW_NT_OBJECT_NAME_INVALID;
             calls->report->key_refusals++;
             return PW_OK;
         }
-        memcpy(relative, calls->handles[index].path, used);
+        memcpy(relative, object->path, used);
         relative[used++] = '\\';
         memcpy(relative + used, name, strlen(name) + 1u);
         if (translate_registry_path(relative, canonical, canonical_bytes,
@@ -1446,14 +1433,13 @@ static int gate_nt_open_key(PwWineCallContext *calls,
         calls->report->key_refusals++;
         return PW_OK;
     }
-    if (file_handle_alloc(calls, token, 0u, PW_WINE_HANDLE_KEY, &handle) !=
-        PW_OK) {
+    const PwNtObject handle_object = file_object(token, 0u, canonical);
+    if (file_handle_alloc(calls, &handle_object, PW_NT_HANDLE_KEY,
+                          &handle) != PW_OK) {
         calls->config->registry->close(calls->config->registry->context, token);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
-    memcpy(calls->handles[handle - 0x100u].path, canonical,
-           strlen(canonical) + 1u);
     if (guest(context, handle_pointer, &handle, 4u, 1) != PW_OK) {
         (void)file_handle_release(calls, handle);
         *argument_index = 1u;
@@ -1513,14 +1499,13 @@ static int gate_nt_create_key(PwWineCallContext *calls,
         calls->report->key_refusals++;
         return PW_OK;
     }
-    if (file_handle_alloc(calls, token, 0u, PW_WINE_HANDLE_KEY, &handle) !=
-        PW_OK) {
+    const PwNtObject handle_object = file_object(token, 0u, canonical);
+    if (file_handle_alloc(calls, &handle_object, PW_NT_HANDLE_KEY,
+                          &handle) != PW_OK) {
         calls->config->registry->close(calls->config->registry->context, token);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
-    memcpy(calls->handles[handle - 0x100u].path, canonical,
-           strlen(canonical) + 1u);
     if (disposition_pointer != 0u) {
         uint32_t disposition = created != 0u ? PW_WINE_REG_CREATED_NEW_KEY
                                              : PW_WINE_REG_OPENED_EXISTING_KEY;
@@ -1647,12 +1632,13 @@ static int gate_nt_query_value_key(PwWineCallContext *calls,
     uint32_t value_type = 0u;
     uint32_t value_size = 0u;
     uint32_t needed = 0u;
-    uint32_t index = 0u;
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
     char name[PW_WINE_GATE_MAX_PATH + 1];
     char canonical[PW_WINE_GATE_MAX_PATH + 1];
 
-    if (file_handle_lookup(calls, handle, &index) != PW_OK ||
-        calls->handles[index].kind != PW_WINE_HANDLE_KEY) {
+    if (file_handle_lookup(calls, handle, &object, &kind) != PW_OK ||
+        kind != PW_NT_HANDLE_KEY) {
         *status = PW_NT_INVALID_HANDLE;
         return PW_OK;
     }
@@ -1678,7 +1664,7 @@ static int gate_nt_query_value_key(PwWineCallContext *calls,
     calls->report->key_queries++;
     if (!calls->config->registry ||
         calls->config->registry->query(calls->config->registry->context,
-                                       calls->handles[index].token, canonical,
+                                       object->token, canonical,
                                        &value_type, &value_bytes,
                                        &value_size) != PW_WINE_REGISTRY_OK ||
         (value_size != 0u && value_bytes == NULL) ||
@@ -1917,7 +1903,8 @@ static int resolve_object_path(PwWineCallContext *calls,
     uint32_t root_handle = 0u;
     char name[PW_WINE_GATE_MAX_PATH + 1];
     char relative[PW_WINE_GATE_MAX_PATH + 1];
-    uint32_t index = 0u;
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
 
     if (attributes_pointer == 0u) {
         *argument_index = 3u;
@@ -1952,18 +1939,18 @@ static int resolve_object_path(PwWineCallContext *calls,
     } else {
         size_t used = 0u;
 
-        if (file_handle_lookup(calls, root_handle, &index) != PW_OK ||
-            calls->handles[index].kind != PW_WINE_HANDLE_OBJECT_DIRECTORY) {
+        if (file_handle_lookup(calls, root_handle, &object, &kind) != PW_OK ||
+            kind != PW_NT_HANDLE_OBJECT_DIRECTORY) {
             *status = PW_NT_INVALID_HANDLE;
             return PW_OK;
         }
-        used = strlen(calls->handles[index].path);
+        used = strlen(object->path);
         if (used + strlen(name) + 2u > sizeof(relative)) {
             *status = PW_NT_OBJECT_NAME_INVALID;
             calls->report->object_refusals++;
             return PW_OK;
         }
-        memcpy(relative, calls->handles[index].path, used);
+        memcpy(relative, object->path, used);
         relative[used++] = '\\';
         memcpy(relative + used, name, strlen(name) + 1u);
         if (translate_object_path(relative, canonical, canonical_bytes,
@@ -2027,13 +2014,13 @@ static int gate_nt_open_object(PwWineCallContext *calls,
         calls->report->object_refusals++;
         return PW_OK;
     }
-    if (file_handle_alloc(calls, token, 0u, handle_kind, &handle) != PW_OK) {
+    const PwNtObject handle_object = file_object(token, 0u, canonical);
+    if (file_handle_alloc(calls, &handle_object, handle_kind, &handle) !=
+        PW_OK) {
         calls->config->objects->close(calls->config->objects->context, token);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
-    memcpy(calls->handles[handle - 0x100u].path, canonical,
-           strlen(canonical) + 1u);
     if (guest(context, handle_pointer, &handle, 4u, 1) != PW_OK) {
         (void)file_handle_release(calls, handle);
         *argument_index = 1u;
@@ -2131,7 +2118,7 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     case 0x0058u:
         result = gate_nt_open_object(calls, &frame, gate_guest_access, state,
                                      PW_WINE_OBJECT_DIRECTORY,
-                                     PW_WINE_HANDLE_OBJECT_DIRECTORY, &status,
+                                     PW_NT_HANDLE_OBJECT_DIRECTORY, &status,
                                      &argument_index);
         break;
     case 0x0019u:
@@ -2141,7 +2128,7 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     case 0x0037u:
         result = gate_nt_open_object(calls, &frame, gate_guest_access, state,
                                      PW_WINE_OBJECT_SECTION,
-                                     PW_WINE_HANDLE_SECTION, &status,
+                                     PW_NT_HANDLE_SECTION, &status,
                                      &argument_index);
         break;
     case 0x000fu:
@@ -2695,9 +2682,11 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 
 done:
     report->status = status;
-    for (uint32_t index = 0; index < PW_WINE_GATE_MAX_HANDLES; ++index) {
-        if (calls.handles[index].used)
-            (void)file_handle_release(&calls, file_handle_value(index));
+    for (uint32_t slot = 0u; slot < (uint32_t)PW_NT_HANDLE_MAX; ++slot) {
+        const uint32_t value = pw_nt_handle_value_of(&calls.handles, slot);
+
+        if (value != 0u)
+            (void)file_handle_release(&calls, value);
     }
     if (have_engine) {
         if (pw_x86_engine_destroy(&engine) == PW_OK)
