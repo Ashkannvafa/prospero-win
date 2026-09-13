@@ -8,6 +8,7 @@
 #include "pw_module_name.h"
 #include "pw_guest_call.h"
 #include "pw_guest_vm.h"
+#include "pw_guest_process.h"
 #include "../include/prospero_win_vm.h"
 
 #include <string.h>
@@ -2291,126 +2292,7 @@ static int declare_guest_memory(PwX86State *state, const PwLoader *loader,
     return PW_OK;
 }
 
-/*
- * One zeroed guest page, reserved below the 32-bit boundary. The gate uses
- * two: the thread's TEB (what FS points at) and a PEB handed to ntdll's
- * initialization entry as its first argument.
- */
-static int allocate_guest_page(const PwWineGateConfig *config,
-                               PwGuestVm *guest_vm, uint32_t base,
-                               PwVmRegion *region, uint32_t *address)
-{
-    int status;
 
-    if ((guest_vm->base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
-        status = guest_vm->base.reserve_at(guest_vm->base.context, base,
-                                           PW_WINE_GATE_STACK_BYTES,
-                                           guest_vm->base.page_bytes, region);
-    else
-        status = config->backend->reserve(config->backend->context,
-                                          PW_WINE_GATE_STACK_BYTES,
-                                          config->backend->page_bytes, region);
-    if (status != PW_OK)
-        return status;
-    if ((uint64_t)(uintptr_t)region->exec_base + region->bytes >
-        0x100000000ull)
-        return PW_ERR_UNSUPPORTED;
-    status = config->backend->commit(config->backend->context, region, 0u,
-                                     region->bytes,
-                                     PW_PROT_READ | PW_PROT_WRITE);
-    if (status != PW_OK)
-        return status;
-    memset(region->write_base, 0, region->bytes);
-    *address = (uint32_t)(uintptr_t)region->exec_base;
-    return PW_OK;
-}
-
-/*
- * A minimal but populated RTL_USER_PROCESS_PARAMETERS: sizes, the current
- * directory, the DLL and image paths, the command line and an environment
- * block, all as UTF-16LE strings inside the same declared page. ntdll reads
- * these during loader and heap initialisation; a zeroed page is what makes it
- * dereference a null Buffer. This is still not a Windows process environment
- * - there is no registry, no NLS data and no drive-letter table - but the
- * fields the loader asks for are present and self-consistent.
- */
-static uint32_t write_wide(uint8_t *page, uint32_t *cursor, const char *ascii)
-{
-    const uint32_t offset = *cursor;
-
-    while (*ascii != '\0') {
-        page[*cursor] = (uint8_t)*ascii++;
-        page[*cursor + 1u] = 0u;
-        *cursor += 2u;
-    }
-    page[*cursor] = 0u;
-    page[*cursor + 1u] = 0u;
-    *cursor += 2u;
-    return offset;
-}
-
-static void set_unicode_string(uint8_t *page, uint32_t field, uint32_t offset,
-                               const char *text)
-{
-    const uint32_t base = (uint32_t)(uintptr_t)page;
-    const uint16_t bytes = (uint16_t)(strlen(text) * 2u);
-
-    memcpy(page + field, &bytes, 2u);
-    memcpy(page + field + 2u, &bytes, 2u);
-    {
-        const uint32_t buffer = base + offset;
-
-        memcpy(page + field + 4u, &buffer, 4u);
-    }
-}
-
-static int populate_process_parameters(uint8_t *page, uint32_t page_bytes,
-                                       const char *root_module,
-                                       uint32_t *length_out)
-{
-    uint32_t cursor = 0x100u;
-    uint32_t current_offset;
-    uint32_t dll_offset;
-    uint32_t image_offset;
-    uint32_t command_offset;
-    uint32_t environment_offset;
-    char image_path[128];
-
-    if (!page || page_bytes < 4096u || !root_module)
-        return PW_ERR_PRECONDITION;
-    if (strlen(root_module) + sizeof("C:\\windows\\system32\\") >
-        sizeof(image_path))
-        return PW_ERR_LIMIT;
-    memcpy(image_path, "C:\\windows\\system32\\",
-           sizeof("C:\\windows\\system32\\") - 1u);
-    memcpy(image_path + sizeof("C:\\windows\\system32\\") - 1u,
-           root_module, strlen(root_module) + 1u);
-
-    current_offset = write_wide(page, &cursor, "C:\\windows");
-    dll_offset = write_wide(page, &cursor, "C:\\windows\\system32");
-    image_offset = write_wide(page, &cursor, image_path);
-    command_offset = write_wide(page, &cursor, image_path);
-    environment_offset = write_wide(page, &cursor, "SystemRoot=C:\\windows");
-    page[cursor] = 0u;
-    page[cursor + 1u] = 0u;
-    cursor += 2u;
-
-    set_unicode_string(page, 0x24u, current_offset, "C:\\windows");
-    set_unicode_string(page, 0x30u, dll_offset, "C:\\windows\\system32");
-    set_unicode_string(page, 0x38u, image_offset, image_path);
-    set_unicode_string(page, 0x40u, command_offset, image_path);
-    {
-        const uint32_t base = (uint32_t)(uintptr_t)page;
-        const uint32_t environment = base + environment_offset;
-
-        memcpy(page + 0x48u, &environment, 4u);
-    }
-    memcpy(page + 0x00u, &cursor, 4u);      /* MaximumLength */
-    memcpy(page + 0x04u, &cursor, 4u);      /* Length */
-    if (length_out)
-        *length_out = cursor;
-    return PW_OK;
-}
 
 int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 {
@@ -2427,10 +2309,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     PeExportSymbol symbol;
     PwGuestCall call;
     PwFileSpan root_span;
-    PwVmRegion stack;
-    PwVmRegion teb;
-    PwVmRegion peb;
-    PwVmRegion parameters;
+    PwGuestProcess process;
     PwWineCallContext calls;
     PwX86State state;
     uint32_t thunks[PW_WINE_GATE_MAX_BOUNDARIES];
@@ -2440,9 +2319,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     int status;
     int have_loader = 0;
     int have_engine = 0;
-    int have_stack = 0;
-    int have_teb = 0;
-    int have_peb = 0;
+    int have_process = 0;
 
     if (!config || !report || !config->provider || !config->backend ||
         config->module_count == 0u ||
@@ -2450,9 +2327,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         return PW_ERR_PRECONDITION;
     memset(report, 0, sizeof(*report));
     memset(&root_span, 0, sizeof(root_span));
-    memset(&teb, 0, sizeof(teb));
-    memset(&peb, 0, sizeof(peb));
-    memset(&parameters, 0, sizeof(parameters));
+    memset(&process, 0, sizeof(process));
     memset(&calls, 0, sizeof(calls));
     memset(&call, 0, sizeof(call));
     budget = config->step_budget != 0u ? config->step_budget
@@ -2618,68 +2493,33 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             decode_stub_syscall(entry_module, symbol.rva);
     }
 
-    /* Guest stack for the one stdcall frame the gate enters. */
+    /*
+     * The guest process state: stack, TEB, PEB and process parameters. The
+     * unit owns the four pages, so a failure halfway releases exactly what it
+     * mapped.
+     */
     {
-        uint32_t base = config->stack_base != 0u ? config->stack_base
-                                                 : 0x0f000000u;
-        int reserved = PW_ERR_VM;
+        const PwModule *root_module_loaded = pw_loader_module(&loader, 0u);
+        const PwGuestProcessConfig process_config = {
+            .backend = config->backend,
+            .stack_base = config->stack_base,
+            .image_base = root_module_loaded
+                ? (uint32_t)root_module_loaded->mapped.actual_base : 0u,
+            .dispatcher_thunk = report->boundary_thunk_va,
+            .root_module = root_canonical,
+        };
 
-        if ((guest_vm.base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
-            reserved = guest_vm.base.reserve_at(guest_vm.base.context, base,
-                                                PW_WINE_GATE_STACK_BYTES,
-                                                guest_vm.base.page_bytes, &stack);
-        if (reserved != PW_OK)
-            reserved = config->backend->reserve(config->backend->context,
-                                               PW_WINE_GATE_STACK_BYTES,
-                                               config->backend->page_bytes,
-                                               &stack);
-        if (reserved != PW_OK) {
-            status = reserved;
-            goto done;
-        }
-        have_stack = 1;
-        report->stack_base = (uint32_t)(uintptr_t)stack.exec_base;
-        report->stack_bytes = (uint32_t)stack.bytes;
-        if ((uint64_t)stack.exec_base + stack.bytes > 0x100000000ull) {
-            status = PW_ERR_UNSUPPORTED;
-            goto done;
-        }
-        status = config->backend->commit(config->backend->context, &stack, 0u,
-                                         PW_WINE_GATE_STACK_BYTES,
-                                         PW_PROT_READ | PW_PROT_WRITE);
+        status = pw_guest_process_create(&process, &process_config);
         if (status != PW_OK)
             goto done;
-    }
-
-    /* Minimal guest thread and process blocks. They are deliberately small:
-     * enough for ntdll's first initialization instructions to read a TEB
-     * through FS and a PEB through its argument, not a Windows process
-     * environment. The offsets are the documented NT TEB fields. */
-    {
-        uint32_t stack_high =
-            report->stack_base + report->stack_bytes;
-
-        status = allocate_guest_page(config, &guest_vm, 0x0e000000u, &teb,
-                                     &report->teb_base);
-        if (status != PW_OK)
-            goto done;
-        have_teb = 1;
-        report->teb_bytes = (uint32_t)teb.bytes;
-        status = allocate_guest_page(config, &guest_vm, 0x0d000000u, &peb,
-                                     &report->peb_base);
-        if (status != PW_OK)
-            goto done;
-        have_peb = 1;
-        status = allocate_guest_page(config, &guest_vm, 0x0c000000u, &parameters,
-                                     &report->parameters_base);
-        if (status != PW_OK)
-            goto done;
-        status = populate_process_parameters(parameters.write_base,
-                                             (uint32_t)parameters.bytes,
-                                             root_canonical,
-                                             &report->parameters_length);
-        if (status != PW_OK)
-            goto done;
+        have_process = 1;
+        report->stack_base = process.layout.stack_base;
+        report->stack_bytes = process.layout.stack_bytes;
+        report->teb_base = process.layout.teb_base;
+        report->teb_bytes = process.layout.teb_bytes;
+        report->peb_base = process.layout.peb_base;
+        report->parameters_base = process.layout.parameters_base;
+        report->parameters_length = process.layout.parameters_length;
         /*
          * The parameters block stands in for the memory a parent hands a new
          * process, and ntdll's init_user_process_params replaces it with its
@@ -2693,50 +2533,10 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             status = PW_ERR_LIMIT;
             goto done;
         }
-        calls.regions[calls.region_count] = parameters;
+        calls.regions[calls.region_count] = process.pages[3];
         calls.region_owned[calls.region_count] = 0u;
         calls.region_count++;
         report->call_regions = calls.region_count;
-        {
-            uint8_t *peb_block = peb.write_base;
-            const PwModule *root_module_loaded =
-                pw_loader_module(&loader, 0u);
-
-            /* PEB->ProcessParameters (0x10) and PEB->ImageBaseAddress
-             * (0x08): ntdll reads both during loader initialisation. */
-            memcpy(peb_block + 0x10, &report->parameters_base, 4u);
-            if (root_module_loaded) {
-                const uint32_t image_base =
-                    (uint32_t)root_module_loaded->mapped.actual_base;
-
-                memcpy(peb_block + 0x08, &image_base, 4u);
-            }
-        }
-        {
-            uint8_t *block = teb.write_base;
-
-            memcpy(block + 0x04, &stack_high, 4u);   /* StackBase */
-            memcpy(block + 0x08, &report->stack_base, 4u); /* StackLimit */
-            memcpy(block + 0x18, &report->teb_base, 4u);   /* Self */
-            /*
-             * TEB.WOW32Reserved (0xc0) is where Wine's unix side installs the
-             * syscall dispatcher, and it is what the stubs declared with
-             * -syscall=<id> call through ("mov eax, id; call fs:[0xc0]"). The
-             * gate plays that role here, with the very thunk it located
-             * structurally, so both stub shapes reach the same boundary.
-             */
-            if (report->boundary_thunk_va != 0u) {
-                const uint32_t dispatcher = report->boundary_thunk_va;
-
-                memcpy(block + 0xc0, &dispatcher, 4u);
-            }
-            /* TEB->ProcessEnvironmentBlock: ntdll's first server-side reads
-             * go through this pointer, so the gate links the two blocks. */
-            memcpy(block + 0x30, &report->peb_base, 4u);
-            /* ThreadLocalStoragePointer stays zero: no module of this
-             * distribution declares a TLS directory, and a zeroed slot is
-             * the honest value until the TLS owner publishes an index. */
-        }
     }
 
     memset(&state, 0, sizeof(state));
@@ -2745,8 +2545,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     state.fs_base = report->teb_base;
     state.fs_bytes = report->teb_bytes;
     status = declare_guest_memory(&state, &loader, report->stack_base,
-                                  report->stack_bytes, &teb, &peb,
-                                  &parameters);
+                                  report->stack_bytes, &process.pages[1],
+                                  &process.pages[2], &process.pages[3]);
     if (status != PW_OK)
         goto done;
     report->guest_regions = state.memory_count;
@@ -2903,16 +2703,10 @@ done:
         if (pw_x86_engine_destroy(&engine) == PW_OK)
             report->cleanup_translations++;
     }
-    if (have_stack) {
-        if (config->backend->release(config->backend->context, &stack) == PW_OK)
-            report->cleanup_mappings++;
+    if (have_process) {
+        (void)pw_guest_process_release(&process, config->backend);
+        report->cleanup_mappings += process.released;
     }
-    if (have_teb &&
-        config->backend->release(config->backend->context, &teb) == PW_OK)
-        report->cleanup_mappings++;
-    if (have_peb &&
-        config->backend->release(config->backend->context, &peb) == PW_OK)
-        report->cleanup_mappings++;
     /* The parameters page is registered among the call regions (it is the
      * block ntdll replaces and releases), so it is released below with them
      * and only once, whether or not the guest already gave it back. */

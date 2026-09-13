@@ -216,6 +216,8 @@ src/pw_tls.c
 src/pw_tls.h
 src/pw_sha256.c
 src/pw_sha256.h
+src/pw_guest_process.c
+src/pw_guest_process.h
 src/pw_guest_vm.c
 src/pw_guest_vm.h
 src/pw_wine_gate.c
@@ -232,6 +234,7 @@ tools/validate_wine_ntdll_evidence.py
 docs/WINE_RUNTIME.md
 docs/WINE_RUNTIME_MANIFEST.schema.json
 tests/test_wine_gate_host.py
+tests/test_pw_guest_process.c
 tests/test_pw_guest_vm.c
 tests/test_pw_wine_gate.c
 src/pw_unix_call.c

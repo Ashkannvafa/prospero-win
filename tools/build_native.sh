@@ -145,6 +145,7 @@ sources=(
     src/pe_export.c src/pe_tls.c src/pw_export.c src/pw_tls.c src/pw_sha256.c
     src/pw_wine_gate.c
     src/pw_guest_vm.c
+    src/pw_guest_process.c
     src/pw_unix_call.c
     src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
     src/pw_module_name.c src/pw_result.c src/pw_segment.c src/pw_vm.c src/pw_ini.c
