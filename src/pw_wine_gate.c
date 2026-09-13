@@ -1314,32 +1314,27 @@ static int gate_nt_query_volume_information_file(PwWineCallContext *calls,
 }
 
 /*
- * NtOpenKey. The accepted shapes are Wine's own: an absolute name under the
- * registry namespace, or a name relative to a key handle the gate already
- * owns (which is how ntdll opens HKCU\Software\Wine from the handle
- * RtlOpenCurrentUser returns). The canonical path is remembered with the
- * handle, because that is what a relative open is resolved against. A key the
- * profile does not declare answers STATUS_OBJECT_NAME_NOT_FOUND, so ntdll
- * keeps its own defaults instead of being handed invented content.
+ * Turns OBJECT_ATTRIBUTES into one canonical key path. The accepted shapes are
+ * Wine's own: an absolute name under the registry namespace, or a name
+ * relative to a key handle the gate already owns (which is how ntdll opens
+ * HKCU\Software\Wine from the handle RtlOpenCurrentUser returns, and how it
+ * names \Registry\User\<SID>). A refused path is counted and recorded here,
+ * because both NtOpenKey and NtCreateKey report it the same way.
  */
-static int gate_nt_open_key(PwWineCallContext *calls,
-                            const PwUnixCallFrame *frame,
-                            PwUnixCallAccess guest, void *context,
-                            uint32_t *status, uint32_t *argument_index)
+static int resolve_registry_key(PwWineCallContext *calls,
+                                uint32_t attributes_pointer,
+                                PwUnixCallAccess guest, void *context,
+                                char *canonical, size_t canonical_bytes,
+                                uint32_t *status, uint32_t *argument_index)
 {
-    const uint32_t handle_pointer = frame->args[0];
-    const uint32_t attributes_pointer = frame->args[2];
     uint8_t attributes[24];
     uint32_t name_pointer = 0u;
     uint32_t root_handle = 0u;
     char name[PW_WINE_GATE_MAX_PATH + 1];
     char relative[PW_WINE_GATE_MAX_PATH + 1];
-    char canonical[PW_WINE_GATE_MAX_PATH + 1];
-    void *token = NULL;
-    uint32_t handle = 0u;
     uint32_t index = 0u;
 
-    if (attributes_pointer == 0u || handle_pointer == 0u) {
+    if (attributes_pointer == 0u) {
         *argument_index = 3u;
         return PW_ERR_MALFORMED;
     }
@@ -1360,7 +1355,7 @@ static int gate_nt_open_key(PwWineCallContext *calls,
         return PW_ERR_MALFORMED;
     }
     if (root_handle == 0u) {
-        if (translate_registry_path(name, canonical, sizeof(canonical),
+        if (translate_registry_path(name, canonical, canonical_bytes,
                                     status) != PW_OK) {
             const size_t length = strlen(name);
 
@@ -1388,12 +1383,42 @@ static int gate_nt_open_key(PwWineCallContext *calls,
         memcpy(relative, calls->handles[index].key_path, used);
         relative[used++] = '\\';
         memcpy(relative + used, name, strlen(name) + 1u);
-        if (translate_registry_path(relative, canonical, sizeof(canonical),
+        if (translate_registry_path(relative, canonical, canonical_bytes,
                                     status) != PW_OK) {
             calls->report->key_refusals++;
             return PW_OK;
         }
     }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
+ * NtOpenKey. A key the profile does not declare answers
+ * STATUS_OBJECT_NAME_NOT_FOUND, so ntdll keeps its own defaults instead of
+ * being handed invented content, and the canonical path is remembered with the
+ * handle because that is what a later relative open resolves against.
+ */
+static int gate_nt_open_key(PwWineCallContext *calls,
+                            const PwUnixCallFrame *frame,
+                            PwUnixCallAccess guest, void *context,
+                            uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t handle_pointer = frame->args[0];
+    const uint32_t attributes_pointer = frame->args[2];
+    char canonical[PW_WINE_GATE_MAX_PATH + 1];
+    void *token = NULL;
+    uint32_t handle = 0u;
+
+    if (handle_pointer == 0u) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    if (resolve_registry_key(calls, attributes_pointer, guest, context,
+                             canonical, sizeof(canonical), status,
+                             argument_index) != PW_OK ||
+        *status != PW_NT_SUCCESS)
+        return PW_OK;
     if (!calls->config->registry ||
         calls->config->registry->open(calls->config->registry->context,
                                       canonical, &token) !=
@@ -1419,6 +1444,162 @@ static int gate_nt_open_key(PwWineCallContext *calls,
     }
     memcpy(calls->report->last_key, canonical, strlen(canonical) + 1u);
     calls->report->key_opens++;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/* REG_OPENED_EXISTING_KEY and REG_CREATED_NEW_KEY, as NtCreateKey reports. */
+enum {
+    PW_WINE_REG_CREATED_NEW_KEY = 1u,
+    PW_WINE_REG_OPENED_EXISTING_KEY = 2u,
+};
+
+/*
+ * NtCreateKey, which is create-or-open in NT. RtlOpenCurrentUser reaches it
+ * with the \Registry\User\<SID> path it formatted from the token, so the gate
+ * resolves the path exactly as NtOpenKey does and then asks the profile. A
+ * profile with no writable hive answers NOT_FOUND for a key it does not
+ * declare; the disposition it reports for a key it does have is
+ * REG_OPENED_EXISTING_KEY, so the guest knows nothing was created.
+ */
+static int gate_nt_create_key(PwWineCallContext *calls,
+                              const PwUnixCallFrame *frame,
+                              PwUnixCallAccess guest, void *context,
+                              uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t handle_pointer = frame->args[0];
+    const uint32_t attributes_pointer = frame->args[2];
+    const uint32_t disposition_pointer = frame->args[6];
+    char canonical[PW_WINE_GATE_MAX_PATH + 1];
+    void *token = NULL;
+    uint32_t handle = 0u;
+    uint32_t created = 0u;
+
+    if (handle_pointer == 0u) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    if (resolve_registry_key(calls, attributes_pointer, guest, context,
+                             canonical, sizeof(canonical), status,
+                             argument_index) != PW_OK ||
+        *status != PW_NT_SUCCESS)
+        return PW_OK;
+    if (!calls->config->registry || !calls->config->registry->create) {
+        *status = PW_NT_NOT_SUPPORTED;
+        return PW_OK;
+    }
+    if (calls->config->registry->create(calls->config->registry->context,
+                                        canonical, &token, &created) !=
+        PW_WINE_REGISTRY_OK) {
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        memcpy(calls->report->last_key, canonical, strlen(canonical) + 1u);
+        calls->report->key_refusals++;
+        return PW_OK;
+    }
+    if (file_handle_alloc(calls, token, 0u, PW_WINE_HANDLE_KEY, &handle) !=
+        PW_OK) {
+        calls->config->registry->close(calls->config->registry->context, token);
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    memcpy(calls->handles[handle - 0x100u].key_path, canonical,
+           strlen(canonical) + 1u);
+    if (disposition_pointer != 0u) {
+        uint32_t disposition = created != 0u ? PW_WINE_REG_CREATED_NEW_KEY
+                                             : PW_WINE_REG_OPENED_EXISTING_KEY;
+
+        if (guest(context, disposition_pointer, &disposition, 4u, 1) != PW_OK) {
+            (void)file_handle_release(calls, handle);
+            *argument_index = 7u;
+            return PW_ERR_MALFORMED;
+        }
+    }
+    if (guest(context, handle_pointer, &handle, 4u, 1) != PW_OK) {
+        (void)file_handle_release(calls, handle);
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    memcpy(calls->report->last_key, canonical, strlen(canonical) + 1u);
+    calls->report->key_creates++;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/* TOKEN_USER {SID_AND_ATTRIBUTES User}, and the pseudo-handles holding it. */
+enum {
+    PW_WINE_TOKEN_USER = 1u,
+    PW_WINE_TOKEN_HEADER = 8u,
+    PW_WINE_TOKEN_MAX_SID = 256u,
+    PW_WINE_TOKEN_CURRENT_PROCESS = 0xfffffffcu,        /* ~3 */
+    PW_WINE_TOKEN_CURRENT_THREAD = 0xfffffffbu,         /* ~4 */
+    PW_WINE_TOKEN_CURRENT_THREAD_EFFECTIVE = 0xfffffffau, /* ~5 */
+};
+
+/*
+ * NtQueryInformationToken for TokenUser, which is what
+ * RtlFormatCurrentUserKeyPath asks for before it builds
+ * \Registry\User\<SID> and opens HKCU. The answer is the SID the host declares
+ * for the process plus a zero attribute word, laid out the way NT lays it out:
+ * the descriptor first, the SID immediately after it, and the SID pointer
+ * naming that guest address. A short buffer reports the length it needed with
+ * STATUS_BUFFER_TOO_SMALL, an unknown class is STATUS_INVALID_INFO_CLASS, and
+ * a handle that is not one of the current-token pseudo-handles is
+ * STATUS_INVALID_HANDLE.
+ */
+static int gate_nt_query_information_token(PwWineCallContext *calls,
+                                           const PwUnixCallFrame *frame,
+                                           PwUnixCallAccess guest,
+                                           void *context, uint32_t *status,
+                                           uint32_t *argument_index)
+{
+    const uint32_t token_handle = frame->args[0];
+    const uint32_t information_class = frame->args[1];
+    const uint32_t information_pointer = frame->args[2];
+    const uint32_t length = frame->args[3];
+    const uint32_t result_pointer = frame->args[4];
+    const PwWineGateConfig *config = calls->config;
+    const uint32_t sid_bytes = config->token_user_sid_bytes;
+    uint8_t header[PW_WINE_TOKEN_HEADER];
+    uint32_t sid_address = 0u;
+    uint32_t needed = 0u;
+
+    if (information_class != PW_WINE_TOKEN_USER) {
+        *status = PW_NT_INVALID_INFO_CLASS;
+        return PW_OK;
+    }
+    if (token_handle != PW_WINE_TOKEN_CURRENT_PROCESS &&
+        token_handle != PW_WINE_TOKEN_CURRENT_THREAD &&
+        token_handle != PW_WINE_TOKEN_CURRENT_THREAD_EFFECTIVE) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    calls->report->token_queries++;
+    if (config->token_user_sid == NULL || sid_bytes < 8u ||
+        sid_bytes > PW_WINE_TOKEN_MAX_SID || sid_bytes % 4u != 0u) {
+        *status = PW_NT_NOT_SUPPORTED;
+        return PW_OK;
+    }
+    needed = PW_WINE_TOKEN_HEADER + sid_bytes;
+    if (result_pointer != 0u &&
+        guest(context, result_pointer, &needed, 4u, 1) != PW_OK) {
+        *argument_index = 5u;
+        return PW_ERR_MALFORMED;
+    }
+    if (information_pointer == 0u || length < needed) {
+        *status = PW_NT_BUFFER_TOO_SMALL;
+        return PW_OK;
+    }
+    sid_address = information_pointer + PW_WINE_TOKEN_HEADER;
+    memset(header, 0, sizeof(header));
+    memcpy(header, &sid_address, 4u);           /* User.Sid */
+    /* User.Attributes stays zero, as Wine writes it. */
+    if (guest(context, information_pointer, header, sizeof(header), 1) !=
+            PW_OK ||
+        guest(context, sid_address, (void *)(uintptr_t)config->token_user_sid,
+              sid_bytes, 1) != PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
     *status = PW_NT_SUCCESS;
     return PW_OK;
 }
@@ -1580,6 +1761,15 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     case 0x0012u:
         result = gate_nt_open_key(calls, &frame, gate_guest_access, state,
                                   &status, &argument_index);
+        break;
+    case 0x001du:
+        result = gate_nt_create_key(calls, &frame, gate_guest_access, state,
+                                    &status, &argument_index);
+        break;
+    case 0x0021u:
+        result = gate_nt_query_information_token(calls, &frame,
+                                                 gate_guest_access, state,
+                                                 &status, &argument_index);
         break;
     case 0x0017u:
         result = gate_nt_query_value_key(calls, &frame, gate_guest_access,

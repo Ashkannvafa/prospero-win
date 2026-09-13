@@ -970,6 +970,55 @@ static void sse_and_scan_tests(void)
     assert(run(lea_cs,sizeof(lea_cs),0x81a0)==0);
     assert(state.gpr[6]==0x00001000 && state.eflags==0xad7 && state.eip==0x81a5);
     /* Every one of them must behave identically in all engine modes. */
+    /*
+     * The idiom Wine's RtlFormatCurrentUserKeyPath uses to widen a
+     * UNICODE_STRING's length and maximum length at once: load the dword that
+     * holds both 16-bit halves with movd from guest memory, add the prefix
+     * length in both lanes with paddw, and store it back with movd. The
+     * constant vector comes from guest memory too, so the whole sequence is
+     * exercised the way the real code uses it.
+     */
+    {
+        uint8_t movd_mem_load[]={0x66,0x0f,0x6e,0x03};      /* movd xmm0,[ebx] */
+        uint8_t movd_mem_store[]={0x66,0x0f,0x7e,0x03};     /* movd [ebx],xmm0 */
+        uint8_t movd_abs_load[]={0x66,0x0f,0x6e,0x0d,0,0,0,0};
+        const uint8_t paddw_reg[]={0x66,0x0f,0xfd,0xc1};    /* paddw xmm0,xmm1 */
+        const uint8_t pcmpeqb_reg[]={0x66,0x0f,0x74,0xc1};  /* pcmpeqb xmm0,xmm1 */
+        const uint8_t pmovmskb_reg[]={0x66,0x0f,0xd7,0xc1}; /* pmovmskb eax,xmm1 */
+        const uint32_t length_dword=0x00000046u;            /* Length=0x46 */
+        const uint32_t prefix=0x001e001eu;                  /* 30 in both halves */
+        const unsigned char mask_bytes[4]={0x00,0x80,0x00,0xff};
+        const uint32_t constant_address=low+0x110u;
+        uint32_t mask=0, stored=0;
+
+        memcpy(movd_abs_load+4,&constant_address,4u);
+        memcpy(&mask,mask_bytes,sizeof(mask));
+        memcpy((void *)(uintptr_t)(low+0x100),&length_dword,4u);
+        memcpy((void *)(uintptr_t)(low+0x110),&prefix,4u);
+        memcpy((void *)(uintptr_t)(low+0x120),&mask,4u);
+        memset(state.fp.xmm,0,sizeof(state.fp.xmm));
+        state.gpr[3]=low+0x100;                             /* ebx */
+        assert(run(movd_mem_load,sizeof(movd_mem_load),0x81b0)==0);
+        assert(xmm_is(0,0x00000046u,0,0,0));
+        /* The constant comes from guest memory, not from a host symbol. */
+        assert(run(movd_abs_load,sizeof(movd_abs_load),0x81c0)==0);
+        assert(xmm_is(1,0x001e001e,0,0,0));
+        assert(run(paddw_reg,sizeof(paddw_reg),0x81d0)==0);
+        assert(xmm_is(0,0x001e0064u,0,0,0));
+        state.gpr[3]=low+0x100;
+        assert(run(movd_mem_store,sizeof(movd_mem_store),0x81e0)==0);
+        memcpy(&stored,(void *)(uintptr_t)(low+0x100),4u);
+        assert(stored==0x001e0064u);
+        /* pcmpeqb produces all-ones bytes where the lanes are equal, and
+         * pmovmskb reports the sign bit of each of the 16 lanes. */
+        set_xmm(0,mask,0,0,0);
+        set_xmm(1,mask,0,0,0);
+        assert(run(pcmpeqb_reg,sizeof(pcmpeqb_reg),0x81f0)==0);
+        assert(xmm_is(0,0xffffffffu,0xffffffffu,0xffffffffu,0xffffffffu));
+        set_xmm(1,mask,0,0,0);
+        assert(run(pmovmskb_reg,sizeof(pmovmskb_reg),0x8200)==0);
+        assert(state.gpr[0]==0x0000000au);
+    }
     for(unsigned residency=0;residency<2;residency++)
         for(unsigned lazy=0;lazy<2;lazy++) {
             memset(state.fp.xmm,0,sizeof(state.fp.xmm));
@@ -982,6 +1031,34 @@ static void sse_and_scan_tests(void)
             state.gpr[2]=0x40;state.gpr[1]=0;
             assert(run_mode(bsr,sizeof(bsr),0x8220,residency,lazy)==0);
             assert(state.gpr[1]==6 && (state.eflags&0x40)==0);
+            /* The packed-integer forms write no flags at all: whatever was
+             * live before them must survive every mode combination. */
+            {
+                const uint8_t paddw_mode[]={0x66,0x0f,0xfd,0xc1};
+                const uint8_t pcmpeqb_mode[]={0x66,0x0f,0x74,0xc1};
+                const uint8_t pmovmskb_mode[]={0x66,0x0f,0xd7,0xc1};
+
+                set_xmm(0,0x00010002,0,0,0);
+                set_xmm(1,0x0000ffff,0,0,0);
+                state.eflags=0xad7;
+                assert(run_mode(paddw_mode,sizeof(paddw_mode),0x8230,
+                                residency,lazy)==0);
+                assert(xmm_is(0,0x00010001u,0,0,0) && state.eflags==0xad7);
+                set_xmm(0,0,0,0,0);
+                set_xmm(1,0,0,0,0);
+                state.eflags=0xad7;
+                assert(run_mode(pcmpeqb_mode,sizeof(pcmpeqb_mode),0x8240,
+                                residency,lazy)==0);
+                assert(xmm_is(0,0xffffffffu,0xffffffffu,0xffffffffu,
+                              0xffffffffu) && state.eflags==0xad7);
+                /* byte 0 and byte 8 have their sign bit set, so the mask is
+                 * bit 0 and bit 8. */
+                set_xmm(1,0x00000080u,0,0x00000080u,0);
+                state.eflags=0xad7;
+                assert(run_mode(pmovmskb_mode,sizeof(pmovmskb_mode),0x8250,
+                                residency,lazy)==0);
+                assert(state.gpr[0]==0x0101u && state.eflags==0xad7);
+            }
         }
     /* MMX encodings of the same opcodes, the merging register forms and an
      * out-of-region 16-byte store all stay refused. */

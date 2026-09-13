@@ -61,12 +61,24 @@ enum {
     TRAVERSAL_ATTRS_RVA = DATA_RVA + 0x660,
     TRAVERSAL_HANDLE_RVA = DATA_RVA + 0x680,
     STOP_RESULT_RVA = DATA_RVA + 0x690,
+    USER_TEXT_RVA = DATA_RVA + 0x6A0,
+    USER_RVA = DATA_RVA + 0x6F0,
+    USER_ATTRS_RVA = DATA_RVA + 0x700,
+    USER_HANDLE_RVA = DATA_RVA + 0x720,
+    TOKEN_BUFFER_RVA = DATA_RVA + 0x730,    /* 96-byte token answer buffer */
+    TOKEN_RET_RVA = DATA_RVA + 0x790,
+    TOKEN_STATUS_RVA = DATA_RVA + 0x7A0,    /* four statuses */
+    SID_VALUE_RVA = DATA_RVA + 0x7B0,       /* the SID subauthority read back */
+    DISPOSITION_RVA = DATA_RVA + 0x7C0,
+    CREATE_STATUS_RVA = DATA_RVA + 0x7D0,
     THUNK_RVA = TEXT_RVA + 0x800,
     STUB_SYSINFO_RVA = TEXT_RVA + 0x810,
     STUB_OPENKEY_RVA = TEXT_RVA + 0x820,
     STUB_QUERYVALUE_RVA = TEXT_RVA + 0x830,
     STUB_CLOSE_RVA = TEXT_RVA + 0x840,
-    STUB_STOP_RVA = TEXT_RVA + 0x850,
+    STUB_TOKEN_RVA = TEXT_RVA + 0x850,
+    STUB_CREATE_RVA = TEXT_RVA + 0x860,
+    STUB_STOP_RVA = TEXT_RVA + 0x870,
     CALLER_RVA = TEXT_RVA,
     KEY_VALUE_PARTIAL_INFORMATION = 2u,
 };
@@ -114,6 +126,20 @@ _Static_assert(TRAVERSAL_TEXT_RVA + 52u <= TRAVERSAL_RVA,
                "traversal path text overlaps its UNICODE_STRING");
 _Static_assert(TRAVERSAL_HANDLE_RVA + 4u <= STOP_RESULT_RVA,
                "traversal handle overlaps the stop result slot");
+_Static_assert(USER_TEXT_RVA + 72u <= USER_RVA,
+               "user key text overlaps its UNICODE_STRING");
+_Static_assert(USER_RVA + 32u <= USER_HANDLE_RVA,
+               "user key header overlaps its handle slot");
+_Static_assert(TOKEN_BUFFER_RVA + 0x60u <= TOKEN_RET_RVA,
+               "token buffer overlaps its result slot");
+_Static_assert(TOKEN_RET_RVA + 16u <= TOKEN_STATUS_RVA,
+               "token result overlaps its status slots");
+_Static_assert(TOKEN_STATUS_RVA + 16u <= SID_VALUE_RVA,
+               "token status slots overlap the SID value");
+_Static_assert(SID_VALUE_RVA + 16u <= DISPOSITION_RVA,
+               "SID value overlaps the disposition slot");
+_Static_assert(DISPOSITION_RVA + 16u <= CREATE_STATUS_RVA,
+               "disposition overlaps the create status");
 
 /* The version block the host hands the gate: four NUL-terminated strings in
  * Wine's own layout. The test checks the guest reads the first one. */
@@ -289,11 +315,14 @@ static size_t build_module(void)
                        "\\Device\\HarddiskVolume0\\X");
     put_unicode_string(TRAVERSAL_RVA, TRAVERSAL_TEXT_RVA,
                        "\\Registry\\Machine\\..\\..\\X");
+    put_unicode_string(USER_RVA, USER_TEXT_RVA,
+                       "\\Registry\\User\\S-1-5-21-1-2-3-12074");
     put_attributes(SESSION_ATTRS_RVA, SESSION_RVA);
     put_attributes(MACHINE_ATTRS_RVA, MACHINE_RVA);
     put_attributes(WINE_ATTRS_RVA, WINE_RVA);   /* RootDirectory set below */
     put_attributes(DEVICE_ATTRS_RVA, DEVICE_RVA);
     put_attributes(TRAVERSAL_ATTRS_RVA, TRAVERSAL_RVA);
+    put_attributes(USER_ATTRS_RVA, USER_RVA);
 
     /* The loader's first question: which Wine is this. */
     emit_push_absolute(VERSION_RET_RVA);
@@ -302,6 +331,47 @@ static size_t build_module(void)
     emit_push_imm32(1000u);                  /* SystemWineVersionInformation */
     emit_call(STUB_SYSINFO_RVA);
     emit_store_eax(SYSINFO_STATUS_RVA);
+
+    /*
+     * The token: RtlFormatCurrentUserKeyPath asks for TokenUser before it can
+     * format the user key path, then reads the SID the gate wrote after the
+     * descriptor. A buffer that cannot hold the answer, a class with no
+     * meaning here and a handle that is not a token are all real NTSTATUS
+     * values.
+     */
+    emit_push_absolute(TOKEN_RET_RVA);
+    emit_push_imm32(0x50u);
+    emit_push_absolute(TOKEN_BUFFER_RVA);
+    emit_push_imm8(1);
+    emit_push_imm32(0xfffffffau);           /* GetCurrentThreadEffectiveToken */
+    emit_call(STUB_TOKEN_RVA);
+    emit_store_eax(TOKEN_STATUS_RVA);
+    /* The SID's subauthority count is 5, so its last subauthority - the 1000
+     * of S-1-5-21-0-0-0-1000 - is at SID+8+16, and the SID itself starts
+     * after the 8-byte TOKEN_USER descriptor. */
+    emit_load_eax(TOKEN_BUFFER_RVA + 8u + 8u + 16u);
+    emit_store_eax(SID_VALUE_RVA);
+    emit_push_absolute(TOKEN_RET_RVA);
+    emit_push_imm32(8u);
+    emit_push_absolute(TOKEN_BUFFER_RVA);
+    emit_push_imm8(1);
+    emit_push_imm32(0xfffffffau);
+    emit_call(STUB_TOKEN_RVA);
+    emit_store_eax(TOKEN_STATUS_RVA + 4u);
+    emit_push_absolute(TOKEN_RET_RVA);
+    emit_push_imm32(0x50u);
+    emit_push_absolute(TOKEN_BUFFER_RVA);
+    emit_push_imm8(2);                      /* a class the gate does not answer */
+    emit_push_imm32(0xfffffffau);
+    emit_call(STUB_TOKEN_RVA);
+    emit_store_eax(TOKEN_STATUS_RVA + 8u);
+    emit_push_absolute(TOKEN_RET_RVA);
+    emit_push_imm32(0x50u);
+    emit_push_absolute(TOKEN_BUFFER_RVA);
+    emit_push_imm8(1);
+    emit_push_imm32(0x00001234u);           /* not a token handle */
+    emit_call(STUB_TOKEN_RVA);
+    emit_store_eax(TOKEN_STATUS_RVA + 12u);
 
     /* load_global_options: the Session Manager key, then its two options. */
     emit_open_key(SESSION_ATTRS_RVA, SESSION_HANDLE_RVA, QUERY_STATUS_RVA);
@@ -338,6 +408,21 @@ static size_t build_module(void)
     emit_open_key(TRAVERSAL_ATTRS_RVA, TRAVERSAL_HANDLE_RVA,
                   QUERY_STATUS_RVA + 44u);
 
+    /*
+     * NtCreateKey for the user hive root, which is the call
+     * RtlOpenCurrentUser makes once it has formatted the SID into the path.
+     * The disposition reports that the key already existed.
+     */
+    emit_push_absolute(DISPOSITION_RVA);
+    emit_push_imm8(0x00);                    /* CreateOptions */
+    emit_push_imm8(0x00);                    /* Class (NULL) */
+    emit_push_imm8(0x00);                    /* TitleIndex */
+    emit_push_absolute(USER_ATTRS_RVA);
+    emit_push_imm32(0x000f003fu);            /* KEY_ALL_ACCESS */
+    emit_push_absolute(USER_HANDLE_RVA);
+    emit_call(STUB_CREATE_RVA);
+    emit_store_eax(CREATE_STATUS_RVA);
+
     /* Every key handle the run opened is closed again. */
     emit_load_eax(SESSION_HANDLE_RVA);
     emit_byte(0x50);
@@ -348,6 +433,9 @@ static size_t build_module(void)
     emit_load_eax(WINE_HANDLE_RVA);
     emit_byte(0x50);
     emit_call(STUB_CLOSE_RVA);
+    emit_load_eax(USER_HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_CLOSE_RVA);
 
     /*
      * A call with no handler stops the run, and its arguments are the values
@@ -355,14 +443,11 @@ static size_t build_module(void)
      * the length the value query reported, and the first four bytes of the
      * Wine version block the gate wrote.
      */
-    emit_push_imm8(0x00);
-    emit_push_imm8(0x00);
-    emit_load_eax(VERSION_BUFFER_RVA);
-    emit_byte(0x50);
-    emit_load_eax(VALUE_RET_RVA);
-    emit_byte(0x50);
-    emit_load_eax(GLOBALFLAG_COPY_RVA);
-    emit_byte(0x50);
+    emit_push_imm8(0x00);                     /* ObjectAttributes (arg 3) */
+    emit_load_eax(DISPOSITION_RVA);
+    emit_byte(0x50);                          /* DesiredAccess (arg 2) */
+    emit_load_eax(SID_VALUE_RVA);
+    emit_byte(0x50);                          /* DirectoryHandle (arg 1) */
     emit_call(STUB_STOP_RVA);
     emit_store_eax(STOP_RESULT_RVA);
 
@@ -374,7 +459,9 @@ static size_t build_module(void)
     emit_stub(STUB_OPENKEY_RVA, 0x0012u, 12u);   /* NtOpenKey */
     emit_stub(STUB_QUERYVALUE_RVA, 0x0017u, 24u);/* NtQueryValueKey */
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);      /* NtClose */
-    emit_stub(STUB_STOP_RVA, 0x0021u, 20u);      /* NtQueryInformationToken */
+    emit_stub(STUB_TOKEN_RVA, 0x0021u, 20u);     /* NtQueryInformationToken */
+    emit_stub(STUB_CREATE_RVA, 0x001du, 28u);    /* NtCreateKey */
+    emit_stub(STUB_STOP_RVA, 0x0058u, 12u);      /* NtOpenDirectoryObject */
     emit_byte(0xc3);
 
     /* Pointers stored inside the data section need their own base
@@ -393,6 +480,8 @@ static size_t build_module(void)
     emit_data_reloc(DEVICE_ATTRS_RVA + 8u);
     emit_data_reloc(TRAVERSAL_RVA + 4u);
     emit_data_reloc(TRAVERSAL_ATTRS_RVA + 8u);
+    emit_data_reloc(USER_RVA + 4u);
+    emit_data_reloc(USER_ATTRS_RVA + 8u);
 
     memset(&spec, 0, sizeof(spec));
     spec.pe32plus = 0;
@@ -471,18 +560,20 @@ static const FakeKey fake_keys[] = {
         wine_values,
         sizeof(wine_values) / sizeof(wine_values[0]),
     },
+    { "\\registry\\user\\s-1-5-21-1-2-3-12074", NULL, 0u },
 };
 
 static uint32_t fake_opens;
 static uint32_t fake_closes;
-static char fake_last_path[PW_WINE_GATE_MAX_PATH + 1];
+static char fake_paths[8][PW_WINE_GATE_MAX_PATH + 1];
 
 static PwWineRegistryStatus fake_registry_open(void *context, const char *path,
                                                void **token)
 {
     (void)context;
+    if (fake_opens < sizeof(fake_paths) / sizeof(fake_paths[0]))
+        memcpy(fake_paths[fake_opens], path, strlen(path) + 1u);
     fake_opens++;
-    memcpy(fake_last_path, path, strlen(path) + 1u);
     for (unsigned index = 0;
          index < sizeof(fake_keys) / sizeof(fake_keys[0]); ++index) {
         if (strcmp(fake_keys[index].path, path) != 0)
@@ -515,12 +606,41 @@ static PwWineRegistryStatus fake_registry_query(void *context, void *token,
     return PW_WINE_REGISTRY_NOT_FOUND;
 }
 
+static PwWineRegistryStatus fake_registry_create(void *context,
+                                                 const char *path,
+                                                 void **token,
+                                                 uint32_t *created)
+{
+    const PwWineRegistryStatus status =
+        fake_registry_open(context, path, token);
+
+    if (status == PW_WINE_REGISTRY_OK)
+        *created = 0u;
+    return status;
+}
+
 static void fake_registry_close(void *context, void *token)
 {
     (void)context;
     (void)token;
     fake_closes++;
 }
+
+/*
+ * The token the host declares for this test: S-1-5-21-1-2-3-12074. The last
+ * subauthority is deliberately not one Wine would choose, because the guest
+ * reads it back and the stop call reports it: the value can only be right if
+ * the SID came from the host service.
+ */
+static const uint8_t test_user_sid[] = {
+    0x01, 0x05,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
+    0x15, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
+    0x02, 0x00, 0x00, 0x00,
+    0x03, 0x00, 0x00, 0x00,
+    0x2a, 0x2f, 0x00, 0x00,
+};
 
 static PwFileSpan span;
 
@@ -555,7 +675,8 @@ int main(void)
     };
     const PwWineRegistryService registry = {
         .context = NULL, .open = fake_registry_open,
-        .query = fake_registry_query, .close = fake_registry_close,
+        .query = fake_registry_query, .create = fake_registry_create,
+        .close = fake_registry_close,
     };
     PwWineGateConfig config;
     PwWineGateReport report;
@@ -577,6 +698,8 @@ int main(void)
     config.registry = &registry;
     config.wine_version_info = test_version_info;
     config.wine_version_info_bytes = (uint32_t)sizeof(test_version_info);
+    config.token_user_sid = test_user_sid;
+    config.token_user_sid_bytes = (uint32_t)sizeof(test_user_sid);
     config.root_module = "ntdll.dll";
     config.entry_module = "ntdll.dll";
     config.entry_symbol = "TestEntry";
@@ -587,12 +710,12 @@ int main(void)
     (void)pw_wine_gate_run(&config, &report);
     assert(report.registry_configured == 1u);
     assert(report.stop == PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED);
-    assert(report.observed_syscall_id == 0x0021u);
-    assert(report.calls.records == 17u);
-    assert(report.calls.handled == 16u);
+    assert(report.observed_syscall_id == 0x0058u);
+    assert(report.calls.records == 23u);
+    assert(report.calls.handled == 22u);
     assert(report.calls.unimplemented == 1u);
     assert(report.calls.rejected == 0u && report.calls.unknown == 0u);
-    assert(report.calls_serviced == 16u);
+    assert(report.calls_serviced == 22u);
 
     /* The Wine version: the guest asked for the one class ntdll initializes
      * from, and the gate answered with the host's block. */
@@ -601,53 +724,78 @@ int main(void)
     assert(report.calls.sequence[0].args[2] == 0x100u);
     assert(report.calls.sequence[0].status == PW_NT_SUCCESS);
 
+    /* The token: the host's SID for the current-token pseudo-handles, with
+     * the layout, the required length and the NTSTATUS values NT uses. */
+    /* Two of the four token calls name the class this bridge answers; the
+     * other two are refused before the query is counted. */
+    assert(report.token_queries == 2u);
+    assert(report.calls.sequence[1].id == 0x0021u);
+    assert(report.calls.sequence[1].args[0] == 0xfffffffau);
+    assert(report.calls.sequence[1].args[1] == 1u);
+    assert(report.calls.sequence[1].args[3] == 0x50u);
+    assert(report.calls.sequence[1].status == PW_NT_SUCCESS);
+    assert(report.calls.sequence[2].status == PW_NT_BUFFER_TOO_SMALL);
+    assert(report.calls.sequence[3].status == PW_NT_INVALID_INFO_CLASS);
+    assert(report.calls.sequence[4].status == PW_NT_INVALID_HANDLE);
+
     /* The registry keys: opened, resolved and counted. */
     assert(report.key_opens == 3u);
-    assert(report.calls.sequence[1].id == 0x0012u);
-    assert(report.calls.sequence[1].status == PW_NT_SUCCESS);
-    assert(report.calls.sequence[6].status == PW_NT_SUCCESS);
-    assert(report.calls.sequence[7].status == PW_NT_SUCCESS);
-    assert(fake_opens == 3u);
-    /* The relative open resolved against the key it was given. */
-    assert(strcmp(fake_last_path, "\\registry\\machine\\software\\wine") == 0);
+    assert(report.calls.sequence[5].id == 0x0012u);
+    assert(report.calls.sequence[5].status == PW_NT_SUCCESS);
+    assert(report.calls.sequence[10].status == PW_NT_SUCCESS);
+    assert(report.calls.sequence[11].status == PW_NT_SUCCESS);
+    /* The relative open resolved against the key it was given: the third path
+     * the service was asked about is the composed one. */
+    assert(fake_opens == 4u);
+    assert(strcmp(fake_paths[2], "\\registry\\machine\\software\\wine") == 0);
+    /* The last key the gate recorded is the canonical one it handed the
+     * service for the create; the refused traversal before it is counted in
+     * key_refusals. */
     assert(strcmp(report.last_key,
-                  "\\Registry\\Machine\\..\\..\\X") == 0);
+                  "\\registry\\user\\s-1-5-21-1-2-3-12074") == 0);
 
     /* The values: one found, one absent, one that does not fit, twice. */
     assert(report.key_queries == 5u);
     assert(report.key_values == 4u);
     assert(report.key_refusals == 5u);
-    assert(report.calls.sequence[2].id == 0x0017u);
-    assert(report.calls.sequence[2].status == PW_NT_SUCCESS);
-    assert(report.calls.sequence[3].status == PW_NT_OBJECT_NAME_NOT_FOUND);
-    assert(report.calls.sequence[4].status == PW_NT_BUFFER_TOO_SMALL);
-    assert(report.calls.sequence[5].status == PW_NT_BUFFER_OVERFLOW);
-    assert(report.calls.sequence[8].status == PW_NT_SUCCESS);
+    assert(report.calls.sequence[6].id == 0x0017u);
+    assert(report.calls.sequence[6].status == PW_NT_SUCCESS);
+    assert(report.calls.sequence[7].status == PW_NT_OBJECT_NAME_NOT_FOUND);
+    assert(report.calls.sequence[8].status == PW_NT_BUFFER_TOO_SMALL);
+    assert(report.calls.sequence[9].status == PW_NT_BUFFER_OVERFLOW);
+    assert(report.calls.sequence[12].status == PW_NT_SUCCESS);
     /* An information class with no meaning here, a value name that is not a
      * name, a path outside the namespace and a traversal inside it. */
-    assert(report.calls.sequence[9].status == PW_NT_INVALID_INFO_CLASS);
-    assert(report.calls.sequence[10].status == PW_NT_OBJECT_NAME_INVALID);
-    assert(report.calls.sequence[11].status == PW_NT_OBJECT_NAME_INVALID);
-    assert(report.calls.sequence[12].status == PW_NT_OBJECT_NAME_INVALID);
+    assert(report.calls.sequence[13].status == PW_NT_INVALID_INFO_CLASS);
+    assert(report.calls.sequence[14].status == PW_NT_OBJECT_NAME_INVALID);
+    assert(report.calls.sequence[15].status == PW_NT_OBJECT_NAME_INVALID);
+    assert(report.calls.sequence[16].status == PW_NT_OBJECT_NAME_INVALID);
     /* A refused open never reached the platform service: three opens did. */
-    assert(report.calls.sequence[11].id == 0x0012u);
-    assert(fake_opens == 3u);
+    assert(report.calls.sequence[15].id == 0x0012u);
+
+    /* NtCreateKey is create-or-open: the user hive root exists in the profile,
+     * so the gate opens it and reports REG_OPENED_EXISTING_KEY. */
+    assert(report.key_creates == 1u);
+    assert(report.calls.sequence[17].id == 0x001du);
+    assert(report.calls.sequence[17].status == PW_NT_SUCCESS);
+    /* The create asked the service about the user hive root as well. */
+    assert(fake_opens == 4u);
+    assert(strcmp(fake_paths[3],
+                  "\\registry\\user\\s-1-5-21-1-2-3-12074") == 0);
 
     /* Every key handle was closed by the guest, through the service. */
-    assert(fake_closes == 3u);
-    assert(report.file_closes == 3u);
+    assert(fake_closes == 4u);
+    assert(report.file_closes == 4u);
     assert(report.file_handles == 0u);
 
     /*
      * The stop call's arguments are the values the guest loaded out of its own
-     * memory: the dword the profile declared (42), the length the value query
-     * reported (12 header + 12 data for the UTF-16 "win10"), and the first
-     * four bytes of the version block ("9.0\0").
+     * memory: the SID's last subauthority as the host declared it (12074), and
+     * the disposition the create reported (REG_OPENED_EXISTING_KEY).
      */
-    assert(report.calls.sequence[16].id == 0x0021u);
-    assert(report.calls.sequence[16].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
-    assert(report.calls.sequence[16].args[0] == 42u);
-    assert(report.calls.sequence[16].args[1] == 24u);
-    assert(report.calls.sequence[16].args[2] == 0x00302e39u);
+    assert(report.calls.sequence[22].id == 0x0058u);
+    assert(report.calls.sequence[22].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
+    assert(report.calls.sequence[22].args[0] == 12074u);
+    assert(report.calls.sequence[22].args[1] == 2u);
     return 0;
 }

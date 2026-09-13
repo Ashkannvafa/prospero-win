@@ -114,9 +114,12 @@ def main() -> int:
 
     # With the Unix-call bridge enabled the run must service real calls and
     # continue; how far it gets afterwards depends on instruction coverage,
-    # so the contract is about the calls, not about the final stop.
-    bridged = run_gate("--entry-symbol", "LdrInitializeThunk", "--budget",
-                       "4000", "--bridge", "1", expect_acceptance=False)
+    # so the contract is about the calls, not about the final stop. The run
+    # uses the gate's own budget: real ntdll initialization needs thousands of
+    # dispatches to reach the next stop, and a budget that cuts it short would
+    # stop with "step-budget", which is not evidence about anything.
+    bridged = run_gate("--entry-symbol", "LdrInitializeThunk", "--bridge", "1",
+                       expect_acceptance=False)
     print(validate_transcript(bridged, "LdrInitializeThunk"))
     tallies = (field(bridged, "calls", "handled"),
                field(bridged, "calls", "rejected"),

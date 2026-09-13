@@ -14,11 +14,22 @@ parsed = parse_root("01020f95=entry")
 assert (parsed.address, parsed.label) == ("01020f95", "entry")
 result = subprocess.run(
     [str(root / "build/host/classify_x86")],
-    input="8bff\n55\nd9e8\nd9fc\nzz\n\n", text=True, capture_output=True, check=True)
+    input="8bff\n55\nd9e8\nd9fc\nzz\n\n"
+          "0fca\n660fca\n"
+          "660ffdc1\n660f74c1\n660fd7c1\n660f6e03\n660f7e03\n660ff9c1\n"
+          "660ff7c1\n660fe7c1\n",
+    text=True, capture_output=True, check=True)
 statuses = [int(line) for line in result.stdout.splitlines()]
 assert statuses[:3] == [0, 0, 0], statuses
 assert statuses[3] != 0, statuses
-assert statuses[4:] == [-1, -1], statuses
+assert statuses[4:6] == [-1, -1], statuses
+# bswap, the packed-integer arithmetic and comparison forms and the two movd
+# directions are translated; the undefined 16-bit bswap and the SSE opcodes
+# that store through a memory operand are refused rather than misread.
+assert statuses[6] == 0, statuses
+assert statuses[7] != 0, statuses
+assert statuses[8:14] == [0] * 6, statuses
+assert statuses[14] != 0 and statuses[15] != 0, statuses
 print("x86 instruction classifier passed: exact supported and rejected forms")
 
 assert x87_form(bytes.fromhex("d9e8"), "FLD1") == "FLD1:op1/reg/g5/r0"

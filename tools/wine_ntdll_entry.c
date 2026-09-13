@@ -123,6 +123,11 @@ static const HostRegistryKey host_registry_keys[] = {
         sizeof(host_session_manager_values) /
             sizeof(host_session_manager_values[0]),
     },
+    /*
+     * The user hive root RtlOpenCurrentUser opens (with NtCreateKey) after it
+     * has formatted the token's SID into the path.
+     */
+    { "\\registry\\user\\s-1-5-21-0-0-0-1000", NULL, 0u },
 };
 
 static PwWineRegistryStatus host_registry_open(void *context, const char *path,
@@ -162,6 +167,25 @@ static PwWineRegistryStatus host_registry_query(void *context, void *token,
     return PW_WINE_REGISTRY_NOT_FOUND;
 }
 
+/*
+ * NtCreateKey is create-or-open. This profile has no writable hive, so it can
+ * open a key it declares and nothing else: a key it does not have answers
+ * NOT_FOUND and *created stays 0, which is the honest answer until a registry
+ * store exists.
+ */
+static PwWineRegistryStatus host_registry_create(void *context,
+                                                 const char *path,
+                                                 void **token,
+                                                 uint32_t *created)
+{
+    const PwWineRegistryStatus status =
+        host_registry_open(context, path, token);
+
+    if (status == PW_WINE_REGISTRY_OK)
+        *created = 0u;
+    return status;
+}
+
 static void host_registry_close(void *context, void *token)
 {
     (void)context;
@@ -170,7 +194,25 @@ static void host_registry_close(void *context, void *token)
 
 static const PwWineRegistryService host_registry = {
     .context = NULL, .open = host_registry_open, .query = host_registry_query,
-    .close = host_registry_close,
+    .create = host_registry_create, .close = host_registry_close,
+};
+
+/*
+ * The token the process runs as, as the host declares it: the local user SID
+ * Wine's own server uses (server/token.c, local_user_sid, at the pinned
+ * revision), which is S-1-5-21-0-0-0-1000. ntdll formats it into
+ * \Registry\User\<SID> before it opens HKCU, and RtlConvertSidToUnicodeString
+ * in the guest renders it from these bytes, so the identity the guest reports
+ * is the one this profile declares rather than a compiled-in guess.
+ */
+static const uint8_t host_user_sid[] = {
+    0x01, 0x05,                             /* revision, subauthority count */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x05,     /* SECURITY_NT_AUTHORITY */
+    0x15, 0x00, 0x00, 0x00,                 /* SECURITY_NT_NON_UNIQUE, 21 */
+    0x00, 0x00, 0x00, 0x00,                 /* 0 */
+    0x00, 0x00, 0x00, 0x00,                 /* 0 */
+    0x00, 0x00, 0x00, 0x00,                 /* 0 */
+    0xe8, 0x03, 0x00, 0x00,                 /* 1000 */
 };
 
 /*
@@ -402,6 +444,8 @@ int main(int argc, char **argv)
     config.entry_module = entry_module;
     config.entry_symbol = entry_symbol;
     config.registry = &host_registry;
+    config.token_user_sid = host_user_sid;
+    config.token_user_sid_bytes = (uint32_t)sizeof(host_user_sid);
     {
         const char *manifest = argument_value(
             argc, argv, "--manifest",
@@ -520,7 +564,8 @@ int main(int argc, char **argv)
                "regions=%u files=%u opens=%llu reads=%llu bytes=%llu closes=%llu "
                "directories=%llu refusals=%llu last=%s "
                "registry=%u key_opens=%llu key_queries=%llu key_values=%llu "
-               "key_refusals=%llu last_key=%s\n", report.calls_serviced,
+               "key_creates=%llu key_refusals=%llu tokens=%llu last_key=%s\n",
+               report.calls_serviced,
                (unsigned long long)report.calls.handled,
                (unsigned long long)report.calls.unimplemented,
                (unsigned long long)report.calls.unknown,
@@ -538,7 +583,9 @@ int main(int argc, char **argv)
                (unsigned long long)report.key_opens,
                (unsigned long long)report.key_queries,
                (unsigned long long)report.key_values,
+               (unsigned long long)report.key_creates,
                (unsigned long long)report.key_refusals,
+               (unsigned long long)report.token_queries,
                recorded_path(report.last_key[0] ? report.last_key : "-",
                              key_path, sizeof(key_path)));
         for (uint32_t index = 0; index < report.calls.records; ++index) {

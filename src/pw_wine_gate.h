@@ -31,7 +31,10 @@
 enum {
     PW_WINE_GATE_MAX_MODULES = 8,
     PW_WINE_GATE_MAX_BOUNDARIES = 8,
-    PW_WINE_GATE_DEFAULT_STEPS = 4096,
+    /* Real ntdll initialization runs far more dispatches than a title's
+     * startup: this is the budget one gate run may spend before the step
+     * limit stops it, not a statement about what the guest needs. */
+    PW_WINE_GATE_DEFAULT_STEPS = 65536,
     PW_WINE_GATE_MAX_STEPS = 1048576,
     PW_WINE_GATE_STACK_BYTES = 64u * 1024u,
     PW_WINE_GATE_CACHE_ENTRIES = 1024,
@@ -99,6 +102,11 @@ typedef struct PwWineRegistryService {
      * already validated by the gate. */
     PwWineRegistryStatus (*open)(void *context, const char *path,
                                  void **token);
+    /* NtCreateKey is create-or-open in NT: a profile without a writable hive
+     * answers NOT_FOUND for a key it does not declare, and opens the one it
+     * has with *created = 0. */
+    PwWineRegistryStatus (*create)(void *context, const char *path,
+                                   void **token, uint32_t *created);
     /* value is a canonical lower-case value name; "" is the key's default
      * value. On PW_WINE_REGISTRY_OK the service points *bytes at its own
      * storage, which the gate copies into guest memory through the validated
@@ -158,6 +166,15 @@ typedef struct PwWineGateConfig {
      */
     const char *wine_version_info;
     uint32_t wine_version_info_bytes;
+    /*
+     * The SID of the token the process runs as, as the host declares it. It is
+     * what RtlFormatCurrentUserKeyPath turns into \Registry\User\<SID> before
+     * it opens HKCU, so the gate answers NtQueryInformationToken(TokenUser)
+     * with it; a NULL or empty value makes that class answer
+     * STATUS_NOT_SUPPORTED rather than inventing an identity.
+     */
+    const uint8_t *token_user_sid;
+    uint32_t token_user_sid_bytes;
     /* Optional per-dispatch trace, so a mode difference can be localised to
      * the block that produced it. */
     void (*trace)(void *context, const PwX86State *state);
@@ -237,11 +254,13 @@ typedef struct PwWineGateReport {
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t key_opens;
+    uint64_t key_creates;
     uint64_t key_queries;
     uint64_t key_values;            /* queries answered with a value */
     uint64_t key_refusals;
     uint32_t registry_configured;
     char last_key[PW_WINE_GATE_MAX_PATH + 1];
+    uint64_t token_queries;
     uint64_t dispatches;
     uint64_t retired;
     uint64_t translated_blocks;

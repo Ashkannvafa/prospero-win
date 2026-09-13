@@ -422,6 +422,12 @@ NtOpenKey                     (0x0012) OBJECT_ATTRIBUTES + UNICODE_STRING key
                                        namespace or relative to a key handle
 NtQueryValueKey               (0x0017) KeyValuePartialInformation only
 NtQuerySystemInformation      (0x0036) SystemWineVersionInformation (1000) only
+NtCreateKey                   (0x001d) create-or-open against the same profile;
+                                       a key it does not have answers
+                                       STATUS_OBJECT_NAME_NOT_FOUND
+NtQueryInformationToken       (0x0021) TokenUser for the current-token
+                                       pseudo-handles only, answering with the
+                                       SID the host declares
 ```
 
 Rules the gate enforces before the platform is ever asked:
@@ -530,6 +536,75 @@ A directory object is not a file-system implementation: there is no
 enumeration and no `NtQueryDirectoryFile`, and the individual DLLs the loader
 opens later still go through the same single-component translation onto the
 read-only runtime directory.
+
+### The token, the user key, and two instruction families
+
+`version_init` opens HKCU through `RtlOpenCurrentUser`, which first asks for
+the process token's user SID and then formats `\Registry\User\<SID>` and opens
+that path with `NtCreateKey`. Both halves are now serviced:
+
+- `NtQueryInformationToken` answers `TokenUser` for the current-token
+  pseudo-handles (`~(ULONG_PTR)3`, `4` and `5` - Wine's
+  `GetCurrentProcessToken`, `GetCurrentThreadToken` and
+  `GetCurrentThreadEffectiveToken`), and for nothing else. The answer is laid
+  out the way NT lays it out: a `TOKEN_USER` descriptor whose `Sid` names the
+  guest address immediately after it, followed by the SID itself, with the
+  required length reported through `ReturnLength` and
+  `STATUS_BUFFER_TOO_SMALL` for a buffer that cannot hold it. The SID comes
+  from the host service - `S-1-5-21-0-0-0-1000`, the local user SID Wine's own
+  server uses (`server/token.c`, `local_user_sid`, at the pinned revision) -
+  so the identity the guest formats and reports is the one this distribution
+  declares, not a compiled-in guess.
+- `NtCreateKey` resolves the path exactly as `NtOpenKey` does and asks the
+  profile. This distribution has no writable hive yet, so it opens the user
+  hive root it declares and reports `REG_OPENED_EXISTING_KEY`; a key it does
+  not declare still answers `STATUS_OBJECT_NAME_NOT_FOUND`. The user root was
+  added to the profile for exactly this path.
+
+Getting there needed two instruction families, and the first of them found a
+real defect in the translator:
+
+- **BSWAP r32** (`0f c8+rd`): the register is named by the opcode byte, there
+  is no ModRM operand and no flag is written. The 16-bit encoding is
+  architecturally undefined and stays refused, as do the 0x66-prefixed forms
+  generally.
+- **the packed-integer arithmetic, comparison and shift slice** in its
+  `xmm <- <op> xmm/m128` form (`66 0f 60..6d`, `74..76`, `d1..d5`, `d8..df`,
+  `e0..e6`, `e8..ef`, `f1..f6`, `f8..fe`) plus **pmovmskb** (`66 0f d7`). The
+  host executes the same instruction on host XMM scratch, so lane widths,
+  saturation and comparison semantics come from the CPU. The opcodes that
+  *store* rather than read-modify-write - `0x7e`/`0x7f` as their own kinds,
+  and `0xd6`, `0xe7` (movntdq) and `0xf7` (maskmovdqu, which writes through a
+  mask) - are outside those ranges and stay refused rather than being misread.
+
+The defect is worth naming precisely. The memory form of `movd` **to** memory
+(`66 0f 7e /r` with a memory destination) emitted "compute the effective
+address, then move the value to `eax`, then store `eax`" - but computing the
+effective address already leaves it in `eax`, so the store wrote the *address*
+instead of the value. Nothing had exercised that form before: the existing
+tests used the register-to-register encoding. Wine's
+`RtlFormatCurrentUserKeyPath` uses exactly `movd %xmm0,(%ebx)` to widen both
+16-bit halves of a `UNICODE_STRING`'s length dword, so the guest was handed a
+path whose length field was a pointer, and the SID path could not be opened.
+The store now goes straight from host `xmm0` to guest memory, and the unit
+test exercises the exact idiom (`movd` from memory, `paddw` with a constant
+loaded from guest memory, `movd` back to memory) as well as through all four
+residency/lazy-flag combinations.
+
+Measured on the same pinned runtime with `--bridge 1`:
+
+```text
+retired 29336 instructions over 5987 dispatches and 890 translated blocks
+17 calls handled: the allocations, the directory open and its device query,
+  the release of the parameters block, the Wine version, the registry open
+  and its two option queries, NtClose of that key, the token query, the
+  user-key create, and the version-init registry reads
+cleanup modules=2 mappings=7 translations=1 status=ok
+stop: unix-call-unimplemented, syscall 0x0058 = NtOpenDirectoryObject
+```
+
+The next gap is `\KnownDlls`: the loader maps the system DLLs from the object
+directory `\KnownDlls` before it loads anything by name.
 
 ### The registry, and the version ntdll asks about
 
