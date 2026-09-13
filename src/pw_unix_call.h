@@ -24,7 +24,11 @@
 enum {
     PW_UNIX_CALL_NAME_MAX = 47,
     PW_UNIX_CALL_MAX_ARGS = 16,     /* 64 bytes: the widest i386 call */
-    PW_UNIX_CALL_MAX_SEQUENCE = 16,
+    /* Real ntdll initialization reaches more calls than the first bridge
+     * needed, and the transcript has to stay contiguous: a run that stops at
+     * an unimplemented call must still be able to report every call before
+     * it. */
+    PW_UNIX_CALL_MAX_SEQUENCE = 32,
 };
 
 /* The Wine revision the table numbers are taken from. */
@@ -138,11 +142,14 @@ enum {
     PW_NT_OBJECT_NAME_NOT_FOUND = 0xc0000034u,
     PW_NT_END_OF_FILE = 0xc0000011u,
     PW_NT_INVALID_INFO_CLASS = 0xc0000003u,
+    PW_NT_INFO_LENGTH_MISMATCH = 0xc0000004u,
     PW_NT_BUFFER_TOO_SMALL = 0xc0000023u,
     PW_NT_INVALID_DEVICE_REQUEST = 0xc0000010u,
     PW_NT_UNABLE_TO_FREE_VM = 0xc000001au,
     PW_NT_MEMORY_NOT_ALLOCATED = 0xc00000a0u,
     PW_NT_NOT_SUPPORTED = 0xc00000bbu,
+    PW_NT_OBJECT_NAME_INVALID = 0xc0000033u,
+    PW_NT_BUFFER_OVERFLOW = 0x80000005u,
 };
 
 #endif

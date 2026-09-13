@@ -417,6 +417,11 @@ NtFreeVirtualMemory           (0x001e) returns a whole guest block that this
                                        STATUS_NOT_SUPPORTED, because the
                                        reserve/commit distinction is not
                                        modelled
+NtOpenKey                     (0x0012) OBJECT_ATTRIBUTES + UNICODE_STRING key
+                                       path, absolute inside the registry
+                                       namespace or relative to a key handle
+NtQueryValueKey               (0x0017) KeyValuePartialInformation only
+NtQuerySystemInformation      (0x0036) SystemWineVersionInformation (1000) only
 ```
 
 Rules the gate enforces before the platform is ever asked:
@@ -525,3 +530,79 @@ A directory object is not a file-system implementation: there is no
 enumeration and no `NtQueryDirectoryFile`, and the individual DLLs the loader
 opens later still go through the same single-component translation onto the
 read-only runtime directory.
+
+### The registry, and the version ntdll asks about
+
+The next stop was the registry: `load_global_options` opens
+`\Registry\Machine\System\CurrentControlSet\Control\Session Manager` and reads
+two option values from it, and `version_init` reads the Windows version keys.
+A registry is host state in this architecture, so the bridge gets a third
+platform service next to the file and device ones, with the same shape: the
+gate translates and validates, the host service decides what exists.
+
+```text
+NtOpenKey       (0x0012) OBJECT_ATTRIBUTES + UNICODE_STRING name, absolute
+                         under \Registry\Machine or \Registry\User, or
+                         relative to a key handle the gate already owns
+NtQueryValueKey (0x0017) KeyValuePartialInformation only, with the fixed
+                         part, the data that fits and ResultLength written
+                         the way Wine writes them
+```
+
+Rules the gate enforces before the service is asked anything:
+
+- the accepted namespace is exactly `\Registry\Machine` and `\Registry\User`;
+  anything else is `STATUS_OBJECT_NAME_INVALID`;
+- every component is printable ASCII with no separator, no colon and no `.`
+  or `..` component, so a traversal cannot name a different key;
+- a relative name is resolved against the canonical path stored with the key
+  handle and then revalidated as a whole, which is how `RtlOpenCurrentUser`'s
+  handle plus `Software\Wine` becomes one canonical path;
+- a key the profile does not declare is `STATUS_OBJECT_NAME_NOT_FOUND`, so
+  ntdll keeps its own defaults instead of being handed invented content;
+- a value query answers `STATUS_BUFFER_TOO_SMALL` when the buffer cannot hold
+  the fixed part, `STATUS_BUFFER_OVERFLOW` when it cannot hold the whole value
+  (the informational status Wine itself returns), and only ever copies bytes
+  the host service owns.
+
+The distribution's own profile is one key - the Session Manager key ntdll
+opens unconditionally - with the values Wine's initial registry
+(`loader/wine.inf` at the pinned revision) gives it. The two search-mode
+options the loader asks for are deliberately *absent*: Wine keeps its own
+compiled-in defaults then, exactly as it does on a prefix without them.
+
+Two things had to be answered before the registry call arrived. The first is
+numeric: `SystemWineVersionInformation` (1000), the Wine extension
+`version_init` stores so that `wine_get_version`, `wine_get_build_id` and
+`wine_get_host_version` can read it. The gate answers it with the four
+NUL-terminated strings Wine packs together, and the host derives them from the
+staged distribution's own manifest, so the guest is told the version of the
+modules it is actually executing rather than a compiled-in constant. A short
+buffer is `STATUS_INFO_LENGTH_MISMATCH` and any other class is
+`STATUS_INVALID_CLASS`, as in Wine. The second is a detail of the evidence:
+registry key names contain spaces ("Session Manager", "Windows NT"), and the
+transcript is a space-separated field list, so a recorded path is printed with
+spaces escaped as `%20`.
+
+Measured on the same pinned runtime with `--bridge 1`:
+
+```text
+retired 18808 instructions over 3908 dispatches and 746 translated blocks
+11 calls handled: the 3 allocations, the directory open, its
+  FileFsDeviceInformation, the release of the parameters block, the
+  registry open, two value queries that correctly answer
+  STATUS_OBJECT_NAME_NOT_FOUND, NtClose of the key, and the Wine version
+stop: unix-call-unimplemented, syscall 0x0021 = NtQueryInformationToken
+```
+
+The next gap is the process token: `RtlOpenCurrentUser` formats
+`\Registry\User\<SID>` from the token's user SID, so ntdll asks
+`NtQueryInformationToken` for `TokenUser` - and on this run that call is the
+one with no handler. `tests/test_pw_wine_registry.c` proves both new services
+without a Wine artifact: a synthetic caller asks for the Wine version, opens
+the Session Manager key, queries a value that exists, one that does not, one
+that does not fit twice (too small for the header, too small for the value),
+an information class with no meaning here and a value name that is not a
+name; then opens the registry root and a key relative to it; closes every
+handle; and hands what it read back to a call with no handler, so the
+recorded arguments are the guest's own memory.

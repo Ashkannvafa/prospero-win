@@ -48,6 +48,7 @@ enum {
     PW_WINE_GATE_MAX_HANDLES = 16,
     PW_WINE_GATE_MAX_PATH = 160,
     PW_WINE_GATE_MAX_READ = 64u * 1024u,
+    PW_WINE_GATE_MAX_VALUE = 4096,
 };
 
 /*
@@ -74,6 +75,39 @@ typedef struct PwWineFileService {
                              uint32_t *read_bytes);
     void (*close)(void *context, void *token);
 } PwWineFileService;
+
+/*
+ * Platform registry service below the Unix-call boundary. Wine's registry is
+ * host state: the gate translates a guest NT key path into a canonical,
+ * lower-case path, validates every component and owns the key handles, and
+ * this service decides what exists. A key the service does not know is
+ * answered with STATUS_OBJECT_NAME_NOT_FOUND, which is what makes ntdll fall
+ * back to its own defaults - the gate never invents content, and it never
+ * passes the service a path the guest did not name inside the registry
+ * namespace.
+ */
+typedef enum PwWineRegistryStatus {
+    PW_WINE_REGISTRY_OK = 0,
+    PW_WINE_REGISTRY_NOT_FOUND = 1,
+    PW_WINE_REGISTRY_DENIED = 2,
+    PW_WINE_REGISTRY_ERROR = 3,
+} PwWineRegistryStatus;
+
+typedef struct PwWineRegistryService {
+    void *context;
+    /* path is a canonical lower-case NT key path: always "\registry\..." and
+     * already validated by the gate. */
+    PwWineRegistryStatus (*open)(void *context, const char *path,
+                                 void **token);
+    /* value is a canonical lower-case value name; "" is the key's default
+     * value. On PW_WINE_REGISTRY_OK the service points *bytes at its own
+     * storage, which the gate copies into guest memory through the validated
+     * accessor; *size is bounded by PW_WINE_GATE_MAX_VALUE. */
+    PwWineRegistryStatus (*query)(void *context, void *token,
+                                  const char *value, uint32_t *type,
+                                  const void **bytes, uint32_t *size);
+    void (*close)(void *context, void *token);
+} PwWineRegistryService;
 
 typedef enum PwWineStop {
     PW_WINE_STOP_NONE = 0,
@@ -112,6 +146,18 @@ typedef struct PwWineGateConfig {
     const PwFileProvider *provider;
     const PwVmBackend *backend;
     const PwWineFileService *files;  /* NULL refuses every open */
+    const PwWineRegistryService *registry;  /* NULL answers NOT_SUPPORTED */
+    /*
+     * The version block of the distribution being run, in the exact shape
+     * Wine answers SystemWineVersionInformation with: four NUL-terminated
+     * strings (version, build id, host system name, host release) packed
+     * together. The host derives it from the staged distribution, so the
+     * guest is told the version of the modules it is actually executing; a
+     * NULL or empty value makes the gate answer STATUS_NOT_SUPPORTED instead
+     * of inventing one.
+     */
+    const char *wine_version_info;
+    uint32_t wine_version_info_bytes;
     /* Optional per-dispatch trace, so a mode difference can be localised to
      * the block that produced it. */
     void (*trace)(void *context, const PwX86State *state);
@@ -190,6 +236,12 @@ typedef struct PwWineGateReport {
     uint64_t file_directories;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
+    uint64_t key_opens;
+    uint64_t key_queries;
+    uint64_t key_values;            /* queries answered with a value */
+    uint64_t key_refusals;
+    uint32_t registry_configured;
+    char last_key[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t dispatches;
     uint64_t retired;
     uint64_t translated_blocks;
