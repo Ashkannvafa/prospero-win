@@ -39,6 +39,7 @@ int pw_x86_engine_init(PwX86Engine *engine,const PwVmBackend *backend,
     engine->backend=backend;engine->source_view=source_view;engine->source_opaque=opaque;
     engine->quantum=PW_X86_ENGINE_DEFAULT_QUANTUM;
     engine->chaining_enabled=0;
+    engine->residency_enabled=1;
     engine->initialized=1;return PW_OK;
 }
 
@@ -56,6 +57,13 @@ int pw_x86_engine_set_chaining(PwX86Engine *engine, unsigned enabled)
     return PW_OK;
 }
 
+int pw_x86_engine_set_residency(PwX86Engine *engine, unsigned enabled)
+{
+    if(!engine || !engine->initialized) return PW_ERR_PRECONDITION;
+    engine->residency_enabled = enabled ? 1 : 0;
+    return PW_OK;
+}
+
 static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry)
 {
     const uint8_t *source=NULL;size_t available=0;
@@ -65,7 +73,7 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
     if(available>PW_X86_ENGINE_MAX_SOURCE)available=PW_X86_ENGINE_MAX_SOURCE;
     uint8_t scratch[PW_X86_ENGINE_MAX_CODE];
     PwX86Block best = {0};
-    int last = pw_x86_translate(source, available, pc, scratch, sizeof(scratch), &best);
+    int last = pw_x86_translate_ext(source, available, pc, scratch, sizeof(scratch), &best, engine->residency_enabled);
     if (last != PW_OK) return last;
     if (!best.instructions) return PW_ERR_TRUNCATED;
     if(best.code_bytes>engine->cache.arena_bytes-engine->cache.cursor)return PW_ERR_LIMIT;
@@ -86,9 +94,17 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
         if(cand) {
             uintptr_t taken_slot = (uintptr_t)&cand->link_slots[0].target_code;
             memcpy(scratch + best.exit.target_patch_offset, &taken_slot, sizeof(taken_slot));
+            if(best.exit.target_reconcile_patch_offset) {
+                uintptr_t taken_canonical = (uintptr_t)&cand->link_slots[0].canonical_code;
+                memcpy(scratch + best.exit.target_reconcile_patch_offset, &taken_canonical, sizeof(taken_canonical));
+            }
             if(best.exit.kind == PW_X86_EXIT_CONDITIONAL) {
                 uintptr_t fallthrough_slot = (uintptr_t)&cand->link_slots[1].target_code;
                 memcpy(scratch + best.exit.fallthrough_patch_offset, &fallthrough_slot, sizeof(fallthrough_slot));
+                if(best.exit.fallthrough_reconcile_patch_offset) {
+                    uintptr_t fallthrough_canonical = (uintptr_t)&cand->link_slots[1].canonical_code;
+                    memcpy(scratch + best.exit.fallthrough_reconcile_patch_offset, &fallthrough_canonical, sizeof(fallthrough_canonical));
+                }
             }
         }
     }
@@ -116,14 +132,18 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
     uint8_t *exec_base = (uint8_t *)engine->code.exec_base;
     if(best.exit.chainable) {
         e_mut->link_slots[0].target_code = exec_base + e_mut->code_offset + best.exit.target_stub_offset;
+        e_mut->link_slots[0].canonical_code = NULL;
         e_mut->link_slots[0].target_pc = best.exit.target_pc;
         e_mut->link_slots[0].source_pc = pc;
         e_mut->link_slots[0].is_linked = 0;
+        e_mut->link_slots[0].is_reconciled = 0;
         if(best.exit.kind == PW_X86_EXIT_CONDITIONAL) {
             e_mut->link_slots[1].target_code = exec_base + e_mut->code_offset + best.exit.fallthrough_stub_offset;
+            e_mut->link_slots[1].canonical_code = NULL;
             e_mut->link_slots[1].target_pc = best.exit.fallthrough_pc;
             e_mut->link_slots[1].source_pc = pc;
             e_mut->link_slots[1].is_linked = 0;
+            e_mut->link_slots[1].is_reconciled = 0;
         }
 
         /* Forward link: connect newly published exits to targets already in cache */
@@ -131,14 +151,30 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
             PwX86CacheEntry *tgt = NULL;
             if(pw_x86_cache_lookup_mut(&engine->cache, best.exit.target_pc, &tgt) == PW_OK) {
                 engine->attempted_links++;
-                e_mut->link_slots[0].target_code = exec_base + tgt->code_offset;
+                if(pw_x86_contracts_match(&e_mut->exit_contract, &tgt->entry_contract)) {
+                    e_mut->link_slots[0].target_code = exec_base + tgt->code_offset + tgt->chain_entry_offset;
+                    e_mut->link_slots[0].canonical_code = exec_base + tgt->code_offset + tgt->canonical_entry_offset;
+                    e_mut->link_slots[0].is_reconciled = 0;
+                } else {
+                    e_mut->link_slots[0].target_code = exec_base + e_mut->code_offset + best.exit.target_reconcile_offset;
+                    e_mut->link_slots[0].canonical_code = exec_base + tgt->code_offset + tgt->canonical_entry_offset;
+                    e_mut->link_slots[0].is_reconciled = 1;
+                }
                 e_mut->link_slots[0].is_linked = 1;
                 engine->successful_links++;
             }
             if(best.exit.kind == PW_X86_EXIT_CONDITIONAL) {
                 if(pw_x86_cache_lookup_mut(&engine->cache, best.exit.fallthrough_pc, &tgt) == PW_OK) {
                     engine->attempted_links++;
-                    e_mut->link_slots[1].target_code = exec_base + tgt->code_offset;
+                    if(pw_x86_contracts_match(&e_mut->exit_contract, &tgt->entry_contract)) {
+                        e_mut->link_slots[1].target_code = exec_base + tgt->code_offset + tgt->chain_entry_offset;
+                        e_mut->link_slots[1].canonical_code = exec_base + tgt->code_offset + tgt->canonical_entry_offset;
+                        e_mut->link_slots[1].is_reconciled = 0;
+                    } else {
+                        e_mut->link_slots[1].target_code = exec_base + e_mut->code_offset + best.exit.fallthrough_reconcile_offset;
+                        e_mut->link_slots[1].canonical_code = exec_base + tgt->code_offset + tgt->canonical_entry_offset;
+                        e_mut->link_slots[1].is_reconciled = 1;
+                    }
                     e_mut->link_slots[1].is_linked = 1;
                     engine->successful_links++;
                 }
@@ -153,14 +189,30 @@ static int compile(PwX86Engine *engine,uint32_t pc,const PwX86CacheEntry **entry
             if(cand->used && cand->generation == engine->cache.generation && cand->exit.chainable) {
                 if(cand->link_slots[0].target_pc == pc && !cand->link_slots[0].is_linked) {
                     engine->attempted_links++;
-                    cand->link_slots[0].target_code = exec_base + e_mut->code_offset;
+                    if(pw_x86_contracts_match(&cand->exit_contract, &e_mut->entry_contract)) {
+                        cand->link_slots[0].target_code = exec_base + e_mut->code_offset + e_mut->chain_entry_offset;
+                        cand->link_slots[0].canonical_code = exec_base + e_mut->code_offset + e_mut->canonical_entry_offset;
+                        cand->link_slots[0].is_reconciled = 0;
+                    } else {
+                        cand->link_slots[0].target_code = exec_base + cand->code_offset + cand->exit.target_reconcile_offset;
+                        cand->link_slots[0].canonical_code = exec_base + e_mut->code_offset + e_mut->canonical_entry_offset;
+                        cand->link_slots[0].is_reconciled = 1;
+                    }
                     cand->link_slots[0].is_linked = 1;
                     engine->successful_links++;
                 }
                 if(cand->exit.kind == PW_X86_EXIT_CONDITIONAL &&
                    cand->link_slots[1].target_pc == pc && !cand->link_slots[1].is_linked) {
                     engine->attempted_links++;
-                    cand->link_slots[1].target_code = exec_base + e_mut->code_offset;
+                    if(pw_x86_contracts_match(&cand->exit_contract, &e_mut->entry_contract)) {
+                        cand->link_slots[1].target_code = exec_base + e_mut->code_offset + e_mut->chain_entry_offset;
+                        cand->link_slots[1].canonical_code = exec_base + e_mut->code_offset + e_mut->canonical_entry_offset;
+                        cand->link_slots[1].is_reconciled = 0;
+                    } else {
+                        cand->link_slots[1].target_code = exec_base + cand->code_offset + cand->exit.fallthrough_reconcile_offset;
+                        cand->link_slots[1].canonical_code = exec_base + e_mut->code_offset + e_mut->canonical_entry_offset;
+                        cand->link_slots[1].is_reconciled = 1;
+                    }
                     cand->link_slots[1].is_linked = 1;
                     engine->successful_links++;
                 }
@@ -184,8 +236,29 @@ int pw_x86_engine_step(PwX86Engine *engine,PwX86State *state,PwX86StepReport *re
         if(last_slot->target_pc == state->eip && !last_slot->is_linked) {
             PwX86CacheEntry *target_entry = NULL;
             if(pw_x86_cache_lookup_mut(&engine->cache, state->eip, &target_entry) == PW_OK) {
+                PwX86CacheEntry *source_entry = NULL;
+                size_t reconcile_offset = 0;
+                if(pw_x86_cache_lookup_mut(&engine->cache, last_slot->source_pc, &source_entry) == PW_OK) {
+                    if(last_slot == &source_entry->link_slots[0]) {
+                        reconcile_offset = source_entry->exit.target_reconcile_offset;
+                    } else if(last_slot == &source_entry->link_slots[1]) {
+                        reconcile_offset = source_entry->exit.fallthrough_reconcile_offset;
+                    }
+                }
                 engine->attempted_links++;
-                last_slot->target_code = (uint8_t *)engine->code.exec_base + target_entry->code_offset;
+                if(source_entry && pw_x86_contracts_match(&source_entry->exit_contract, &target_entry->entry_contract)) {
+                    last_slot->target_code = (uint8_t *)engine->code.exec_base + target_entry->code_offset + target_entry->chain_entry_offset;
+                    last_slot->canonical_code = (uint8_t *)engine->code.exec_base + target_entry->code_offset + target_entry->canonical_entry_offset;
+                    last_slot->is_reconciled = 0;
+                } else if(source_entry) {
+                    last_slot->target_code = (uint8_t *)engine->code.exec_base + source_entry->code_offset + reconcile_offset;
+                    last_slot->canonical_code = (uint8_t *)engine->code.exec_base + target_entry->code_offset + target_entry->canonical_entry_offset;
+                    last_slot->is_reconciled = 1;
+                } else {
+                    last_slot->target_code = (uint8_t *)engine->code.exec_base + target_entry->code_offset + target_entry->canonical_entry_offset;
+                    last_slot->canonical_code = (uint8_t *)engine->code.exec_base + target_entry->code_offset + target_entry->canonical_entry_offset;
+                    last_slot->is_reconciled = 0;
+                }
                 last_slot->is_linked = 1;
                 engine->successful_links++;
             }
@@ -207,10 +280,18 @@ int pw_x86_engine_step(PwX86Engine *engine,PwX86State *state,PwX86StepReport *re
     state->step_retired = 0;
     state->step_transitions = 0;
     state->last_exit_slot = 0;
+    state->reg_loads = 0;
+    state->reg_stores = 0;
+    state->reg_reconciliations = 0;
+    state->reg_spills = 0;
 
-    int invoked=invoke((uint8_t *)engine->code.exec_base+entry->code_offset,state);
+    int invoked=invoke((uint8_t *)engine->code.exec_base+entry->code_offset+entry->canonical_entry_offset,state);
 
     engine->linked_transitions += state->step_transitions;
+    engine->reg_loads += state->reg_loads;
+    engine->reg_stores += state->reg_stores;
+    engine->reg_reconciliations += state->reg_reconciliations;
+    engine->reg_spills += state->reg_spills;
 
     if(!invoked) {
         report->retired=state->step_retired;

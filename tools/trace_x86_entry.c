@@ -31,6 +31,34 @@ static PwGdiDc gdi_dcs[128];
 static PwGdiSurface gdi_surfaces[128];
 static uint8_t gdi_pixels[32*1024*1024];
 static PwX86CacheEntry cache_entries[8192];
+
+static int trace_switch(const char *name,unsigned default_value,unsigned *value)
+{
+    const char *text=getenv(name);
+    if(!value)return PW_ERR_PRECONDITION;
+    if(!text || !*text){*value=default_value;return PW_OK;}
+    if(!strcmp(text,"0")){*value=0;return PW_OK;}
+    if(!strcmp(text,"1")){*value=1;return PW_OK;}
+    fprintf(stderr,"%s must be 0 or 1\n",name);
+    return PW_ERR_PRECONDITION;
+}
+
+static int trace_u32(const char *name,unsigned default_value,unsigned minimum,
+                     unsigned maximum,unsigned *value)
+{
+    const char *text=getenv(name);
+    if(!value || !minimum || minimum>maximum)return PW_ERR_PRECONDITION;
+    if(!text || !*text){*value=default_value;return PW_OK;}
+    char *end=NULL;
+    unsigned long parsed=strtoul(text,&end,10);
+    if(!*text || *end || parsed<minimum || parsed>maximum) {
+        fprintf(stderr,"%s must be in [%u,%u]\n",name,minimum,maximum);
+        return PW_ERR_PRECONDITION;
+    }
+    *value=(unsigned)parsed;
+    return PW_OK;
+}
+
 typedef struct TraceSource {
     const PeImage *image;const PeLayout *layout;
     PwUser32 *user32;
@@ -403,6 +431,15 @@ int main(int argc,char **argv)
     if(pw_x86_engine_init(&engine,&vm,cache_entries,8192,4*1024*1024,1,
                           trace_source,&trace_view)!=PW_OK)goto cleanup;
     have_engine=1;
+    unsigned chaining=0,residency=1,quantum=PW_X86_ENGINE_DEFAULT_QUANTUM;
+    if(trace_switch("PW_TRACE_CHAINING",0,&chaining)!=PW_OK ||
+       trace_switch("PW_TRACE_RESIDENCY",1,&residency)!=PW_OK ||
+       trace_u32("PW_TRACE_QUANTUM",PW_X86_ENGINE_DEFAULT_QUANTUM,1,4096,&quantum)!=PW_OK ||
+       pw_x86_engine_set_chaining(&engine,chaining)!=PW_OK ||
+       pw_x86_engine_set_residency(&engine,residency)!=PW_OK ||
+       pw_x86_engine_set_quantum(&engine,quantum)!=PW_OK)goto cleanup;
+    printf("kind=host-dbt-mode chaining=%u residency=%u quantum=%u\n",
+           chaining,residency,quantum);
     unsigned steps=0,events=0;
     uint32_t inspected_word=0;unsigned inspect_ready=0,inspect_changes=0;
     const char *stop="budget";

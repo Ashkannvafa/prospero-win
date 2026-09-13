@@ -5,16 +5,22 @@
 
 typedef struct PwX86LinkSlot {
     void *target_code;           /* host code entry or stub address */
+    void *canonical_code;        /* canonical entry of target block when reconciled */
     uint32_t target_pc;          /* guest PC targeted by this exit */
     uint32_t source_pc;          /* guest PC of source block */
     unsigned is_linked;          /* 1 if pointing to a compiled block, 0 if stub */
+    unsigned is_reconciled;      /* 1 if linked via reconciliation stub */
 } PwX86LinkSlot;
 
 typedef struct PwX86CacheEntry {
     uint32_t guest_pc,generation;
     size_t code_offset,code_bytes,source_bytes;
+    size_t canonical_entry_offset;
+    size_t chain_entry_offset;
     uint32_t instructions;
     uint16_t instruction_ends[32];
+    PwX86RegContract entry_contract;
+    PwX86RegContract exit_contract;
     PwX86ExitDesc exit;
     PwX86LinkSlot link_slots[2]; /* 0: target, 1: fallthrough */
     unsigned used;

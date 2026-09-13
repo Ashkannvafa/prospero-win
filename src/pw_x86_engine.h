@@ -29,8 +29,11 @@ typedef struct PwX86Engine {
     uint64_t attempted_links, successful_links;
     uint64_t linked_transitions, dispatcher_transitions;
     uint64_t unlinks, safepoint_returns;
+    uint64_t reg_loads, reg_stores;
+    uint64_t reg_reconciliations, reg_spills;
     uint32_t quantum;
     unsigned chaining_enabled;
+    unsigned residency_enabled;
     unsigned sealed,failed,initialized;
 } PwX86Engine;
 
@@ -44,6 +47,7 @@ int pw_x86_engine_init(PwX86Engine *,const PwVmBackend *,
                        PwX86SourceView,void *);
 int pw_x86_engine_set_quantum(PwX86Engine *, uint32_t);
 int pw_x86_engine_set_chaining(PwX86Engine *, unsigned);
+int pw_x86_engine_set_residency(PwX86Engine *, unsigned);
 int pw_x86_engine_step(PwX86Engine *,PwX86State *,PwX86StepReport *);
 int pw_x86_engine_reset(PwX86Engine *,uint32_t);
 int pw_x86_engine_destroy(PwX86Engine *);

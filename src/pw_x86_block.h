@@ -6,12 +6,29 @@
 #include "pw_guest_fp.h"
 #include "../include/prospero_win.h"
 
-enum { PW_X86_MEMORY_REGIONS=8, PW_X86_READ=1, PW_X86_WRITE=2 };
+enum { PW_X86_MEMORY_REGIONS=8, PW_X86_READ=1, PW_X86_WRITE=2, PW_X86_MAX_HOST_REGS=3 };
 typedef struct PwX86Memory {
     uint32_t low;
     uint64_t high; /* exclusive; can represent 4 GiB */
     unsigned permissions;
 } PwX86Memory;
+
+typedef struct PwX86RegContract {
+    uint8_t resident_mask;  /* bitmask of guest GPRs (0..7) resident in host registers */
+    uint8_t dirty_mask;     /* bitmask of resident guest GPRs modified */
+    int8_t guest_to_host[8];/* guest GPR (0..7) -> host reg (0..PW_X86_MAX_HOST_REGS-1) or -1 */
+    int8_t host_to_guest[PW_X86_MAX_HOST_REGS]; /* host reg ID -> guest GPR or -1 */
+} PwX86RegContract;
+
+static inline int pw_x86_contracts_match(const PwX86RegContract *a, const PwX86RegContract *b)
+{
+    if (a->resident_mask != b->resident_mask) return 0;
+    for (int i = 0; i < 8; i++) {
+        if (a->guest_to_host[i] != b->guest_to_host[i]) return 0;
+    }
+    return 1;
+}
+
 typedef struct PwX86State {
     uint32_t gpr[8]; /* eax ecx edx ebx esp ebp esi edi */
     uint32_t eip;
@@ -23,6 +40,10 @@ typedef struct PwX86State {
     uint32_t step_retired;       /* cumulative instructions retired in current dispatch step */
     uint32_t step_transitions;   /* linked block-to-block transitions in current step */
     uintptr_t last_exit_slot;    /* address of link slot that triggered unlinked exit (or 0) */
+    uint32_t reg_loads;          /* guest-state loads performed in step */
+    uint32_t reg_stores;         /* guest-state stores performed in step */
+    uint32_t reg_reconciliations;/* cross-block reconciliations in step */
+    uint32_t reg_spills;         /* register spills performed in step */
     PwX86Memory memory[PW_X86_MEMORY_REGIONS]; /* live identity-mapped ranges */
     PwGuestFp fp;
 } PwX86State;
@@ -43,6 +64,10 @@ typedef struct PwX86ExitDesc {
     size_t fallthrough_patch_offset; /* offset in emitted code of 64-bit slot pointer for fallthrough */
     size_t target_stub_offset;  /* offset in emitted code of unlinked exit stub for target */
     size_t fallthrough_stub_offset; /* offset in emitted code of unlinked exit stub for fallthrough */
+    size_t target_reconcile_offset; /* offset in emitted code of reconciliation stub for target */
+    size_t fallthrough_reconcile_offset; /* offset in emitted code of reconciliation stub for fallthrough */
+    size_t target_reconcile_patch_offset; /* offset in code of canonical_code pointer for target */
+    size_t fallthrough_reconcile_patch_offset; /* offset in code of canonical_code pointer for fallthrough */
 } PwX86ExitDesc;
 
 typedef struct PwX86Block {
@@ -51,6 +76,10 @@ typedef struct PwX86Block {
     /* End offset of each guest instruction. This lets the dispatcher report
      * the precise retired prefix when a generated memory guard exits early. */
     uint16_t instruction_ends[32];
+    size_t canonical_entry_offset;
+    size_t chain_entry_offset;
+    PwX86RegContract entry_contract;
+    PwX86RegContract exit_contract;
     PwX86ExitDesc exit;
 } PwX86Block;
 
@@ -75,4 +104,7 @@ typedef struct PwX86Block {
  * This is not an x86 engine yet: unsupported instructions stop translation. */
 int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t guest_pc,
                      uint8_t *output, size_t capacity, PwX86Block *block);
+int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t guest_pc,
+                         uint8_t *output, size_t capacity, PwX86Block *block,
+                         unsigned residency_enabled);
 #endif

@@ -72,11 +72,16 @@ int pw_x86_cache_publish(PwX86Cache *cache,uint32_t guest_pc,const PwX86Block *b
     cache->entries[slot]=(PwX86CacheEntry){
         .guest_pc=guest_pc,.generation=cache->generation,.code_offset=code_offset,
         .code_bytes=block->code_bytes,.source_bytes=block->source_bytes,
-        .instructions=block->instructions,.exit=block->exit,.used=1};
+        .canonical_entry_offset=block->canonical_entry_offset,
+        .chain_entry_offset=block->chain_entry_offset,
+        .instructions=block->instructions,
+        .entry_contract=block->entry_contract,
+        .exit_contract=block->exit_contract,
+        .exit=block->exit,.used=1};
     cache->entries[slot].link_slots[0]=(PwX86LinkSlot){
-        .target_pc=block->exit.target_pc,.source_pc=guest_pc,.target_code=NULL,.is_linked=0};
+        .target_pc=block->exit.target_pc,.source_pc=guest_pc,.target_code=NULL,.canonical_code=NULL,.is_linked=0,.is_reconciled=0};
     cache->entries[slot].link_slots[1]=(PwX86LinkSlot){
-        .target_pc=block->exit.fallthrough_pc,.source_pc=guest_pc,.target_code=NULL,.is_linked=0};
+        .target_pc=block->exit.fallthrough_pc,.source_pc=guest_pc,.target_code=NULL,.canonical_code=NULL,.is_linked=0,.is_reconciled=0};
     memcpy(cache->entries[slot].instruction_ends,block->instruction_ends,
            block->instructions*sizeof(block->instruction_ends[0]));
     size_t end=code_offset+block->code_bytes;

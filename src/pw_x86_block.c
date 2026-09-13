@@ -139,11 +139,20 @@ static void memory_address_width(Emitter *e,unsigned write,unsigned width)
     byte(e,0x89);byte(e,0xc6); /* esi = address */
     byte(e,0xba);word(e,write);
     byte(e,0xb9);word(e,width);
-    byte(e,0x57);
+    byte(e,0x57); /* push rdi */
+    byte(e,0x41);byte(e,0x50); /* push r8 */
+    byte(e,0x41);byte(e,0x51); /* push r9 */
+    byte(e,0x41);byte(e,0x52); /* push r10 */
+    byte(e,0x41);byte(e,0x53); /* push r11 */
     byte(e,0x48);byte(e,0xb8);
     uint64_t target=(uint64_t)(uintptr_t)&memory_pointer;
     word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
-    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);
+    byte(e,0xff);byte(e,0xd0); /* call rax */
+    byte(e,0x41);byte(e,0x5b); /* pop r11 */
+    byte(e,0x41);byte(e,0x5a); /* pop r10 */
+    byte(e,0x41);byte(e,0x59); /* pop r9 */
+    byte(e,0x41);byte(e,0x58); /* pop r8 */
+    byte(e,0x5f); /* pop rdi */
     byte(e,0x48);byte(e,0x85);byte(e,0xc0);
     require_condition(e,0x75);
 
@@ -164,20 +173,212 @@ static int branch_condition(PwX86State *s,unsigned condition)
 }
 static void condition_value(Emitter *e,unsigned condition)
 {
-    byte(e,0xbe);word(e,condition);byte(e,0x57);byte(e,0x48);byte(e,0xb8);
+    /* branch_condition is an ordinary SysV call.  Keep every host register
+     * that may carry a resident guest value alive across it.  Five pushes
+     * also preserve the required call-site stack alignment. */
+    byte(e,0x57); /* push rdi */
+    byte(e,0x41);byte(e,0x50); /* push r8 */
+    byte(e,0x41);byte(e,0x51); /* push r9 */
+    byte(e,0x41);byte(e,0x52); /* push r10 */
+    byte(e,0x41);byte(e,0x53); /* push r11 */
+    byte(e,0xbe);word(e,condition);byte(e,0x48);byte(e,0xb8);
     uint64_t fn=(uint64_t)(uintptr_t)&branch_condition;
     word(e,(uint32_t)fn);word(e,(uint32_t)(fn>>32));
-    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);
+    byte(e,0xff);byte(e,0xd0); /* call rax */
+    byte(e,0x41);byte(e,0x5b); /* pop r11 */
+    byte(e,0x41);byte(e,0x5a); /* pop r10 */
+    byte(e,0x41);byte(e,0x59); /* pop r9 */
+    byte(e,0x41);byte(e,0x58); /* pop r8 */
+    byte(e,0x5f); /* pop rdi */
 }
-static void emit_chain_exit(Emitter *e, uint32_t count, uint32_t target_pc,
-                            size_t *patch_offset, size_t *stub_offset)
+static inline int get_resident_host_reg(const PwX86RegContract *c, unsigned gpr)
 {
+    if (!c || gpr >= 8 || !(c->resident_mask & (1 << gpr))) return -1;
+    return c->guest_to_host[gpr];
+}
+
+static inline unsigned popcount8(uint8_t m)
+{
+    unsigned count = 0;
+    while (m) { count += (m & 1); m >>= 1; }
+    return count;
+}
+
+static void emit_spill_dirty(Emitter *e, const PwX86RegContract *c)
+{
+    if (!c) return;
+    for (unsigned g = 0; g < 8; g++) {
+        if ((c->resident_mask & (1 << g)) && (c->dirty_mask & (1 << g))) {
+            int h = c->guest_to_host[g];
+            if (h >= 0 && h < PW_X86_MAX_HOST_REGS) {
+                byte(e, 0x44); byte(e, 0x89);
+                byte(e, (uint8_t)(0x47 | (h << 3)));
+                byte(e, (uint8_t)(g * 4));
+            }
+        }
+    }
+}
+
+__attribute__((unused))
+static void emit_spill_single(Emitter *e, PwX86RegContract *c, unsigned gpr)
+{
+    if (!c || gpr >= 8 || !(c->resident_mask & (1 << gpr))) return;
+    if (c->dirty_mask & (1 << gpr)) {
+        int h = c->guest_to_host[gpr];
+        if (h >= 0 && h < PW_X86_MAX_HOST_REGS) {
+            byte(e, 0x44); byte(e, 0x89);
+            byte(e, (uint8_t)(0x47 | (h << 3)));
+            byte(e, (uint8_t)(gpr * 4));
+            c->dirty_mask &= ~(1 << gpr);
+        }
+    }
+}
+
+static void emit_load_single(Emitter *e, const PwX86RegContract *c, unsigned gpr)
+{
+    if (!c || gpr >= 8 || !(c->resident_mask & (1 << gpr))) return;
+    int h = c->guest_to_host[gpr];
+    if (h >= 0 && h < PW_X86_MAX_HOST_REGS) {
+        byte(e, 0x44); byte(e, 0x8b);
+        byte(e, (uint8_t)(0x47 | (h << 3)));
+        byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+static void emit_load_all_resident(Emitter *e, const PwX86RegContract *c)
+{
+    if (!c) return;
+    for (unsigned g = 0; g < 8; g++) {
+        if (c->resident_mask & (1 << g)) {
+            emit_load_single(e, c, g);
+        }
+    }
+}
+
+static void load_guest_reg(Emitter *e, const PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x44); byte(e, 0x89); byte(e, (uint8_t)(0xc0 | (h << 3)));
+    } else {
+        load_eax(e, gpr * 4);
+    }
+}
+
+static void store_guest_reg(Emitter *e, PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x41); byte(e, 0x89); byte(e, (uint8_t)(0xc0 | h));
+        if (c) c->dirty_mask |= (1 << gpr);
+    } else {
+        store_eax(e, gpr * 4);
+    }
+}
+
+static void store_guest_imm(Emitter *e, PwX86RegContract *c, unsigned gpr, uint32_t val)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x41); byte(e, (uint8_t)(0xb8 + h)); word(e, val);
+        if (c) c->dirty_mask |= (1 << gpr);
+    } else {
+        store(e, gpr * 4, val);
+    }
+}
+
+__attribute__((unused))
+static void load_guest_reg_edx(Emitter *e, const PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x44); byte(e, 0x89); byte(e, (uint8_t)(0xc2 | (h << 3)));
+    } else {
+        byte(e, 0x8b); byte(e, 0x57); byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+static void load_guest_reg_ecx(Emitter *e, const PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x44); byte(e, 0x89); byte(e, (uint8_t)(0xc1 | (h << 3)));
+    } else {
+        byte(e, 0x8b); byte(e, 0x4f); byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+static void store_guest_reg_edx(Emitter *e, PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x41); byte(e, 0x89); byte(e, (uint8_t)(0xd0 | h));
+        if (c) c->dirty_mask |= (1 << gpr);
+    } else {
+        byte(e, 0x89); byte(e, 0x57); byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+static void store_guest_reg_ecx(Emitter *e, PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x41); byte(e, 0x89); byte(e, (uint8_t)(0xc8 | h));
+        if (c) c->dirty_mask |= (1 << gpr);
+    } else {
+        byte(e, 0x89); byte(e, 0x4f); byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+__attribute__((unused))
+static void load_guest_reg16(Emitter *e, const PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x66); byte(e, 0x44); byte(e, 0x89); byte(e, (uint8_t)(0xc0 | (h << 3)));
+    } else {
+        byte(e, 0x66); byte(e, 0x8b); byte(e, 0x47); byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+__attribute__((unused))
+static void store_guest_reg16(Emitter *e, PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x66); byte(e, 0x41); byte(e, 0x89); byte(e, (uint8_t)(0xc0 | h));
+        if (c) c->dirty_mask |= (1 << gpr);
+    } else {
+        byte(e, 0x66); byte(e, 0x89); byte(e, 0x47); byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+__attribute__((unused))
+static void store_guest_reg8_low(Emitter *e, PwX86RegContract *c, unsigned gpr)
+{
+    int h = get_resident_host_reg(c, gpr);
+    if (h >= 0) {
+        byte(e, 0x41); byte(e, 0x88); byte(e, (uint8_t)(0xc0 | h));
+        if (c) c->dirty_mask |= (1 << gpr);
+    } else {
+        byte(e, 0x88); byte(e, 0x47); byte(e, (uint8_t)(gpr * 4));
+    }
+}
+
+static void emit_chain_exit(Emitter *e, uint32_t count, uint32_t target_pc,
+                            const PwX86RegContract *contract,
+                            size_t *patch_offset, size_t *stub_offset,
+                            size_t *reconcile_offset, size_t *reconcile_patch_offset)
+{
+    uint8_t n_dirty = contract ? popcount8(contract->dirty_mask) : 0;
+
     /* 1. add dword ptr [rdi + step_retired], count */
     byte(e, 0x83); byte(e, 0x47); byte(e, offsetof(PwX86State, step_retired)); byte(e, (uint8_t)count);
     /* 2. dec dword ptr [rdi + chain_budget] */
     byte(e, 0xff); byte(e, 0x4f); byte(e, offsetof(PwX86State, chain_budget));
-    /* 3. jz safepoint (jump forward 21 bytes: past inc, movabs, test, jz, jmp) */
-    byte(e, 0x74); byte(e, 21);
+    /* 3. jz safepoint */
+    byte(e, 0x74);
+    size_t safepoint_patch = e->n++;
     /* 4. inc dword ptr [rdi + step_transitions] */
     byte(e, 0xff); byte(e, 0x47); byte(e, offsetof(PwX86State, step_transitions));
     /* 5. movabs $0, %r11 (10 bytes: 49 bb <8 bytes>) */
@@ -186,21 +387,52 @@ static void emit_chain_exit(Emitter *e, uint32_t count, uint32_t target_pc,
     for (int i = 0; i < 8; i++) byte(e, 0);
     /* 6. test %r11, %r11 (3 bytes: 4d 85 db) */
     byte(e, 0x4d); byte(e, 0x85); byte(e, 0xdb);
-    /* 7. jz unlinked_stub (2 bytes: 74 03) */
-    byte(e, 0x74); byte(e, 3);
+    /* 7. jz unlinked_stub */
+    byte(e, 0x74);
+    size_t unlinked_patch = e->n++;
     /* 8. jmp *(%r11) (3 bytes: 41 ff 23) */
     byte(e, 0x41); byte(e, 0xff); byte(e, 0x23);
-    /* 9. safepoint_exit: movq $0, last_exit_slot(%rdi) */
+
+    /* 9. safepoint_exit: */
+    e->p[safepoint_patch] = (uint8_t)(e->n - (safepoint_patch + 1));
+    emit_spill_dirty(e, contract);
+    if (n_dirty) {
+        byte(e, 0x83); byte(e, 0x47); byte(e, offsetof(PwX86State, reg_stores)); byte(e, n_dirty);
+    }
     byte(e, 0x48); byte(e, 0xc7); byte(e, 0x47); byte(e, offsetof(PwX86State, last_exit_slot));
     word(e, 0);
-    /* jmp common (2 bytes: eb 04) */
-    byte(e, 0xeb); byte(e, 4);
-    /* 10. unlinked_stub: movq %r11, last_exit_slot(%rdi) (4 bytes: 4c 89 5f <disp8>) */
+    /* jmp common_exit */
+    byte(e, 0xeb);
+    size_t safepoint_common_patch = e->n++;
+
+    /* 10. unlinked_stub: */
     *stub_offset = e->n;
+    e->p[unlinked_patch] = (uint8_t)(e->n - (unlinked_patch + 1));
+    emit_spill_dirty(e, contract);
+    if (n_dirty) {
+        byte(e, 0x83); byte(e, 0x47); byte(e, offsetof(PwX86State, reg_stores)); byte(e, n_dirty);
+    }
     byte(e, 0x4c); byte(e, 0x89); byte(e, 0x5f); byte(e, offsetof(PwX86State, last_exit_slot));
+
     /* 11. common_exit: */
+    e->p[safepoint_common_patch] = (uint8_t)(e->n - (safepoint_common_patch + 1));
     store(e, offsetof(PwX86State, eip), target_pc);
     byte(e, 0x31); byte(e, 0xc0); byte(e, 0xc3); /* xor eax, eax; ret */
+
+    /* 12. reconcile_stub: jumped to when linked block has different contract */
+    *reconcile_offset = e->n;
+    emit_spill_dirty(e, contract);
+    if (n_dirty) {
+        byte(e, 0x83); byte(e, 0x47); byte(e, offsetof(PwX86State, reg_spills)); byte(e, n_dirty);
+    }
+    /* inc dword ptr [rdi + reg_reconciliations] */
+    byte(e, 0xff); byte(e, 0x47); byte(e, offsetof(PwX86State, reg_reconciliations));
+    /* movabs $link_slot->canonical_code, %r11 */
+    byte(e, 0x49); byte(e, 0xbb);
+    *reconcile_patch_offset = e->n;
+    for (int i = 0; i < 8; i++) byte(e, 0);
+    /* jmp *(%r11) */
+    byte(e, 0x41); byte(e, 0xff); byte(e, 0x23);
 }
 
 static void conditional_target(Emitter *e, unsigned condition, uint32_t next, uint32_t target,
@@ -209,34 +441,41 @@ static void conditional_target(Emitter *e, unsigned condition, uint32_t next, ui
     unsigned c = condition >> 1;
     unsigned invert = condition & 1;
     uint8_t jump_op = invert ? 0x74 : 0x75;
+    size_t branch_patch = 0;
     if (c == 0) { /* OF: bit 11 in eflags (bit 3 of byte [rdi+53]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags)+1);byte(e,0x08);
-        byte(e,jump_op);byte(e,54);
+        byte(e,jump_op); branch_patch = e->n++;
     } else if (c == 1) { /* CF: bit 0 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x01);
-        byte(e,jump_op);byte(e,54);
+        byte(e,jump_op); branch_patch = e->n++;
     } else if (c == 2) { /* ZF: bit 6 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x40);
-        byte(e,jump_op);byte(e,54);
+        byte(e,jump_op); branch_patch = e->n++;
     } else if (c == 3) { /* CF || ZF: bits 0, 6 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x41);
-        byte(e,jump_op);byte(e,54);
+        byte(e,jump_op); branch_patch = e->n++;
     } else if (c == 4) { /* SF: bit 7 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x80);
-        byte(e,jump_op);byte(e,54);
+        byte(e,jump_op); branch_patch = e->n++;
     } else if (c == 5) { /* PF: bit 2 in eflags (byte [rdi+52]) */
         byte(e,0xf6);byte(e,0x47);byte(e,offsetof(PwX86State,eflags));byte(e,0x04);
-        byte(e,jump_op);byte(e,54);
+        byte(e,jump_op); branch_patch = e->n++;
     } else {
         condition_value(e,condition);
-        byte(e,0x85);byte(e,0xc0);byte(e,0x75);byte(e,54);
+        byte(e,0x85);byte(e,0xc0);byte(e,0x75); branch_patch = e->n++;
     }
-    emit_chain_exit(e, count, next, &block->exit.fallthrough_patch_offset, &block->exit.fallthrough_stub_offset);
-    emit_chain_exit(e, count, target, &block->exit.target_patch_offset, &block->exit.target_stub_offset);
+    emit_chain_exit(e, count, next, &block->exit_contract,
+                    &block->exit.fallthrough_patch_offset, &block->exit.fallthrough_stub_offset,
+                    &block->exit.fallthrough_reconcile_offset, &block->exit.fallthrough_reconcile_patch_offset);
+    e->p[branch_patch] = (uint8_t)(e->n - (branch_patch + 1));
+    emit_chain_exit(e, count, target, &block->exit_contract,
+                    &block->exit.target_patch_offset, &block->exit.target_stub_offset,
+                    &block->exit.target_reconcile_offset, &block->exit.target_reconcile_patch_offset);
 }
-static void stack_address(Emitter *e, int push)
+
+static void stack_address(Emitter *e, int push, const PwX86RegContract *c)
 {
-    load_eax(e,offsetof(PwX86State,gpr[4]));
+    load_guest_reg(e, c, 4);
     if (push) {
         /* Check before subtracting: an ESP of 0 must not wrap. */
         byte(e,0x83); byte(e,0xf8); byte(e,4);
@@ -272,22 +511,34 @@ static int decode_operand(const uint8_t *p, size_t n, Operand *o)
     o->bytes+=displacement;
     return PW_OK;
 }
-static void effective_address(Emitter *e, const Operand *o)
+static void effective_address(Emitter *e, const Operand *o, const PwX86RegContract *c)
 {
     /* EAX arithmetic deliberately wraps at 32 bits; never RIP-relative. */
     byte(e,0xb8); word(e,o->displacement);
-    if (o->base>=0) { byte(e,0x03); byte(e,0x47); byte(e,(uint8_t)(o->base*4)); }
+    if (o->base>=0) {
+        int h = get_resident_host_reg(c, (unsigned)o->base);
+        if (h >= 0) {
+            byte(e, 0x41); byte(e, 0x03); byte(e, (uint8_t)(0xc0 | h));
+        } else {
+            byte(e,0x03); byte(e,0x47); byte(e,(uint8_t)(o->base*4));
+        }
+    }
     if (o->index>=0) {
-        byte(e,0x8b); byte(e,0x57); byte(e,(uint8_t)(o->index*4));
+        int h = get_resident_host_reg(c, (unsigned)o->index);
+        if (h >= 0) {
+            byte(e, 0x41); byte(e, 0x8b); byte(e, (uint8_t)(0xd0 | h));
+        } else {
+            byte(e,0x8b); byte(e,0x57); byte(e,(uint8_t)(o->index*4));
+        }
         byte(e,0xc1); byte(e,0xe2); byte(e,(uint8_t)o->scale);
         byte(e,0x01); byte(e,0xd0);
     }
 }
-static void push_imm(Emitter *e, uint32_t value)
+static void push_imm(Emitter *e, uint32_t value, PwX86RegContract *c)
 {
-    stack_address(e,1);
+    stack_address(e, 1, c);
     byte(e,0xc7); byte(e,0x00); word(e,value); /* mov dword [rax],imm32 */
-    store_eax(e,offsetof(PwX86State,gpr[4]));
+    store_guest_reg(e, c, 4);
 }
 static void success(Emitter *e)
 {
@@ -487,8 +738,9 @@ typedef struct DecodedInst {
     int can_fault;
 } DecodedInst;
 
-int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
-                     uint8_t *output, size_t capacity, PwX86Block *block)
+int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
+                         uint8_t *output, size_t capacity, PwX86Block *block,
+                         unsigned residency_enabled)
 {
     Emitter e = {output,0,capacity,0};
     size_t cursor = 0;
@@ -499,6 +751,7 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
 
     DecodedInst insts[32];
     memset(insts, 0, sizeof(insts));
+    unsigned gpr_uses[8] = {0};
 
 #define DECODE_FAIL(err) do { if (count) goto analyze_and_emit; return (err); } while (0)
 
@@ -808,6 +1061,27 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
         d->flags_use = flags_use;
         d->can_fault = can_fault;
 
+        if (operand.mod == 3) {
+            if (operand.rm < 8) gpr_uses[operand.rm]++;
+        } else if (operand.bytes > 0) {
+            if (operand.base >= 0 && operand.base < 8) gpr_uses[operand.base]++;
+            if (operand.index >= 0 && operand.index < 8) gpr_uses[operand.index]++;
+        }
+        if (operand.reg < 8) gpr_uses[operand.reg]++;
+        if (op >= 0x40 && op <= 0x4f) gpr_uses[op & 7]++;
+        if (op >= 0x50 && op <= 0x57) { gpr_uses[op - 0x50]++; gpr_uses[4] += 2; }
+        if (op >= 0x58 && op <= 0x5f) { gpr_uses[op - 0x58]++; gpr_uses[4] += 2; }
+        if (op >= 0xb8 && op <= 0xbf) gpr_uses[op - 0xb8]++;
+        if (op == 0x99) { gpr_uses[0]++; gpr_uses[2]++; }
+        if (op == 0xc9) { gpr_uses[4] += 2; gpr_uses[5] += 2; }
+        if (op == 0xa1 || op == 0xa3) gpr_uses[0]++;
+        if (op == 0x6a || op == 0x68 || op == 0xe8) gpr_uses[4] += 2;
+        if (op == 0xc3 || op == 0xc2) gpr_uses[4] += 2;
+        if (op == 0xd3) gpr_uses[1]++;
+        if (string_op) { gpr_uses[1]++; gpr_uses[6]++; gpr_uses[7]++; }
+        if (x87 && (op == 0xd9 && operand.reg == 0x07)) gpr_uses[0]++;
+        if (imul_general || (op == 0xf7 && operand.reg >= 4)) { gpr_uses[0]++; gpr_uses[2]++; }
+
         cursor += length;
         ++count;
         if (d->terminal) break;
@@ -835,7 +1109,46 @@ analyze_and_emit:
         if (insts[i].can_fault) live |= 0x8d5;
     }
 
+    /* Allocate resident registers based on use frequencies */
+    memset(&block->entry_contract, 0, sizeof(block->entry_contract));
+    for (int i = 0; i < 8; i++) block->entry_contract.guest_to_host[i] = -1;
+    for (int i = 0; i < PW_X86_MAX_HOST_REGS; i++) block->entry_contract.host_to_guest[i] = -1;
+
+    if (residency_enabled) {
+        for (int h = 0; h < PW_X86_MAX_HOST_REGS; h++) {
+            int best_gpr = -1;
+            unsigned max_uses = 0;
+            for (int g = 0; g < 8; g++) {
+                if (block->entry_contract.guest_to_host[g] == -1 && gpr_uses[g] > max_uses) {
+                    max_uses = gpr_uses[g];
+                    best_gpr = g;
+                }
+            }
+            if (best_gpr >= 0) {
+                block->entry_contract.resident_mask |= (1 << best_gpr);
+                block->entry_contract.guest_to_host[best_gpr] = (int8_t)h;
+                block->entry_contract.host_to_guest[h] = (int8_t)best_gpr;
+            }
+        }
+    }
+    block->exit_contract = block->entry_contract;
+    /* A matching chain entry can inherit resident values that are newer than
+     * canonical state.  The block has multiple possible predecessors, so a
+     * static contract cannot know their per-register dirty masks.  Treat all
+     * resident values as dirty until the first emitted spill barrier.  A
+     * canonical entry may perform harmless redundant stores; a chain entry
+     * must never lose a predecessor's update. */
+    block->exit_contract.dirty_mask = block->entry_contract.resident_mask;
+
     /* Pass 2: Machine code emission */
+    block->canonical_entry_offset = e.n;
+    if (block->entry_contract.resident_mask) {
+        emit_load_all_resident(&e, &block->entry_contract);
+        uint8_t n_res = popcount8(block->entry_contract.resident_mask);
+        byte(&e, 0x83); byte(&e, 0x47); byte(&e, offsetof(PwX86State, reg_loads)); byte(&e, n_res);
+    }
+    block->chain_entry_offset = e.n;
+
     for (unsigned i = 0; i < count; i++) {
         DecodedInst *d = &insts[i];
         size_t cursor = d->cursor;
@@ -866,13 +1179,22 @@ analyze_and_emit:
         uint32_t next = pc + (uint32_t)cursor + (uint32_t)length;
         /* Fault exits preserve the PC of the faulting guest instruction. */
         store(&e,offsetof(PwX86State,eip),pc+(uint32_t)cursor);
-        if(string_op)string_call(&e,string_op,string_width,string_repeat);
+        if (d->can_fault) {
+            emit_spill_dirty(&e, &block->exit_contract);
+            block->exit_contract.dirty_mask = 0;
+        }
+        if(string_op) {
+            emit_spill_dirty(&e, &block->exit_contract);
+            block->exit_contract.dirty_mask = 0;
+            string_call(&e,string_op,string_width,string_repeat);
+            emit_load_all_resident(&e, &block->exit_contract);
+        }
         else if(byte_alu) {
             unsigned operation=byte_alu-1;
             unsigned rm=(operand.rm&3)*4+(operand.rm>>2);
             unsigned reg=(operand.reg&3)*4+(operand.reg>>2);
             if(operand.mod!=3) {
-                effective_address(&e,&operand);
+                effective_address(&e,&operand,&block->exit_contract);
                 memory_address_width(&e,!byte_direction && operation!=7?2:0,1);
             }
             if(byte_direction) {
@@ -902,24 +1224,34 @@ analyze_and_emit:
                 if(operation!=7) {
                     unsigned destination=byte_direction?reg:rm;
                     byte(&e,0x88);byte(&e,0x47);byte(&e,destination);
+                    unsigned gpr = destination / 4;
+                    if (get_resident_host_reg(&block->exit_contract, gpr) >= 0) {
+                        emit_load_single(&e, &block->exit_contract, gpr);
+                        block->exit_contract.dirty_mask |= (1 << gpr);
+                    }
                 }
             }
             if (!d->flags_dead) save_arithmetic_flags(&e,(operation==1 || operation==4 || operation==6)?0x8c5:0x8d5);
         }
         else if(imul_general) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address_width(&e,0,4);byte(&e,0x8b);byte(&e,0x00);}
-            byte(&e,0x0f);byte(&e,0xaf);byte(&e,0x47);byte(&e,operand.reg*4);
-            store_eax(&e,operand.reg*4);
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,0,4);byte(&e,0x8b);byte(&e,0x00);}
+            int h_reg = get_resident_host_reg(&block->exit_contract, operand.reg);
+            if (h_reg >= 0) {
+                byte(&e, 0x41); byte(&e, 0x0f); byte(&e, 0xaf); byte(&e, (uint8_t)(0xc0 | h_reg));
+            } else {
+                byte(&e,0x0f);byte(&e,0xaf);byte(&e,0x47);byte(&e,operand.reg*4);
+            }
+            store_guest_reg(&e, &block->exit_contract, operand.reg);
             if (!d->flags_dead) save_arithmetic_flags(&e,0x801);
         }
         else if(op==0x69 || op==0x6b) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address_width(&e,0,4);byte(&e,0x8b);byte(&e,0x00);}
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,0,4);byte(&e,0x8b);byte(&e,0x00);}
             byte(&e,op);byte(&e,0xc0);
             if(op==0x69)word(&e,read32(source+cursor+length-4));
             else byte(&e,source[cursor+length-1]);
-            store_eax(&e,operand.reg*4);
+            store_guest_reg(&e, &block->exit_contract, operand.reg);
             if (!d->flags_dead) save_arithmetic_flags(&e,0x801);
         }
         else if(word_general) {
@@ -933,12 +1265,18 @@ analyze_and_emit:
                 uint16_t value=(uint16_t)source[cursor+length-2]|
                     (uint16_t)source[cursor+length-1]<<8;
                 if(operand.mod==3) {
+                    emit_spill_single(&e, &block->exit_contract, operand.rm);
                     byte(&e,0x66);byte(&e,0xc7);byte(&e,0x47);byte(&e,operand.rm*4);
+                    byte(&e,(uint8_t)value);byte(&e,(uint8_t)(value>>8));
+                    if (get_resident_host_reg(&block->exit_contract, operand.rm) >= 0) {
+                        emit_load_single(&e, &block->exit_contract, operand.rm);
+                        block->exit_contract.dirty_mask |= (1 << operand.rm);
+                    }
                 } else {
-                    effective_address(&e,&operand);memory_address_width(&e,1,2);
+                    effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,1,2);
                     byte(&e,0x66);byte(&e,0xc7);byte(&e,0x00);
+                    byte(&e,(uint8_t)value);byte(&e,(uint8_t)(value>>8));
                 }
-                byte(&e,(uint8_t)value);byte(&e,(uint8_t)(value>>8));
             } else if(alu_word) {
                 unsigned memory_destination=(word_general&7)==1;
                 unsigned operation=word_general>>3;
@@ -946,53 +1284,77 @@ analyze_and_emit:
                 if(operand.mod==3) {
                     unsigned destination=memory_destination?operand.rm:operand.reg;
                     unsigned source_register=memory_destination?operand.reg:operand.rm;
-                    load_eax(&e,destination*4);byte(&e,0x66);
+                    emit_spill_single(&e, &block->exit_contract, destination);
+                    emit_spill_single(&e, &block->exit_contract, source_register);
+                    load_guest_reg(&e,&block->exit_contract,destination);byte(&e,0x66);
                     byte(&e,(uint8_t)(operation*8+3));byte(&e,0x47);
                     byte(&e,source_register*4);
                     byte(&e,0x66);byte(&e,0x89);byte(&e,0x47);byte(&e,destination*4);
+                    if (get_resident_host_reg(&block->exit_contract, destination) >= 0) {
+                        emit_load_single(&e, &block->exit_contract, destination);
+                        block->exit_contract.dirty_mask |= (1 << destination);
+                    }
                 } else {
-                    effective_address(&e,&operand);memory_address_width(&e,memory_destination,2);
+                    effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,memory_destination,2);
                     if(memory_destination) {
                         byte(&e,0x8b);byte(&e,0x4f);byte(&e,operand.reg*4);
                         byte(&e,0x66);byte(&e,word_general);byte(&e,0x08);
                     } else {
                         byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x08);
-                        load_eax(&e,operand.reg*4);byte(&e,0x66);
+                        load_guest_reg(&e,&block->exit_contract,operand.reg);byte(&e,0x66);
                         byte(&e,word_general);byte(&e,0xc8);
                         byte(&e,0x66);byte(&e,0x89);byte(&e,0x47);byte(&e,operand.reg*4);
+                        if (get_resident_host_reg(&block->exit_contract, operand.reg) >= 0) {
+                            emit_load_single(&e, &block->exit_contract, operand.reg);
+                            block->exit_contract.dirty_mask |= (1 << operand.reg);
+                        }
                     }
                 }
                 if (!d->flags_dead) save_arithmetic_flags(&e,logical?0x8c5:0x8d5);
             } else if(operand.mod==3) {
+                emit_spill_single(&e, &block->exit_contract, operand.rm);
+                emit_spill_single(&e, &block->exit_contract, operand.reg);
                 if(word_general==0x89) {
-                    load_eax(&e,operand.reg*4);byte(&e,0x66);byte(&e,0x89);
+                    load_guest_reg(&e,&block->exit_contract,operand.reg);byte(&e,0x66);byte(&e,0x89);
                     byte(&e,0x47);byte(&e,operand.rm*4);
+                    if (get_resident_host_reg(&block->exit_contract, operand.rm) >= 0) {
+                        emit_load_single(&e, &block->exit_contract, operand.rm);
+                        block->exit_contract.dirty_mask |= (1 << operand.rm);
+                    }
                 } else if(word_general==0x8b) {
-                    load_eax(&e,operand.rm*4);byte(&e,0x66);byte(&e,0x89);
+                    load_guest_reg(&e,&block->exit_contract,operand.rm);byte(&e,0x66);byte(&e,0x89);
                     byte(&e,0x47);byte(&e,operand.reg*4);
+                    if (get_resident_host_reg(&block->exit_contract, operand.reg) >= 0) {
+                        emit_load_single(&e, &block->exit_contract, operand.reg);
+                        block->exit_contract.dirty_mask |= (1 << operand.reg);
+                    }
                 } else if(compare_word) {
-                    load_eax(&e,(word_general==0x39?operand.rm:operand.reg)*4);
+                    load_guest_reg(&e,&block->exit_contract,(word_general==0x39?operand.rm:operand.reg));
                     byte(&e,0x66);byte(&e,0x3b);byte(&e,0x47);
                     byte(&e,(word_general==0x39?operand.reg:operand.rm)*4);
                 } else {
-                    load_eax(&e,operand.rm*4);byte(&e,0x66);byte(&e,0x85);
+                    load_guest_reg(&e,&block->exit_contract,operand.rm);byte(&e,0x66);byte(&e,0x85);
                     byte(&e,0x47);byte(&e,operand.reg*4);
                 }
             } else {
-                effective_address(&e,&operand);
+                effective_address(&e,&operand,&block->exit_contract);
                 memory_address_width(&e,!load && !compare_word && !test_word,2);
                 if(word_general==0x89) {
                     byte(&e,0x8b);byte(&e,0x4f);byte(&e,operand.reg*4);
-                    byte(&e,0x66);byte(&e,0x89);byte(&e,0x08);
+                    byte(&e,0x66);byte(&e,word_general);byte(&e,0x08);
                 } else if(word_general==0x8b) {
                     byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x00);
                     byte(&e,0x66);byte(&e,0x89);byte(&e,0x47);byte(&e,operand.reg*4);
+                    if (get_resident_host_reg(&block->exit_contract, operand.reg) >= 0) {
+                        emit_load_single(&e, &block->exit_contract, operand.reg);
+                        block->exit_contract.dirty_mask |= (1 << operand.reg);
+                    }
                 } else if(word_general==0x39) {
                     byte(&e,0x66);byte(&e,0x8b);byte(&e,0x00);
                     byte(&e,0x66);byte(&e,0x3b);byte(&e,0x47);byte(&e,operand.reg*4);
                 } else if(compare_word) {
                     byte(&e,0x0f);byte(&e,0xb7);byte(&e,0x08);
-                    load_eax(&e,operand.reg*4);byte(&e,0x66);byte(&e,0x39);byte(&e,0xc8);
+                    load_guest_reg(&e,&block->exit_contract,operand.reg);byte(&e,0x66);byte(&e,0x39);byte(&e,0xc8);
                 } else {
                     byte(&e,0x66);byte(&e,0x8b);byte(&e,0x00);
                     byte(&e,0x66);byte(&e,0x85);byte(&e,0x47);byte(&e,operand.reg*4);
@@ -1001,54 +1363,70 @@ analyze_and_emit:
             if((compare_word || test_word) && !d->flags_dead) save_arithmetic_flags(&e,test_word?0x8c5:0x8d5);
         }
         else if(x87) {
-            if(operand.mod!=3){effective_address(&e,&operand);memory_address_width(&e,x87_write,x87_width);}
+            if(operand.mod!=3){effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,x87_write,x87_width);}
+            emit_spill_dirty(&e, &block->exit_contract);
+            block->exit_contract.dirty_mask = 0;
             x87_call(&e,x87-1,x87_register);
+            emit_load_all_resident(&e, &block->exit_contract);
         } else if(op==0xc1 || op==0xd1 || op==0xd3) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
-            if(op==0xd3){byte(&e,0x8b);byte(&e,0x4f);byte(&e,4);}
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,2,4);}
+            if(op==0xd3){load_guest_reg_ecx(&e, &block->exit_contract, 1);}
             else {byte(&e,0xb9);word(&e,op==0xd1?1:source[cursor+length-1]);}
             byte(&e,0x83);byte(&e,0xe1);byte(&e,31); /* masked count */
-            /* r8d selects only defined flags: none for zero, OF only for one.
+            /* esi selects only defined flags: none for zero, OF only for one.
              * Preserve undefined AF and multi-bit OF deterministically. */
-            byte(&e,0x41);byte(&e,0xb8);word(&e,0xc5);
+            byte(&e,0xbe);word(&e,0xc5);
             byte(&e,0xba);word(&e,0);
             byte(&e,0x85);byte(&e,0xc9);
-            byte(&e,0x44);byte(&e,0x0f);byte(&e,0x44);byte(&e,0xc2);
+            byte(&e,0x0f);byte(&e,0x44);byte(&e,0xf2);
             byte(&e,0xba);word(&e,0x8c5);
             byte(&e,0x83);byte(&e,0xf9);byte(&e,1);
-            byte(&e,0x44);byte(&e,0x0f);byte(&e,0x44);byte(&e,0xc2);
+            byte(&e,0x0f);byte(&e,0x44);byte(&e,0xf2);
             byte(&e,0xd3);byte(&e,(operand.mod==3?0xc0:0)|(operand.reg<<3));
-            if(operand.mod==3)store_eax(&e,operand.rm*4);
+            if(operand.mod==3)store_guest_reg(&e, &block->exit_contract, operand.rm);
             if (!d->flags_dead) {
                 byte(&e,0x9c);byte(&e,0x5a); /* snapshot native flags */
-                byte(&e,0x44);byte(&e,0x21);byte(&e,0xc2);
-                byte(&e,0x41);byte(&e,0xf7);byte(&e,0xd0);
-                byte(&e,0x44);byte(&e,0x23);byte(&e,0x47);byte(&e,offsetof(PwX86State,eflags));
-                byte(&e,0x44);byte(&e,0x09);byte(&e,0xc2);
+                byte(&e,0x21);byte(&e,0xf2); /* and edx, esi */
+                byte(&e,0xf7);byte(&e,0xd6); /* not esi */
+                byte(&e,0x23);byte(&e,0x77);byte(&e,offsetof(PwX86State,eflags)); /* and esi, [rdi+eflags] */
+                byte(&e,0x09);byte(&e,0xf2); /* or edx, esi */
                 byte(&e,0x89);byte(&e,0x57);byte(&e,offsetof(PwX86State,eflags));
             }
         } else if(op>=0x40 && op<=0x4f) {
-            unsigned reg=op&7;load_eax(&e,reg*4);
-            byte(&e,0xff);byte(&e,op<0x48?0xc0:0xc8);store_eax(&e,reg*4);
+            unsigned reg=op&7;load_guest_reg(&e, &block->exit_contract, reg);
+            byte(&e,0xff);byte(&e,op<0x48?0xc0:0xc8);store_guest_reg(&e, &block->exit_contract, reg);
             if (!d->flags_dead) save_arithmetic_flags(&e,0x8d4); /* INC/DEC preserve guest CF. */
         } else if(op>=0xb0 && op<=0xb7) {
             unsigned reg=op&7;
+            emit_spill_single(&e, &block->exit_contract, reg & 3);
             byte(&e,0xc6);byte(&e,0x47);byte(&e,(reg&3)*4+(reg>>2));byte(&e,source[cursor+1]);
+            if (get_resident_host_reg(&block->exit_contract, reg & 3) >= 0) {
+                emit_load_single(&e, &block->exit_contract, reg & 3);
+                block->exit_contract.dirty_mask |= (1 << (reg & 3));
+            }
         } else if((op<=0x3c && (op&7)==4) || op==0xa8) {
-            load_eax(&e,0);byte(&e,op);byte(&e,source[cursor+1]);
-            if(op!=0x3c && op!=0xa8)store_eax(&e,0);
+            load_guest_reg(&e, &block->exit_contract, 0);byte(&e,op);byte(&e,source[cursor+1]);
+            if(op!=0x3c && op!=0xa8)store_guest_reg(&e, &block->exit_contract, 0);
             if (!d->flags_dead) save_arithmetic_flags(&e,(op==0x0c || op==0x24 || op==0x34 || op==0xa8)?0x8c5:0x8d5);
         } else if(op==0x80 || op==0x88 || op==0x8a || op==0xc6 || op==0x38 || op==0x3a || op==0x84 || op==0xf6) {
             unsigned dest=(operand.rm&3)*4+(operand.rm>>2),reg=(operand.reg&3)*4+(operand.reg>>2);
             unsigned immediate_alu=op==0x80;
             unsigned write=op==0x88 || op==0xc6 || (immediate_alu && operand.reg!=7);
-            if(operand.mod!=3){effective_address(&e,&operand);memory_address_width(&e,write,1);}
+            if(operand.mod!=3){effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,write,1);}
+            else emit_spill_single(&e, &block->exit_contract, operand.rm & 3);
+            emit_spill_single(&e, &block->exit_contract, operand.reg & 3);
             if(immediate_alu) {
                     byte(&e,0x80);byte(&e,operand.mod==3?
                         (uint8_t)(0x47|(operand.reg<<3)):(uint8_t)(operand.reg<<3));
                     if(operand.mod==3)byte(&e,dest);
                     byte(&e,source[cursor+length-1]);
+                    if(operand.mod==3 && operand.reg!=7) {
+                        if (get_resident_host_reg(&block->exit_contract, operand.rm & 3) >= 0) {
+                            emit_load_single(&e, &block->exit_contract, operand.rm & 3);
+                            block->exit_contract.dirty_mask |= (1 << (operand.rm & 3));
+                        }
+                    }
                     if (!d->flags_dead) save_arithmetic_flags(&e,(operand.reg==1 || operand.reg==4 ||
                         operand.reg==6)?0x8c5:0x8d5);
             } else if(write) {
@@ -1056,15 +1434,33 @@ analyze_and_emit:
                     byte(&e,0xc6);byte(&e,operand.mod==3?0x47:0x00);
                     if(operand.mod==3)byte(&e,dest);
                     byte(&e,source[cursor+length-1]);
+                    if(operand.mod==3) {
+                        if (get_resident_host_reg(&block->exit_contract, operand.rm & 3) >= 0) {
+                            emit_load_single(&e, &block->exit_contract, operand.rm & 3);
+                            block->exit_contract.dirty_mask |= (1 << (operand.rm & 3));
+                        }
+                    }
                 } else {
                     byte(&e,0x0f);byte(&e,0xb6);byte(&e,0x4f);byte(&e,reg);
                     byte(&e,0x88);byte(&e,operand.mod==3?0x4f:0x08);
                     if(operand.mod==3)byte(&e,dest);
+                    if(operand.mod==3) {
+                        if (get_resident_host_reg(&block->exit_contract, operand.rm & 3) >= 0) {
+                            emit_load_single(&e, &block->exit_contract, operand.rm & 3);
+                            block->exit_contract.dirty_mask |= (1 << (operand.rm & 3));
+                        }
+                    }
                 }
             } else {
                 byte(&e,0x0f);byte(&e,0xb6);byte(&e,operand.mod==3?0x47:0x00);
                 if(operand.mod==3)byte(&e,dest);
-                if(op==0x8a){byte(&e,0x88);byte(&e,0x47);byte(&e,reg);}
+                if(op==0x8a){
+                    byte(&e,0x88);byte(&e,0x47);byte(&e,reg);
+                    if (get_resident_host_reg(&block->exit_contract, operand.reg & 3) >= 0) {
+                        emit_load_single(&e, &block->exit_contract, operand.reg & 3);
+                        block->exit_contract.dirty_mask |= (1 << (operand.reg & 3));
+                    }
+                }
                 else {
                     if(op==0xf6){byte(&e,0xa8);byte(&e,source[cursor+length-1]);}
                     else if(op==0x3a) {
@@ -1076,29 +1472,43 @@ analyze_and_emit:
                 }
             }
         } else if(op==0x99) {
-            load_eax(&e,offsetof(PwX86State,gpr[0]));
+            load_guest_reg(&e, &block->exit_contract, 0);
             byte(&e,0x99); /* CDQ: sign-extend native EAX into native EDX. */
-            byte(&e,0x89);byte(&e,0x57);byte(&e,offsetof(PwX86State,gpr[2]));
+            store_guest_reg_edx(&e, &block->exit_contract, 2);
         } else if(op==0xc9) {
-            load_eax(&e,offsetof(PwX86State,gpr[5]));stack_bounds(&e);
+            load_guest_reg(&e, &block->exit_contract, 5);stack_bounds(&e);
             byte(&e,0x8b);byte(&e,0x08);
             byte(&e,0x83);byte(&e,0xc0);byte(&e,4);
-            store_eax(&e,offsetof(PwX86State,gpr[4]));
+            store_guest_reg(&e, &block->exit_contract, 4);
             byte(&e,0x89);byte(&e,0x4f);byte(&e,offsetof(PwX86State,gpr[5]));
+            if (get_resident_host_reg(&block->exit_contract, 5) >= 0) {
+                emit_load_single(&e, &block->exit_contract, 5);
+                block->exit_contract.dirty_mask |= (1 << 5);
+            }
         } else if(op==0xf7 && operand.reg>=4) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address_width(&e,0,4);byte(&e,0x8b);byte(&e,0x00);}
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,0,4);byte(&e,0x8b);byte(&e,0x00);}
+            emit_spill_dirty(&e, &block->exit_contract);
+            block->exit_contract.dirty_mask = 0;
             muldiv_call(&e,operand.reg);
+            emit_load_all_resident(&e, &block->exit_contract);
         } else if(op==0xf7 && operand.reg!=0) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,2,4);}
             byte(&e,0xf7);byte(&e,(operand.mod==3?0xc0:0)|(operand.reg<<3));
-            if(operand.mod==3)store_eax(&e,operand.rm*4);
+            if(operand.mod==3)store_guest_reg(&e, &block->exit_contract, operand.rm);
             if(operand.reg==3 && !d->flags_dead) save_arithmetic_flags(&e,0x8d5);
         } else if(op==0x85 || op==0xf7 || op==0xa9) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
-            if(op==0x85){byte(&e,0x85);byte(&e,0x47);byte(&e,operand.reg*4);}
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
+            if(op==0x85){
+                int h = get_resident_host_reg(&block->exit_contract, operand.reg);
+                if (h >= 0) {
+                    byte(&e,0x44);byte(&e,0x85);byte(&e,(uint8_t)(0xc0 | (h << 3)));
+                } else {
+                    byte(&e,0x85);byte(&e,0x47);byte(&e,operand.reg*4);
+                }
+            }
             else {byte(&e,0xa9);word(&e,read32(source+cursor+length-4));}
             if (!d->flags_dead) save_arithmetic_flags(&e,0x8c5); /* TEST leaves AF undefined; retain it. */
         } else if(setcc) {
@@ -1109,27 +1519,44 @@ analyze_and_emit:
             byte(&e,0x81);byte(&e,0xe2);word(&e,high?0xffff00ff:0xffffff00);
             byte(&e,0x09);byte(&e,0xc2);
             byte(&e,0x89);byte(&e,0x57);byte(&e,reg*4);
+            if (get_resident_host_reg(&block->exit_contract, reg) >= 0) {
+                emit_load_single(&e, &block->exit_contract, reg);
+                block->exit_contract.dirty_mask |= (1 << reg);
+            }
         } else if(op==0x39 || op==0x3b) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
-            if(op==0x39){byte(&e,0x3b);byte(&e,0x47);byte(&e,operand.reg*4);}
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
+            if(op==0x39){
+                int h = get_resident_host_reg(&block->exit_contract, operand.reg);
+                if (h >= 0) {
+                    byte(&e,0x44);byte(&e,0x39);byte(&e,(uint8_t)(0xc0 | (h << 3)));
+                } else {
+                    byte(&e,0x3b);byte(&e,0x47);byte(&e,operand.reg*4);
+                }
+            }
             else {
-                byte(&e,0x89);byte(&e,0xc1);load_eax(&e,operand.reg*4);
+                byte(&e,0x89);byte(&e,0xc1);load_guest_reg(&e, &block->exit_contract, operand.reg);
                 byte(&e,0x39);byte(&e,0xc8);
             }
             if (!d->flags_dead) save_arithmetic_flags(&e,0x8d5);
         } else if(extend) {
             unsigned opcode=source[cursor+(extend_word_destination?2:1)],width=(opcode&1)?2:1;
-            if(operand.mod!=3){effective_address(&e,&operand);memory_address_width(&e,0,width);}
+            if(operand.mod!=3){effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,0,width);}
+            else emit_spill_single(&e, &block->exit_contract, width==1?(operand.rm&3):operand.rm);
             byte(&e,0x0f);byte(&e,opcode);byte(&e,operand.mod==3?0x47:0x00);
             if(operand.mod==3)byte(&e,width==1?(operand.rm&3)*4+(operand.rm>>2):operand.rm*4);
             if(extend_word_destination) {
+                emit_spill_single(&e, &block->exit_contract, operand.reg);
                 byte(&e,0x66);byte(&e,0x89);byte(&e,0x47);byte(&e,operand.reg*4);
-            } else store_eax(&e,operand.reg*4);
+                if (get_resident_host_reg(&block->exit_contract, operand.reg) >= 0) {
+                    emit_load_single(&e, &block->exit_contract, operand.reg);
+                    block->exit_contract.dirty_mask |= (1 << operand.reg);
+                }
+            } else store_guest_reg(&e, &block->exit_contract, operand.reg);
         } else if(compare) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
             else {
-                effective_address(&e,&operand);memory_address_width(&e,alu!=7?2:0,word_operand?2:4);
+                effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,alu!=7?2:0,word_operand?2:4);
             }
             {
                 const uint8_t *imm=source+cursor+length-(short_imm?1:word_operand?2:4);
@@ -1145,8 +1572,16 @@ analyze_and_emit:
                 else {byte(&e,0x81);byte(&e,(uint8_t)(alu*8));}
                 if(word_operand){byte(&e,(uint8_t)value);byte(&e,(uint8_t)(value>>8));}else word(&e,value);
                 if(operand.mod==3 && alu!=7) {
-                    if(word_operand)byte(&e,0x66);
-                    store_eax(&e,operand.rm*4);
+                    if(word_operand) {
+                        byte(&e,0x66);
+                        byte(&e,0x89);byte(&e,0x47);byte(&e,operand.rm*4);
+                        if (get_resident_host_reg(&block->exit_contract, operand.rm) >= 0) {
+                            emit_load_single(&e, &block->exit_contract, operand.rm);
+                            block->exit_contract.dirty_mask |= (1 << operand.rm);
+                        }
+                    } else {
+                        store_guest_reg(&e, &block->exit_contract, operand.rm);
+                    }
                 }
                 if (!d->flags_dead) save_arithmetic_flags(&e,(alu==1 || alu==4 || alu==6)?0x8c5:0x8d5);
             }
@@ -1159,28 +1594,28 @@ analyze_and_emit:
             block->exit.fallthrough_pc = next;
             conditional_target(&e,condition,next,next+delta,block,count);terminal=1;
         } else if(op==0xff && operand.reg<2) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
-            else {effective_address(&e,&operand);memory_address_width(&e,2,4);}
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
+            else {effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,2,4);}
             byte(&e,0xff);byte(&e,(operand.mod==3?0xc0:0)|(operand.reg<<3));
-            if(operand.mod==3)store_eax(&e,operand.rm*4);
+            if(operand.mod==3)store_guest_reg(&e, &block->exit_contract, operand.rm);
             if (!d->flags_dead) save_arithmetic_flags(&e,0x8d4);
             store(&e,offsetof(PwX86State,eip),next);
         } else if (op==0xff) {
-            if(operand.mod==3)load_eax(&e,operand.rm*4);
+            if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
             else {
-                effective_address(&e,&operand);memory_address(&e,0);
+                effective_address(&e,&operand,&block->exit_contract);memory_address(&e,0);
                 byte(&e,0x8b);byte(&e,0x00);
             }
             byte(&e,0x89);byte(&e,0xc1); /* preserve target across guest push */
             if (operand.reg==2) { /* near indirect call: push next guest PC */
-                push_imm(&e,next);
+                push_imm(&e,next,&block->exit_contract);
                 byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             } else if (operand.reg==4) { /* near indirect jump */
                 byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             } else { /* FF /6 push r/m32 */
-                stack_address(&e,1);
+                stack_address(&e,1,&block->exit_contract);
                 byte(&e,0x89); byte(&e,0x08);
-                store_eax(&e,offsetof(PwX86State,gpr[4]));
+                store_guest_reg(&e, &block->exit_contract, 4);
                 store(&e,offsetof(PwX86State,eip),next);
             }
             if (operand.reg==2 || operand.reg==4) terminal=1;
@@ -1194,20 +1629,25 @@ analyze_and_emit:
                 if(operation==6 && dest==src) {
                     /* Strength reduction: xor reg, reg clears register without memory load */
                     byte(&e,0x31);byte(&e,0xc0); /* xor eax, eax */
-                    store_eax(&e,dest*4);
+                    store_guest_reg(&e, &block->exit_contract, dest);
                 } else {
-                    load_eax(&e,dest*4);
+                    load_guest_reg(&e, &block->exit_contract, dest);
                     if(operation==2 || operation==3) {
                         byte(&e,0x0f);byte(&e,0xba);byte(&e,0x67);
                         byte(&e,offsetof(PwX86State,eflags));byte(&e,0);
                     }
-                    byte(&e,(uint8_t)(operation*8+3));byte(&e,0x47);byte(&e,src*4);
-                    store_eax(&e,dest*4);
+                    int h_src = get_resident_host_reg(&block->exit_contract, src);
+                    if (h_src >= 0) {
+                        byte(&e,0x41);byte(&e,(uint8_t)(operation*8+3));byte(&e,(uint8_t)(0xc0 | h_src));
+                    } else {
+                        byte(&e,(uint8_t)(operation*8+3));byte(&e,0x47);byte(&e,src*4);
+                    }
+                    store_guest_reg(&e, &block->exit_contract, dest);
                 }
             } else {
-                effective_address(&e,&operand);memory_address_width(&e,reverse?2:0,4);
+                effective_address(&e,&operand,&block->exit_contract);memory_address_width(&e,reverse?2:0,4);
                 if(reverse) {
-                    byte(&e,0x8b);byte(&e,0x4f);byte(&e,operand.reg*4);
+                    load_guest_reg_ecx(&e, &block->exit_contract, operand.reg);
                     if(operation==2 || operation==3) {
                         byte(&e,0x0f);byte(&e,0xba);byte(&e,0x67);
                         byte(&e,offsetof(PwX86State,eflags));byte(&e,0);
@@ -1215,22 +1655,22 @@ analyze_and_emit:
                     byte(&e,op);byte(&e,0x08); /* [rax] op ecx */
                 } else {
                     byte(&e,0x8b);byte(&e,0x08); /* read memory before changing its address register */
-                    load_eax(&e,operand.reg*4);
+                    load_guest_reg(&e, &block->exit_contract, operand.reg);
                     if(operation==2 || operation==3) {
                         byte(&e,0x0f);byte(&e,0xba);byte(&e,0x67);
                         byte(&e,offsetof(PwX86State,eflags));byte(&e,0);
                     }
                     byte(&e,(uint8_t)(operation*8+3));byte(&e,0xc1);
-                    store_eax(&e,operand.reg*4);
+                    store_guest_reg(&e, &block->exit_contract, operand.reg);
                 }
             }
             /* Logical AF is undefined: retain guest AF deterministically. */
             if (!d->flags_dead) save_arithmetic_flags(&e,logical?0x8c5:0x8d5);
         } else if (op==0xc7) {
             uint32_t value=read32(source+cursor+length-4);
-            if (operand.mod==3) store(&e,operand.rm*4,value);
+            if (operand.mod==3) store_guest_imm(&e, &block->exit_contract, operand.rm, value);
             else {
-                effective_address(&e,&operand);memory_address(&e,1);
+                effective_address(&e,&operand,&block->exit_contract);memory_address(&e,1);
                 byte(&e,0xc7);byte(&e,0x00);word(&e,value);
             }
         } else if (op == 0x64 || op==0xa1 || op==0xa3) {
@@ -1239,51 +1679,49 @@ analyze_and_emit:
             else {byte(&e,0xb8);word(&e,read32(source+cursor+1));memory_address(&e,!load);}
             if (load) {
                 byte(&e,0x8b); byte(&e,0x00);
-                store_eax(&e,offsetof(PwX86State,gpr[0]));
+                store_guest_reg(&e, &block->exit_contract, 0);
             } else {
-                byte(&e,0x8b); byte(&e,0x4f); byte(&e,0);
+                load_guest_reg_ecx(&e, &block->exit_contract, 0);
                 byte(&e,0x89); byte(&e,0x08);
             }
         } else if (op == 0x89 || op == 0x8b || op == 0x8d) {
             if (operand.mod==3) {
                 if (operand.reg != operand.rm) {
-                    load_eax(&e,(op==0x89 ? operand.reg:operand.rm)*4);
-                    store_eax(&e,(op==0x89 ? operand.rm:operand.reg)*4);
+                    load_guest_reg(&e, &block->exit_contract, (op==0x89 ? operand.reg:operand.rm));
+                    store_guest_reg(&e, &block->exit_contract, (op==0x89 ? operand.rm:operand.reg));
                 }
             } else {
-                effective_address(&e,&operand);
-                if (op==0x8d) store_eax(&e,operand.reg*4);
+                effective_address(&e,&operand,&block->exit_contract);
+                if (op==0x8d) store_guest_reg(&e, &block->exit_contract, operand.reg);
                 else {
                     memory_address(&e,op==0x89);
                     if (op==0x8b) {
                         byte(&e,0x8b); byte(&e,0x00);
-                        store_eax(&e,operand.reg*4);
+                        store_guest_reg(&e, &block->exit_contract, operand.reg);
                     } else {
-                        byte(&e,0x8b); byte(&e,0x4f); byte(&e,operand.reg*4);
+                        load_guest_reg_ecx(&e, &block->exit_contract, operand.reg);
                         byte(&e,0x89); byte(&e,0x08);
                     }
                 }
             }
-        } else if (op == 0x6a) push_imm(&e,(uint32_t)(int32_t)(int8_t)source[cursor+1]);
-        else if (op == 0x68) push_imm(&e,read32(source+cursor+1));
+        } else if (op == 0x6a) push_imm(&e,(uint32_t)(int32_t)(int8_t)source[cursor+1], &block->exit_contract);
+        else if (op == 0x68) push_imm(&e,read32(source+cursor+1), &block->exit_contract);
         else if (op >= 0x50 && op <= 0x57) {
-            stack_address(&e,1);
-            /* Read the old register value before committing ESP (push esp). */
-            byte(&e,0x8b); byte(&e,0x4f); byte(&e,(op-0x50)*4);
-            byte(&e,0x89); byte(&e,0x08);
-            store_eax(&e,offsetof(PwX86State,gpr[4]));
+            stack_address(&e,1,&block->exit_contract);
+            load_guest_reg_ecx(&e, &block->exit_contract, op-0x50);
+            byte(&e,0x89); byte(&e,0x08); /* [rax] = ecx */
+            store_guest_reg(&e, &block->exit_contract, 4);
         } else if (op >= 0x58 && op <= 0x5f) {
-            stack_address(&e,0);
-            byte(&e,0x8b); byte(&e,0x08);
+            stack_address(&e,0,&block->exit_contract);
+            byte(&e,0x8b); byte(&e,0x08); /* ecx = [rax] */
             byte(&e,0x83); byte(&e,0xc0); byte(&e,4);
-            store_eax(&e,offsetof(PwX86State,gpr[4]));
-            /* Pop esp replaces the incremented ESP with the popped value. */
-            byte(&e,0x89); byte(&e,0x4f); byte(&e,(op-0x58)*4);
+            store_guest_reg(&e, &block->exit_contract, 4);
+            store_guest_reg_ecx(&e, &block->exit_contract, op-0x58);
         }
         else if (op >= 0xb8 && op <= 0xbf)
-            store(&e,offsetof(PwX86State,gpr)+(op-0xb8)*4,read32(source+cursor+1));
+            store_guest_imm(&e, &block->exit_contract, op-0xb8, read32(source+cursor+1));
         else if (op == 0xe8 || op == 0xe9 || op == 0xeb) {
-            if (op == 0xe8) push_imm(&e,next);
+            if (op == 0xe8) push_imm(&e,next,&block->exit_contract);
             uint32_t delta = op == 0xeb ? (uint32_t)(int32_t)(int8_t)source[cursor+1]
                                       : read32(source+cursor+1);
             next += delta;
@@ -1292,17 +1730,19 @@ analyze_and_emit:
                 block->exit.kind = PW_X86_EXIT_DIRECT_JUMP;
                 block->exit.chainable = 1;
                 block->exit.target_pc = next;
-                emit_chain_exit(&e, count, next, &block->exit.target_patch_offset, &block->exit.target_stub_offset);
+                emit_chain_exit(&e, count, next, &block->exit_contract,
+                                &block->exit.target_patch_offset, &block->exit.target_stub_offset,
+                                &block->exit.target_reconcile_offset, &block->exit.target_reconcile_patch_offset);
             }
         } else if (op == 0xc3 || op==0xc2) {
-            stack_address(&e,0);
+            stack_address(&e,0,&block->exit_contract);
             byte(&e,0x8b); byte(&e,0x08); /* ecx = guest return */
             uint32_t pop=4+(op==0xc2?((uint32_t)source[cursor+1]|(uint32_t)source[cursor+2]<<8):0);
             byte(&e,0x05);word(&e,pop);
             require_condition(&e,0x73); /* unsigned ESP addition must not wrap */
             byte(&e,0x3b);byte(&e,0x47);byte(&e,offsetof(PwX86State,stack_high));
             require_condition(&e,0x76);
-            store_eax(&e,offsetof(PwX86State,gpr[4]));
+            store_guest_reg(&e, &block->exit_contract, 4);
             byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             terminal = 1;
         }
@@ -1312,6 +1752,11 @@ analyze_and_emit:
     if (!block->exit.chainable) {
         block->exit.kind = PW_X86_EXIT_DYNAMIC;
         block->exit.chainable = 0;
+        emit_spill_dirty(&e, &block->exit_contract);
+        uint8_t n_dirty = popcount8(block->exit_contract.dirty_mask);
+        if (n_dirty) {
+            byte(&e, 0x83); byte(&e, 0x47); byte(&e, offsetof(PwX86State, reg_stores)); byte(&e, n_dirty);
+        }
         byte(&e, 0x83); byte(&e, 0x47); byte(&e, offsetof(PwX86State, step_retired)); byte(&e, (uint8_t)count);
         byte(&e, 0x48); byte(&e, 0xc7); byte(&e, 0x47); byte(&e, offsetof(PwX86State, last_exit_slot)); word(&e, 0);
         success(&e);
@@ -1322,4 +1767,10 @@ analyze_and_emit:
     block->instructions = count;
     return PW_OK;
 #undef DECODE_FAIL
+}
+
+int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
+                     uint8_t *output, size_t capacity, PwX86Block *block)
+{
+    return pw_x86_translate_ext(source, bytes, pc, output, capacity, block, 1);
 }

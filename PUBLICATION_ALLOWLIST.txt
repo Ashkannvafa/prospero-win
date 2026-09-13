@@ -122,6 +122,7 @@ tests/test_pw_x86_block.c
 tests/test_pw_x86_cache.c
 tests/test_pw_x86_engine.c
 tests/test_pw_x86_chaining.c
+tests/test_pw_x86_residency.c
 tests/test_pw_x87.c
 tests/test_pw_user32.c
 tests/test_pw_gdi.c
