@@ -19,13 +19,17 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "../src/pe_export.h"
 #include "../src/pe_import.h"
+#include "../src/pe_tls.h"
 
 enum {
     PE_FIXTURE_MAX_SECTIONS = 8,
     PE_FIXTURE_MAX_IMPORTS = 6,
     PE_FIXTURE_MAX_NAMES = 8,
     PE_FIXTURE_MAX_RELOCS = 32,
+    PE_FIXTURE_MAX_EXPORTS = 16,
+    PE_FIXTURE_MAX_TLS_CALLBACKS = 40,
 };
 
 typedef struct PeFixtureSection {
@@ -47,6 +51,37 @@ typedef struct PeFixtureReloc {
     uint16_t type;
 } PeFixtureReloc;
 
+/*
+ * One function-table slot. A named entry also appears in the name table; an
+ * entry with rva 0 and no forwarder is a sparse ordinal slot, which the
+ * parser must reject rather than resolve. A forwarder string is written into
+ * the export directory, where the PE format requires it to live.
+ */
+typedef struct PeFixtureExport {
+    const char *name;               /* NULL: ordinal-only slot */
+    uint32_t ordinal;               /* absolute; 0 means base + position */
+    uint32_t rva;                   /* ignored when forwarder is set */
+    const char *forwarder;          /* "MODULE.Symbol" or "MODULE.#41" */
+} PeFixtureExport;
+
+/*
+ * TLS directory, template, index slot and callback array. Callback entries
+ * are given as RVAs and written as guest virtual addresses, which is what a
+ * PE image stores; `use_rvas` writes them as raw RVAs so a test can prove
+ * that a file offset is not accepted as a guest address.
+ */
+typedef struct PeFixtureTls {
+    const void *template_data;
+    uint32_t template_bytes;
+    uint32_t zero_fill;
+    uint32_t characteristics;
+    uint32_t callbacks[PE_FIXTURE_MAX_TLS_CALLBACKS];   /* RVAs */
+    uint32_t callback_count;
+    uint32_t padding_callbacks;     /* valid entries past the bound */
+    int no_callbacks_pointer;       /* leave AddressOfCallBacks zero */
+    int use_rvas;                   /* malformed: RVAs instead of VAs */
+} PeFixtureTls;
+
 typedef struct PeFixtureSpec {
     int pe32plus;
     uint16_t machine;               /* 0 derives from pe32plus */
@@ -65,6 +100,12 @@ typedef struct PeFixtureSpec {
     uint32_t import_count;
     PeFixtureReloc relocs[PE_FIXTURE_MAX_RELOCS];
     uint32_t reloc_count;
+    PeFixtureExport exports[PE_FIXTURE_MAX_EXPORTS];
+    uint32_t export_count;
+    uint32_t export_base;           /* 0 uses 1 */
+    const char *export_module_name;  /* NULL uses "fixture.dll" */
+    int has_tls;
+    PeFixtureTls tls;
 } PeFixtureSpec;
 
 typedef struct PeFixtureWriter {
@@ -193,6 +234,97 @@ static inline uint32_t fx_reloc_bytes(const PeFixtureSpec *spec,
     return total;
 }
 
+static inline uint32_t fx_export_base(const PeFixtureSpec *spec)
+{
+    return spec->export_base != 0u ? spec->export_base : 1u;
+}
+
+static inline uint32_t fx_export_ordinal(const PeFixtureSpec *spec,
+                                         uint32_t index)
+{
+    const PeFixtureExport *entry = &spec->exports[index];
+
+    return entry->ordinal != 0u ? entry->ordinal : fx_export_base(spec) + index;
+}
+
+/* Highest ordinal index plus one: slots below it that no entry names stay
+ * sparse, exactly as a linker may emit them. */
+static inline uint32_t fx_export_function_count(const PeFixtureSpec *spec)
+{
+    uint32_t count = 0u;
+
+    for (uint32_t index = 0; index < spec->export_count; ++index) {
+        const uint32_t ordinal = fx_export_ordinal(spec, index);
+
+        if (ordinal < fx_export_base(spec))
+            return 0u;
+        if (ordinal - fx_export_base(spec) + 1u > count)
+            count = ordinal - fx_export_base(spec) + 1u;
+    }
+    return count;
+}
+
+static inline uint32_t fx_export_named_count(const PeFixtureSpec *spec)
+{
+    uint32_t count = 0u;
+
+    for (uint32_t index = 0; index < spec->export_count; ++index)
+        if (spec->exports[index].name != NULL)
+            ++count;
+    return count;
+}
+
+/* Byte size of the synthetic .edata section for one spec. */
+static inline uint32_t fx_export_bytes(const PeFixtureSpec *spec)
+{
+    uint32_t cursor = PE_EXPORT_DIRECTORY_BYTES;
+    const char *module_name = spec->export_module_name != NULL
+        ? spec->export_module_name : "fixture.dll";
+    const uint32_t functions = fx_export_function_count(spec);
+
+    if (spec->export_count == 0u || functions == 0u)
+        return 0u;
+    cursor = fx_align(cursor, 2u);
+    cursor += fx_strlen(module_name) + 1u;
+    cursor += functions * 4u;
+    cursor += fx_export_named_count(spec) * (4u + 2u);
+    for (uint32_t index = 0; index < spec->export_count; ++index) {
+        const PeFixtureExport *entry = &spec->exports[index];
+
+        if (entry->name != NULL) {
+            cursor = fx_align(cursor, 2u);
+            cursor += fx_strlen(entry->name) + 1u;
+        }
+    }
+    for (uint32_t index = 0; index < spec->export_count; ++index) {
+        const PeFixtureExport *entry = &spec->exports[index];
+
+        if (entry->forwarder != NULL) {
+            cursor = fx_align(cursor, 2u);
+            cursor += fx_strlen(entry->forwarder) + 1u;
+        }
+    }
+    return cursor;
+}
+
+/* Byte size of the synthetic .tls section for one spec. */
+static inline uint32_t fx_tls_bytes(const PeFixtureSpec *spec)
+{
+    uint32_t cursor = PE_TLS_DIRECTORY_BYTES;
+
+    if (!spec->has_tls)
+        return 0u;
+    cursor = fx_align(cursor, 4u);
+    cursor += spec->tls.template_bytes;
+    cursor = fx_align(cursor, 4u);
+    cursor += 4u;                                   /* AddressOfIndex slot */
+    cursor = fx_align(cursor, 4u);
+    cursor += (spec->tls.callback_count +
+               (spec->tls.no_callbacks_pointer ? 0u : 1u) +
+               spec->tls.padding_callbacks) * 4u;
+    return cursor;
+}
+
 /*
  * Emits a complete image and returns its size, or 0 when the buffer is too
  * small or the spec is inconsistent. Relocation entries must be sorted by
@@ -216,19 +348,51 @@ static inline size_t pe_fixture_build(uint8_t *out, size_t capacity,
     const uint32_t optional_bytes = optional_fixed + 8u * directory_count;
     const uint32_t import_bytes = fx_import_bytes(spec, width);
     const uint32_t reloc_bytes = fx_reloc_bytes(spec, section_alignment);
-    const uint32_t extra =
-        (import_bytes != 0u ? 1u : 0u) + (reloc_bytes != 0u ? 1u : 0u);
-    const uint32_t total_sections = spec->section_count + extra;
+    const uint32_t export_bytes = fx_export_bytes(spec);
+    const uint32_t tls_bytes = fx_tls_bytes(spec);
+    /* Generated sections are appended in a fixed order after the caller's:
+     * .edata, .tls, .idata, .reloc. */
+    const uint32_t generated_bytes[4] = {export_bytes, tls_bytes, import_bytes,
+                                         reloc_bytes};
+    const char *const generated_names[4] = {".edata", ".tls", ".idata",
+                                            ".reloc"};
+    const uint32_t generated_characteristics[4] = {
+        PE_SCN_CNT_INITIALIZED_DATA | PE_SCN_MEM_READ,
+        PE_SCN_CNT_INITIALIZED_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE,
+        PE_SCN_CNT_INITIALIZED_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE,
+        PE_SCN_CNT_INITIALIZED_DATA | PE_SCN_MEM_READ |
+            PE_SCN_MEM_DISCARDABLE,
+    };
+    uint32_t generated_index[4] = {0u, 0u, 0u, 0u};
+    uint32_t generated_count = 0u;
+    uint32_t present_sizes[4];
+    uint8_t present_kinds[4];
+    const char *present_names[4];
+    uint32_t present_characteristics[4];
+    uint32_t total_sections;
+    for (uint32_t index = 0; index < 4u; ++index) {
+        if (generated_bytes[index] == 0u)
+            continue;
+        present_sizes[generated_count] = generated_bytes[index];
+        present_kinds[generated_count] = (uint8_t)index;
+        present_names[generated_count] = generated_names[index];
+        present_characteristics[generated_count] =
+            generated_characteristics[index];
+        ++generated_count;
+    }
+    total_sections = spec->section_count + generated_count;
     const uint32_t nt_offset = 0x40u;
     uint32_t header_bytes;
-    uint32_t virtual_addresses[PE_FIXTURE_MAX_SECTIONS + 2];
-    uint32_t raw_offsets[PE_FIXTURE_MAX_SECTIONS + 2];
-    uint32_t raw_sizes[PE_FIXTURE_MAX_SECTIONS + 2];
-    uint32_t virtual_sizes[PE_FIXTURE_MAX_SECTIONS + 2];
-    uint32_t characteristics[PE_FIXTURE_MAX_SECTIONS + 2];
-    const char *names[PE_FIXTURE_MAX_SECTIONS + 2];
+    uint32_t virtual_addresses[PE_FIXTURE_MAX_SECTIONS + 4];
+    uint32_t raw_offsets[PE_FIXTURE_MAX_SECTIONS + 4];
+    uint32_t raw_sizes[PE_FIXTURE_MAX_SECTIONS + 4];
+    uint32_t virtual_sizes[PE_FIXTURE_MAX_SECTIONS + 4];
+    uint32_t characteristics[PE_FIXTURE_MAX_SECTIONS + 4];
+    const char *names[PE_FIXTURE_MAX_SECTIONS + 4];
     uint32_t import_index = 0;
     uint32_t reloc_index = 0;
+    uint32_t export_index = 0;
+    uint32_t tls_index = 0;
     uint32_t next_rva;
     uint32_t next_raw;
     uint32_t size_of_image;
@@ -236,7 +400,9 @@ static inline size_t pe_fixture_build(uint8_t *out, size_t capacity,
 
     if (!out || !spec || spec->section_count == 0u ||
         spec->section_count > PE_FIXTURE_MAX_SECTIONS ||
-        total_sections > PE_FIXTURE_MAX_SECTIONS + 2u)
+        spec->export_count > PE_FIXTURE_MAX_EXPORTS ||
+        spec->tls.callback_count > PE_FIXTURE_MAX_TLS_CALLBACKS ||
+        total_sections > PE_FIXTURE_MAX_SECTIONS + 4u)
         return 0u;
     if ((section_alignment & (section_alignment - 1u)) != 0u ||
         (file_alignment & (file_alignment - 1u)) != 0u ||
@@ -261,21 +427,16 @@ static inline size_t pe_fixture_build(uint8_t *out, size_t capacity,
             raw_sizes[index] = fx_align(section->data_bytes, file_alignment);
             declared = section->virtual_size != 0u ? section->virtual_size
                                                    : section->data_bytes;
-        } else if (import_bytes != 0u && import_index == 0u) {
-            import_index = index;
-            names[index] = ".idata";
-            characteristics[index] = PE_SCN_CNT_INITIALIZED_DATA |
-                                     PE_SCN_MEM_READ | PE_SCN_MEM_WRITE;
-            raw_sizes[index] = fx_align(import_bytes, file_alignment);
-            declared = import_bytes;
         } else {
-            reloc_index = index;
-            names[index] = ".reloc";
-            characteristics[index] = PE_SCN_CNT_INITIALIZED_DATA |
-                                     PE_SCN_MEM_READ |
-                                     PE_SCN_MEM_DISCARDABLE;
-            raw_sizes[index] = fx_align(reloc_bytes, file_alignment);
-            declared = reloc_bytes;
+            const uint32_t slot = index - spec->section_count;
+
+            if (slot >= generated_count)
+                return 0u;
+            generated_index[slot] = index;
+            names[index] = present_names[slot];
+            characteristics[index] = present_characteristics[slot];
+            raw_sizes[index] = fx_align(present_sizes[slot], file_alignment);
+            declared = present_sizes[slot];
         }
         if (declared == 0u)
             return 0u;
@@ -289,6 +450,19 @@ static inline size_t pe_fixture_build(uint8_t *out, size_t capacity,
     total_bytes = next_raw;
     if (total_bytes > capacity)
         return 0u;
+
+    /* The data directories are written before the section table, so the
+     * generated-section indices must be resolved here. */
+    for (uint32_t slot = 0; slot < generated_count; ++slot) {
+        if (present_kinds[slot] == 0u)
+            export_index = generated_index[slot];
+        else if (present_kinds[slot] == 1u)
+            tls_index = generated_index[slot];
+        else if (present_kinds[slot] == 2u)
+            import_index = generated_index[slot];
+        else
+            reloc_index = generated_index[slot];
+    }
 
     writer.bytes = out;
     writer.capacity = capacity;
@@ -340,6 +514,17 @@ static inline size_t pe_fixture_build(uint8_t *out, size_t capacity,
 
     /* Data directories start right after the fixed optional-header part. */
     const size_t directory_base = optional + optional_fixed;
+    if (export_bytes != 0u && directory_count > PE_DIR_EXPORT) {
+        fx_u32(&writer, directory_base + 8u * PE_DIR_EXPORT,
+               virtual_addresses[export_index]);
+        fx_u32(&writer, directory_base + 8u * PE_DIR_EXPORT + 4u,
+               export_bytes);
+    }
+    if (tls_bytes != 0u && directory_count > PE_DIR_TLS) {
+        fx_u32(&writer, directory_base + 8u * PE_DIR_TLS,
+               virtual_addresses[tls_index]);
+        fx_u32(&writer, directory_base + 8u * PE_DIR_TLS + 4u, tls_bytes);
+    }
     if (import_bytes != 0u && directory_count > PE_DIR_IMPORT) {
         fx_u32(&writer, directory_base + 8u * PE_DIR_IMPORT,
                virtual_addresses[import_index]);
@@ -374,6 +559,150 @@ static inline size_t pe_fixture_build(uint8_t *out, size_t capacity,
         if (section->data && section->data_bytes != 0u)
             fx_blob(&writer, raw_offsets[index], section->data,
                     section->data_bytes);
+    }
+
+    if (export_bytes != 0u) {
+        const uint32_t base_rva = virtual_addresses[export_index];
+        const size_t base_raw = raw_offsets[export_index];
+        const char *module_name = spec->export_module_name != NULL
+            ? spec->export_module_name : "fixture.dll";
+        const uint32_t functions = fx_export_function_count(spec);
+        const uint32_t named = fx_export_named_count(spec);
+        uint32_t cursor = PE_EXPORT_DIRECTORY_BYTES;
+        uint32_t module_name_off;
+        uint32_t functions_off;
+        uint32_t names_off;
+        uint32_t ordinals_off;
+        uint32_t name_off[PE_FIXTURE_MAX_EXPORTS];
+        uint32_t forward_off[PE_FIXTURE_MAX_EXPORTS];
+        uint32_t name_slot = 0u;
+
+        memset(name_off, 0, sizeof(name_off));
+        memset(forward_off, 0, sizeof(forward_off));
+        cursor = fx_align(cursor, 2u);
+        module_name_off = cursor;
+        cursor += fx_strlen(module_name) + 1u;
+        functions_off = cursor;
+        cursor += functions * 4u;
+        names_off = cursor;
+        cursor += named * 4u;
+        ordinals_off = cursor;
+        cursor += named * 2u;
+        for (uint32_t index = 0; index < spec->export_count; ++index) {
+            if (spec->exports[index].name == NULL)
+                continue;
+            cursor = fx_align(cursor, 2u);
+            name_off[index] = cursor;
+            cursor += fx_strlen(spec->exports[index].name) + 1u;
+        }
+        for (uint32_t index = 0; index < spec->export_count; ++index) {
+            if (spec->exports[index].forwarder == NULL)
+                continue;
+            cursor = fx_align(cursor, 2u);
+            forward_off[index] = cursor;
+            cursor += fx_strlen(spec->exports[index].forwarder) + 1u;
+        }
+        if (cursor != export_bytes)
+            return 0u;
+
+        fx_u32(&writer, base_raw + 12u, base_rva + module_name_off);
+        fx_u32(&writer, base_raw + 16u, fx_export_base(spec));
+        fx_u32(&writer, base_raw + 20u, functions);
+        fx_u32(&writer, base_raw + 24u, named);
+        fx_u32(&writer, base_raw + 28u, base_rva + functions_off);
+        fx_u32(&writer, base_raw + 32u, base_rva + names_off);
+        fx_u32(&writer, base_raw + 36u, base_rva + ordinals_off);
+        fx_blob(&writer, base_raw + module_name_off, module_name,
+                fx_strlen(module_name) + 1u);
+
+        for (uint32_t index = 0; index < spec->export_count; ++index) {
+            const PeFixtureExport *entry = &spec->exports[index];
+            const uint32_t slot =
+                fx_export_ordinal(spec, index) - fx_export_base(spec);
+            const uint32_t value = entry->forwarder != NULL
+                ? base_rva + forward_off[index] : entry->rva;
+
+            fx_u32(&writer, base_raw + functions_off + slot * 4u, value);
+            if (entry->name != NULL) {
+                fx_u32(&writer, base_raw + names_off + name_slot * 4u,
+                       base_rva + name_off[index]);
+                fx_u16(&writer, base_raw + ordinals_off + name_slot * 2u,
+                       (uint16_t)slot);
+                fx_blob(&writer, base_raw + name_off[index], entry->name,
+                        fx_strlen(entry->name) + 1u);
+                ++name_slot;
+            }
+            if (entry->forwarder != NULL)
+                fx_blob(&writer, base_raw + forward_off[index],
+                        entry->forwarder, fx_strlen(entry->forwarder) + 1u);
+        }
+    }
+
+    if (tls_bytes != 0u) {
+        const uint32_t base_rva = virtual_addresses[tls_index];
+        const size_t base_raw = raw_offsets[tls_index];
+        const uint64_t image_base = spec->image_base;
+        uint32_t cursor = PE_TLS_DIRECTORY_BYTES;
+        uint32_t template_off = 0u;
+        uint32_t index_off;
+        uint32_t callbacks_off = 0u;
+        uint64_t start_va;
+        uint64_t end_va;
+        uint64_t index_va;
+        uint64_t callbacks_va;
+
+        if (spec->tls.template_bytes != 0u) {
+            cursor = fx_align(cursor, 4u);
+            template_off = cursor;
+            cursor += spec->tls.template_bytes;
+        }
+        cursor = fx_align(cursor, 4u);
+        index_off = cursor;
+        cursor += 4u;
+        if (!spec->tls.no_callbacks_pointer) {
+            cursor = fx_align(cursor, 4u);
+            callbacks_off = cursor;
+            cursor += (spec->tls.callback_count + 1u +
+                       spec->tls.padding_callbacks) * 4u;
+        }
+        if (cursor != tls_bytes)
+            return 0u;
+
+        start_va = image_base + base_rva + template_off;
+        end_va = start_va + spec->tls.template_bytes;
+        index_va = image_base + base_rva + index_off;
+        callbacks_va = image_base + base_rva + callbacks_off;
+        if (spec->tls.template_bytes == 0u) {
+            start_va = 0u;
+            end_va = 0u;
+        }
+        if (spec->tls.use_rvas) {
+            start_va -= image_base;
+            end_va -= image_base;
+            index_va -= image_base;
+            callbacks_va -= image_base;
+        }
+        fx_u32(&writer, base_raw, (uint32_t)start_va);
+        fx_u32(&writer, base_raw + 4u, (uint32_t)end_va);
+        fx_u32(&writer, base_raw + 8u, (uint32_t)index_va);
+        fx_u32(&writer, base_raw + 12u,
+               spec->tls.no_callbacks_pointer ? 0u : (uint32_t)callbacks_va);
+        fx_u32(&writer, base_raw + 16u, spec->tls.zero_fill);
+        fx_u32(&writer, base_raw + 20u, spec->tls.characteristics);
+        if (spec->tls.template_bytes != 0u)
+            fx_blob(&writer, base_raw + template_off,
+                    spec->tls.template_data, spec->tls.template_bytes);
+        if (!spec->tls.no_callbacks_pointer) {
+            for (uint32_t index = 0; index < spec->tls.callback_count; ++index)
+                fx_u32(&writer, base_raw + callbacks_off + index * 4u,
+                       (uint32_t)(image_base + spec->tls.callbacks[index]));
+            for (uint32_t index = 0; index < spec->tls.padding_callbacks;
+                 ++index)
+                fx_u32(&writer,
+                       base_raw + callbacks_off +
+                           (spec->tls.callback_count + 1u + index) * 4u,
+                       (uint32_t)(image_base + spec->tls.callbacks[0]));
+        }
     }
 
     if (import_bytes != 0u) {
