@@ -617,6 +617,30 @@ static void absolute_tests(void)
         uint32_t actual;memcpy(&actual,edge?(uint8_t *)stack.write_base+stack.bytes-4:stack.write_base,4);
         assert(actual==(allowed && write?0xaabbccdd:original));
     }
+
+    /* Inline memory checks must reject every malformed registry state that
+     * the generic helper rejects; a fast path is not a weaker contract. */
+    state.memory[0]=(PwX86Memory){low,(uint64_t)high+0x100000000ull,PW_X86_READ};
+    state.gpr[0]=0x11223344;state.eflags=0xad7;
+    uint8_t malformed_high[]={0xa1,(uint8_t)low,(uint8_t)(low>>8),
+        (uint8_t)(low>>16),(uint8_t)(low>>24)};
+    assert(run(malformed_high,sizeof(malformed_high),0x6010)==-1 &&
+           state.gpr[0]==0x11223344 && state.eip==0x6010 && state.eflags==0xad7);
+
+    state.stack_low=low;state.stack_high=high;
+    state.memory_count=PW_X86_MEMORY_REGIONS+1;
+    state.gpr[0]=low;state.gpr[2]=0xaabbccdd;state.eflags=0xad7;
+    const uint8_t corrupt_registry_stack_load[]={0x8b,0x10};
+    assert(run(corrupt_registry_stack_load,sizeof(corrupt_registry_stack_load),0x6020)==-1 &&
+           state.gpr[2]==0xaabbccdd && state.eip==0x6020 && state.eflags==0xad7);
+
+    state.stack_low=state.stack_high=0;state.memory_count=1;
+    state.memory[0]=(PwX86Memory){0,4,PW_X86_READ};
+    state.gpr[0]=0x55667788;state.eflags=0xad7;
+    const uint8_t null_load[]={0xa1,0,0,0,0};
+    assert(run(null_load,sizeof(null_load),0x6030)==-1 &&
+           state.gpr[0]==0x55667788 && state.eip==0x6030 && state.eflags==0xad7);
+
     state.stack_low=low;state.stack_high=high;state.memory_count=0;
 }
 static void immediate_tests(void)

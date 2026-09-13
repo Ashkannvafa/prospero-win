@@ -280,6 +280,8 @@ five representative workloads:
 4. `mem_load_store`: ModRM/SIB array indexing, structured traversal, and memory writes.
 5. `x87_fp`: Binary80 extended-precision floating-point arithmetic and transcendentals.
 
-Each workload reports deterministic register state checksums and is validated
-bit-for-bit against hardware i386 execution via `tests/test_dynarec_bench.py`.
-
+Each workload reports deterministic register and full-state checksums used as
+regression fingerprints. `tests/test_dynarec_bench.py` also executes the
+`reg_alu` workload independently as a native Linux i386 binary and compares its
+four live output registers. The other four workloads are deterministic DBT
+regressions, not native-oracle comparisons.

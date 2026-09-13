@@ -68,6 +68,18 @@ static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned writ
 }
 static void memory_address_width(Emitter *e,unsigned write,unsigned width)
 {
+    /* Preserve the slow helper's state-contract checks before taking either
+     * inline path.  In particular, a corrupt registry must not make even the
+     * otherwise-valid stack path executable, and guest NULL is never a valid
+     * identity-mapped pointer. */
+    byte(e, 0x83); byte(e, 0x7f); byte(e, offsetof(PwX86State, memory_count));
+    byte(e, PW_X86_MEMORY_REGIONS); /* cmp dword [rdi + memory_count], max */
+    byte(e, 0x77); /* ja to slow_path */
+    size_t patch_ja_count = e->n++;
+    byte(e, 0x85); byte(e, 0xc0); /* test eax, eax */
+    byte(e, 0x74); /* jz to slow_path */
+    size_t patch_jz_null = e->n++;
+
     /* 1. Fast path: check stack [stack_low, stack_high).
      * If stack_low <= EAX && EAX + width <= stack_high, address is valid RW stack. */
     byte(e, 0x3b); byte(e, 0x47); byte(e, offsetof(PwX86State, stack_low)); /* cmp eax, [rdi + stack_low] */
@@ -102,6 +114,14 @@ static void memory_address_width(Emitter *e,unsigned write,unsigned width)
     byte(e, 0x72); /* jb to slow_path */
     size_t patch_jb_low = e->n++;
 
+    /* The generic helper rejects malformed regions whose exclusive high
+     * bound exceeds 4 GiB.  Keep the common (<4 GiB) case inline; a valid
+     * region ending exactly at 4 GiB takes the slow path. */
+    byte(e, 0x83); byte(e, 0x7f); byte(e, offsetof(PwX86State, memory[0].high) + 4);
+    byte(e, 0); /* cmp dword [rdi + memory[0].high + 4], 0 */
+    byte(e, 0x75); /* jne to slow_path */
+    size_t patch_jne_high = e->n++;
+
     byte(e, 0x89); byte(e, 0xc2); /* mov edx, eax (zero-extends into RDX) */
     byte(e, 0x48); byte(e, 0x83); byte(e, 0xc2); byte(e, (uint8_t)width); /* add rdx, width (64-bit) */
     byte(e, 0x48); byte(e, 0x3b); byte(e, 0x57); byte(e, offsetof(PwX86State, memory[0].high)); /* cmp rdx, [rdi + memory[0].high] */
@@ -109,9 +129,12 @@ static void memory_address_width(Emitter *e,unsigned write,unsigned width)
     size_t patch_jbe_mem = e->n++;
 
     /* slow_path: */
+    e->p[patch_ja_count] = (uint8_t)(e->n - (patch_ja_count + 1));
+    e->p[patch_jz_null] = (uint8_t)(e->n - (patch_jz_null + 1));
     e->p[patch_jb_count] = (uint8_t)(e->n - (patch_jb_count + 1));
     e->p[patch_jne_perm] = (uint8_t)(e->n - (patch_jne_perm + 1));
     e->p[patch_jb_low] = (uint8_t)(e->n - (patch_jb_low + 1));
+    e->p[patch_jne_high] = (uint8_t)(e->n - (patch_jne_high + 1));
 
     byte(e,0x89);byte(e,0xc6); /* esi = address */
     byte(e,0xba);word(e,write);

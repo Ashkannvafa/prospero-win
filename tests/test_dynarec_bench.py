@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Differential verification between dynarec synthetic benchmarks and native i386."""
+"""Deterministic dynarec benchmark regression and one native-i386 cross-check."""
 import subprocess
 import struct
 import tempfile
@@ -9,7 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BENCH = ROOT / "build/host/bench_dynarec"
 
-# Expected registers [EAX, ECX, EDX, EBX] verified against Linux i386 hardware
+# Deterministic regression fingerprints for all workloads.  The independent
+# native-i386 oracle below currently covers reg_alu; the remaining workloads
+# are not claimed as native-oracle comparisons.
 EXPECTED = {
     "reg_alu": (0xe44e43d8, 0x00000000, 0x357db716, 0xf2f73b50, 0x50712ee9),
     "cond_branch": (0x00000002, 0x00000000, 0x0002416e, 0x00000000, 0xc8a29443),
@@ -35,6 +37,10 @@ for line in proc.stdout.splitlines():
     exp = EXPECTED[name]
     assert (eax, ecx, edx, ebx) == exp[:4], f"{name} register mismatch: got {(hex(eax), hex(ecx), hex(edx), hex(ebx))} expected {[hex(x) for x in exp[:4]]}"
     assert csum == exp[4], f"{name} checksum mismatch: got {hex(csum)} expected {hex(exp[4])}"
+
+assert results.keys() == EXPECTED.keys(), (
+    f"benchmark result set mismatch: got {sorted(results)} expected {sorted(EXPECTED)}"
+)
 
 # Verify native Linux i386 oracle matches for reg_alu
 with tempfile.TemporaryDirectory(prefix="pw-bench-oracle-") as tmpdir:
@@ -81,4 +87,4 @@ loop_start:
     native_regs = struct.unpack("<4I", out)
     assert native_regs == EXPECTED["reg_alu"][:4], f"native oracle mismatch: {native_regs}"
 
-print("dynarec benchmark verification passed: all 5 synthetic workloads match native oracle bit-for-bit")
+print("dynarec benchmark regression passed: 5 deterministic workloads; reg_alu matches native i386")
