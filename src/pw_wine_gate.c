@@ -271,9 +271,9 @@ typedef struct PwWineCallContext {
          * and registry keys and each handler can refuse the wrong kind. */
         uint8_t kind;
         uint8_t used;
-        /* For a registry key: its canonical path, which is what a relative
-         * open is resolved against. */
-        char key_path[PW_WINE_GATE_MAX_PATH + 1];
+        /* For a registry key or an object: its canonical path, which is what
+         * a relative open is resolved against. */
+        char path[PW_WINE_GATE_MAX_PATH + 1];
     } handles[PW_WINE_GATE_MAX_HANDLES];
 } PwWineCallContext;
 
@@ -282,6 +282,8 @@ enum PwWineHandleKind {
     PW_WINE_HANDLE_FILE = 1,
     PW_WINE_HANDLE_DIRECTORY = 2,
     PW_WINE_HANDLE_KEY = 3,
+    PW_WINE_HANDLE_OBJECT_DIRECTORY = 4,
+    PW_WINE_HANDLE_SECTION = 5,
 };
 
 static int reserve_guest_block(PwWineCallContext *calls, uint32_t desired,
@@ -860,6 +862,11 @@ static int file_handle_release(PwWineCallContext *calls, uint32_t value)
                  calls->config->registry)
             calls->config->registry->close(calls->config->registry->context,
                                            calls->handles[index].token);
+        else if ((calls->handles[index].kind == PW_WINE_HANDLE_OBJECT_DIRECTORY ||
+                  calls->handles[index].kind == PW_WINE_HANDLE_SECTION) &&
+                 calls->config->objects)
+            calls->config->objects->close(calls->config->objects->context,
+                                          calls->handles[index].token);
     }
     memset(&calls->handles[index], 0, sizeof(calls->handles[index]));
     calls->report->file_closes++;
@@ -1374,13 +1381,13 @@ static int resolve_registry_key(PwWineCallContext *calls,
         }
         /* A relative name is resolved against the key's canonical path and
          * then revalidated as a whole, so it cannot leave the namespace. */
-        used = strlen(calls->handles[index].key_path);
+        used = strlen(calls->handles[index].path);
         if (used + strlen(name) + 2u > sizeof(relative)) {
             *status = PW_NT_OBJECT_NAME_INVALID;
             calls->report->key_refusals++;
             return PW_OK;
         }
-        memcpy(relative, calls->handles[index].key_path, used);
+        memcpy(relative, calls->handles[index].path, used);
         relative[used++] = '\\';
         memcpy(relative + used, name, strlen(name) + 1u);
         if (translate_registry_path(relative, canonical, canonical_bytes,
@@ -1435,7 +1442,7 @@ static int gate_nt_open_key(PwWineCallContext *calls,
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
-    memcpy(calls->handles[handle - 0x100u].key_path, canonical,
+    memcpy(calls->handles[handle - 0x100u].path, canonical,
            strlen(canonical) + 1u);
     if (guest(context, handle_pointer, &handle, 4u, 1) != PW_OK) {
         (void)file_handle_release(calls, handle);
@@ -1502,7 +1509,7 @@ static int gate_nt_create_key(PwWineCallContext *calls,
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
-    memcpy(calls->handles[handle - 0x100u].key_path, canonical,
+    memcpy(calls->handles[handle - 0x100u].path, canonical,
            strlen(canonical) + 1u);
     if (disposition_pointer != 0u) {
         uint32_t disposition = created != 0u ? PW_WINE_REG_CREATED_NEW_KEY
@@ -1715,6 +1722,219 @@ static int gate_nt_query_value_key(PwWineCallContext *calls,
 }
 
 /*
+ * Object-namespace paths. An absolute name starts with '\' and every
+ * component is validated like a registry component; a relative name is
+ * resolved against a directory object the gate already owns, which is how
+ * Wine asks for "\KnownDlls\kernel32.dll" (the directory handle plus the DLL
+ * name).
+ */
+static int translate_object_path(const char *path, char *out, size_t out_bytes,
+                                 uint32_t *status)
+{
+    const char *rest = path;
+    size_t length = 1u;
+    size_t components = 0u;
+
+    if (*rest != '\\' || out_bytes < 2u) {
+        *status = PW_NT_OBJECT_NAME_INVALID;
+        return PW_ERR_NOT_FOUND;
+    }
+    out[0] = '\\';
+    ++rest;
+    while (*rest != '\0') {
+        size_t component = 0u;
+
+        if (*rest == '\\') {
+            *status = PW_NT_OBJECT_NAME_INVALID;   /* empty component */
+            return PW_ERR_MALFORMED;
+        }
+        while (rest[component] != '\0' && rest[component] != '\\') {
+            const unsigned char character = (unsigned char)rest[component];
+
+            if (character < 0x20u || character > 0x7eu || character == '/' ||
+                character == ':') {
+                *status = PW_NT_OBJECT_NAME_INVALID;
+                return PW_ERR_MALFORMED;
+            }
+            if (length + 1u >= out_bytes) {
+                *status = PW_NT_OBJECT_NAME_INVALID;
+                return PW_ERR_MALFORMED;
+            }
+            out[length++] = ascii_lower((char)character);
+            ++component;
+        }
+        if ((component == 1u && rest[0] == '.') ||
+            (component == 2u && rest[0] == '.' && rest[1] == '.')) {
+            *status = PW_NT_OBJECT_NAME_INVALID;
+            return PW_ERR_MALFORMED;
+        }
+        ++components;
+        rest += component;
+        if (*rest == '\\') {
+            if (length + 1u >= out_bytes) {
+                *status = PW_NT_OBJECT_NAME_INVALID;
+                return PW_ERR_MALFORMED;
+            }
+            out[length++] = '\\';
+            ++rest;
+            if (*rest == '\0') {                /* trailing separator */
+                *status = PW_NT_OBJECT_NAME_INVALID;
+                return PW_ERR_MALFORMED;
+            }
+        }
+    }
+    if (components == 0u) {
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        return PW_ERR_NOT_FOUND;
+    }
+    out[length] = '\0';
+    return PW_OK;
+}
+
+/*
+ * OBJECT_ATTRIBUTES to one canonical object path, absolute or relative to a
+ * directory object the gate owns.
+ */
+static int resolve_object_path(PwWineCallContext *calls,
+                               uint32_t attributes_pointer,
+                               PwUnixCallAccess guest, void *context,
+                               char *canonical, size_t canonical_bytes,
+                               uint32_t *status, uint32_t *argument_index)
+{
+    uint8_t attributes[24];
+    uint32_t name_pointer = 0u;
+    uint32_t root_handle = 0u;
+    char name[PW_WINE_GATE_MAX_PATH + 1];
+    char relative[PW_WINE_GATE_MAX_PATH + 1];
+    uint32_t index = 0u;
+
+    if (attributes_pointer == 0u) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    if (guest(context, attributes_pointer, attributes, sizeof(attributes),
+              0) != PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    memcpy(&root_handle, attributes + 4u, 4u);     /* RootDirectory */
+    memcpy(&name_pointer, attributes + 8u, 4u);    /* ObjectName */
+    if (name_pointer == 0u) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    if (read_guest_unicode(guest, context, name_pointer, name, sizeof(name)) !=
+        PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    if (root_handle == 0u) {
+        if (translate_object_path(name, canonical, canonical_bytes, status) !=
+            PW_OK) {
+            const size_t length = strlen(name);
+
+            if (length <= PW_WINE_GATE_MAX_PATH)
+                memcpy(calls->report->last_object, name, length + 1u);
+            calls->report->object_refusals++;
+            return PW_OK;
+        }
+    } else {
+        size_t used = 0u;
+
+        if (file_handle_lookup(calls, root_handle, &index) != PW_OK ||
+            calls->handles[index].kind != PW_WINE_HANDLE_OBJECT_DIRECTORY) {
+            *status = PW_NT_INVALID_HANDLE;
+            return PW_OK;
+        }
+        used = strlen(calls->handles[index].path);
+        if (used + strlen(name) + 2u > sizeof(relative)) {
+            *status = PW_NT_OBJECT_NAME_INVALID;
+            calls->report->object_refusals++;
+            return PW_OK;
+        }
+        memcpy(relative, calls->handles[index].path, used);
+        relative[used++] = '\\';
+        memcpy(relative + used, name, strlen(name) + 1u);
+        if (translate_object_path(relative, canonical, canonical_bytes,
+                                  status) != PW_OK) {
+            calls->report->object_refusals++;
+            return PW_OK;
+        }
+    }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
+ * NtOpenDirectoryObject and NtOpenSection share everything except the kind
+ * they ask the profile for: the path resolution, the handle bookkeeping and
+ * the NTSTATUS a profile without the name produces.
+ */
+static int gate_nt_open_object(PwWineCallContext *calls,
+                               const PwUnixCallFrame *frame,
+                               PwUnixCallAccess guest, void *context,
+                               PwWineObjectKind kind, unsigned handle_kind,
+                               uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t handle_pointer = frame->args[0];
+    const uint32_t attributes_pointer = frame->args[2];
+    char canonical[PW_WINE_GATE_MAX_PATH + 1];
+    void *token = NULL;
+    uint32_t handle = 0u;
+    int result;
+
+    if (handle_pointer == 0u) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    result = resolve_object_path(calls, attributes_pointer, guest, context,
+                                 canonical, sizeof(canonical), status,
+                                 argument_index);
+    if (result != PW_OK)
+        return result;
+    if (*status != PW_NT_SUCCESS)
+        return PW_OK;
+    if (!calls->config->objects) {
+        *status = PW_NT_NOT_SUPPORTED;
+        return PW_OK;
+    }
+    switch (calls->config->objects->open(calls->config->objects->context, kind,
+                                         canonical, &token)) {
+    case PW_WINE_OBJECT_OK:
+        break;
+    case PW_WINE_OBJECT_NOT_FOUND:
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        memcpy(calls->report->last_object, canonical, strlen(canonical) + 1u);
+        calls->report->object_refusals++;
+        return PW_OK;
+    case PW_WINE_OBJECT_DENIED:
+        *status = PW_NT_ACCESS_DENIED;
+        calls->report->object_refusals++;
+        return PW_OK;
+    default:
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->object_refusals++;
+        return PW_OK;
+    }
+    if (file_handle_alloc(calls, token, 0u, handle_kind, &handle) != PW_OK) {
+        calls->config->objects->close(calls->config->objects->context, token);
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    memcpy(calls->handles[handle - 0x100u].path, canonical,
+           strlen(canonical) + 1u);
+    if (guest(context, handle_pointer, &handle, 4u, 1) != PW_OK) {
+        (void)file_handle_release(calls, handle);
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    memcpy(calls->report->last_object, canonical, strlen(canonical) + 1u);
+    calls->report->object_opens++;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
  * Services one intercepted Unix call. PW_WINE_STOP_NONE means the guest may
  * continue: the handler's NTSTATUS is in EAX, the stdcall frame is popped and
  * EIP returns to the stub, exactly as Wine's own dispatcher would leave it.
@@ -1795,6 +2015,18 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     case 0x0036u:
         result = gate_nt_query_system_information(
             calls, &frame, gate_guest_access, state, &status, &argument_index);
+        break;
+    case 0x0058u:
+        result = gate_nt_open_object(calls, &frame, gate_guest_access, state,
+                                     PW_WINE_OBJECT_DIRECTORY,
+                                     PW_WINE_HANDLE_OBJECT_DIRECTORY, &status,
+                                     &argument_index);
+        break;
+    case 0x0037u:
+        result = gate_nt_open_object(calls, &frame, gate_guest_access, state,
+                                     PW_WINE_OBJECT_SECTION,
+                                     PW_WINE_HANDLE_SECTION, &status,
+                                     &argument_index);
         break;
     case 0x000fu:
         if (file_handle_release(calls, frame.args[0]) == PW_OK)
@@ -2351,6 +2583,18 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             memcpy(block + 0x04, &stack_high, 4u);   /* StackBase */
             memcpy(block + 0x08, &report->stack_base, 4u); /* StackLimit */
             memcpy(block + 0x18, &report->teb_base, 4u);   /* Self */
+            /*
+             * TEB.WOW32Reserved (0xc0) is where Wine's unix side installs the
+             * syscall dispatcher, and it is what the stubs declared with
+             * -syscall=<id> call through ("mov eax, id; call fs:[0xc0]"). The
+             * gate plays that role here, with the very thunk it located
+             * structurally, so both stub shapes reach the same boundary.
+             */
+            if (report->boundary_thunk_va != 0u) {
+                const uint32_t dispatcher = report->boundary_thunk_va;
+
+                memcpy(block + 0xc0, &dispatcher, 4u);
+            }
             /* TEB->ProcessEnvironmentBlock: ntdll's first server-side reads
              * go through this pointer, so the gate links the two blocks. */
             memcpy(block + 0x30, &report->peb_base, 4u);
@@ -2386,6 +2630,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     have_engine = 1;
     report->files_configured = config->files != NULL;
     report->registry_configured = config->registry != NULL;
+    report->objects_configured = config->objects != NULL;
     calls.low = &low;
     calls.config = config;
     calls.report = report;

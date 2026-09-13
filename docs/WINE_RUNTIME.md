@@ -428,6 +428,9 @@ NtCreateKey                   (0x001d) create-or-open against the same profile;
 NtQueryInformationToken       (0x0021) TokenUser for the current-token
                                        pseudo-handles only, answering with the
                                        SID the host declares
+NtOpenDirectoryObject         (0x0058) a directory in the object namespace
+NtOpenSection                 (0x0037) a section by absolute name or relative
+                                       to a directory object the gate owns
 ```
 
 Rules the gate enforces before the platform is ever asked:
@@ -605,6 +608,71 @@ stop: unix-call-unimplemented, syscall 0x0058 = NtOpenDirectoryObject
 
 The next gap is `\KnownDlls`: the loader maps the system DLLs from the object
 directory `\KnownDlls` before it loads anything by name.
+
+### The object namespace, and Wine's second stub shape
+
+`LdrInitializeThunk` opens `\KnownDlls` once (`open_known_dll_ntdir`) and keeps
+the handle, then looks for a section in it for every DLL it loads
+(`open_known_dll`: a relative name against that handle). Both are serviced
+now, behind a fourth host service:
+
+```text
+NtOpenDirectoryObject  (0x0058) a directory object
+NtOpenSection          (0x0037) a section object
+```
+
+The rules are the same shape as the registry's: an absolute path starts with
+`\` and every component is validated (printable ASCII, no separator, no
+colon, no `.` or `..`), a relative name is resolved against the canonical path
+stored with the directory handle and then revalidated as a whole, and only a
+directory handle can be a parent. The distribution's profile declares
+`\KnownDlls` and nothing else - no section objects - which is the honest
+answer for a distribution that carries PE *files*: every section lookup is
+`STATUS_OBJECT_NAME_NOT_FOUND`, and the loader falls back to loading the
+module from the file system, exactly as it does on a prefix without known
+DLLs.
+
+The interesting part was the next call. The run stopped with
+`unsupported-instruction` *inside* a stub, on `64 ff 15 c0 00 00 00`:
+`call dword ptr fs:[0xc0]`. Wine's `ntdll.spec` declares a handful of
+functions with `-syscall=<id>` - `NtQueryInformationProcess` among them - and
+the build emits a different stub for those:
+
+```text
+most syscalls:  mov eax, <id>; mov edx, <dispatcher thunk>; call edx; ret n
+-syscall ones:  mov eax, <id>; call dword ptr fs:[0xc0];        ret n
+```
+
+`fs:[0xc0]` is `TEB.WOW32Reserved`, and it is where Wine's *unix* side
+installs the dispatcher (`teb->WOW32Reserved = __wine_syscall_dispatcher` in
+`signal_i386.c`). The gate plays that role now: it writes the very thunk it
+located structurally into the TEB it builds, and it translates the
+FS-relative indirect call - target read from the guest's own FS block, guest
+return address pushed exactly as a register-indirect call pushes it, block
+ended at the target. Both stub shapes therefore reach the same boundary and
+are bridged identically, and the evidence shows which one a call came from
+because the issuing stub is re-read inside ntdll as always.
+
+Translating that call also needed one fix in the emitter: the fall-through
+store of the next EIP ran for every opcode except the handful of terminal
+ones, and it overwrote the target the call had just loaded. A call through
+memory is terminal like any other control transfer, so `fs_call` is excluded
+from that store - and the unit test now executes the exact stub body, checks
+that the target is in EIP and that the guest return address is on the guest
+stack.
+
+Measured on the same pinned runtime with `--bridge 1`:
+
+```text
+retired 29359 instructions over 5991 dispatches and 894 translated blocks
+18 calls handled, including NtOpenDirectoryObject("\KnownDlls") -> SUCCESS
+cleanup modules=2 mappings=7 translations=1 status=ok
+stop: unix-call-unimplemented, syscall 0x0019 = NtQueryInformationProcess
+```
+
+That last call is the next gap, and it is a real one: it is the loader asking
+about the process it is initializing (`ProcessBasicInformation` and friends),
+not an instruction the translator lacks.
 
 ### The registry, and the version ntdll asks about
 

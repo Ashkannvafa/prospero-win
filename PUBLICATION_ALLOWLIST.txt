@@ -237,3 +237,4 @@ tests/test_pw_wine_gate_bridge.c
 tests/test_unix_call_table.py
 tests/test_pw_wine_file_service.c
 tests/test_pw_wine_registry.c
+tests/test_pw_wine_objects.c

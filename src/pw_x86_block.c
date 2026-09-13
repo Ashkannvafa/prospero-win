@@ -873,6 +873,7 @@ typedef struct DecodedInst {
     unsigned bit_scan_word;         /* the 0x66 (16-bit) form */
     unsigned shift_word;            /* 0x66 shift/rotate group */
     unsigned lea_prefixed;          /* a segment override on LEA */
+    unsigned fs_call;               /* 64 ff 15: call through fs:[disp32] */
     unsigned conditional;
     unsigned extend;
     unsigned setcc;
@@ -1106,6 +1107,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         uint8_t sse_prefix=0,sse_opcode=0,sse_imm=0;
         unsigned bit_scan=0,bit_scan_word=0;
         unsigned bswap=0,bswap_reg=0;
+        unsigned fs_call=0;
         uint8_t bit_scan_opcode=0;
         unsigned shift_word=0;
         unsigned lea_prefixed=0;
@@ -1515,6 +1517,21 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
             if (bytes-cursor < 2) DECODE_FAIL(PW_ERR_TRUNCATED);
             if (source[cursor+1]==0xa1 || source[cursor+1]==0xa3) {
                 length=6;can_fault=1;
+            } else if (source[cursor+1]==0xff) {
+                /*
+                 * "call dword ptr fs:[disp32]": Wine's *other* syscall stub
+                 * shape. The stubs declared with -syscall=<id> in ntdll.spec
+                 * load the id into EAX and call the dispatcher through
+                 * TEB.WOW32Reserved (fs:[0xc0]), which is where the unix side
+                 * installs it - the same dispatcher the "mov edx, <thunk>"
+                 * stubs reach, so the boundary is identical.
+                 */
+                if (bytes-cursor < 7) DECODE_FAIL(PW_ERR_TRUNCATED);
+                if (source[cursor+2] != 0x15) DECODE_FAIL(PW_ERR_UNSUPPORTED);
+                fs_call=1;
+                length=7;
+                can_fault=1;
+                terminal=1;
             } else if (source[cursor+1]==0x8b || source[cursor+1]==0x89) {
                 /*
                  * FS-prefixed absolute dword operand: "mov r32, fs:[disp32]"
@@ -1593,6 +1610,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->bswap_reg = bswap_reg;
         d->shift_word = shift_word;
         d->lea_prefixed = lea_prefixed;
+        d->fs_call = fs_call;
         d->conditional = conditional;
         d->extend = extend;
         d->setcc = setcc;
@@ -1729,6 +1747,7 @@ analyze_and_emit:
         unsigned bswap_reg = d->bswap_reg;
         unsigned shift_word = d->shift_word;
         unsigned lea_prefixed = d->lea_prefixed;
+        unsigned fs_call = d->fs_call;
         unsigned conditional = d->conditional;
         unsigned extend = d->extend;
         unsigned setcc = d->setcc;
@@ -2524,7 +2543,22 @@ analyze_and_emit:
                 byte(&e,0xc7);byte(&e,0x00);word(&e,value);
             }
         } else if (op == 0x64 || op==0xa1 || op==0xa3) {
-            if (op == 0x64 &&
+            if (fs_call) {
+                /*
+                 * The FS-relative indirect call: the target comes from the
+                 * guest's own FS block, and the guest return address is pushed
+                 * exactly as a register-indirect call pushes it. The block
+                 * ends here, so the dispatcher the target names is the next
+                 * thing the engine sees - which is where the gate recognises
+                 * the Unix-call boundary.
+                 */
+                fs_address(&e,read32(source+cursor+3));
+                byte(&e,0x8b); byte(&e,0x00);          /* mov eax, [rax] */
+                byte(&e,0x89); byte(&e,0xc1);          /* preserve the target */
+                push_imm(&e,next,&block->exit_contract);
+                byte(&e,0x89); byte(&e,0x4f);
+                byte(&e,offsetof(PwX86State,eip));
+            } else if (op == 0x64 &&
                 (source[cursor+1]==0x8b || source[cursor+1]==0x89)) {
                 const unsigned reg=(unsigned)((source[cursor+2]>>3)&7u);
 
@@ -2614,7 +2648,10 @@ analyze_and_emit:
             byte(&e,0x89); byte(&e,0x4f); byte(&e,offsetof(PwX86State,eip));
             terminal = 1;
         }
-        if (op != 0xc3 && op!=0xc2 && op!=0xff && !conditional && op != 0xeb && op != 0xe9) store(&e,offsetof(PwX86State,eip),next);
+        /* fs_call is terminal like the other control transfers: the target it
+         * loaded into EIP must not be overwritten by the fall-through. */
+        if (op != 0xc3 && op!=0xc2 && op!=0xff && !conditional && op != 0xeb &&
+            op != 0xe9 && !fs_call) store(&e,offsetof(PwX86State,eip),next);
         block->instruction_ends[i]=(uint16_t)(cursor + length);
     }
     if (!block->exit.chainable) {

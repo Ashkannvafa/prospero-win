@@ -443,11 +443,13 @@ static size_t build_module(void)
      * the length the value query reported, and the first four bytes of the
      * Wine version block the gate wrote.
      */
-    emit_push_imm8(0x00);                     /* ObjectAttributes (arg 3) */
+    emit_push_imm8(0x00);                     /* arg 5 */
+    emit_push_imm8(0x00);                     /* arg 4 */
+    emit_push_imm8(0x00);                     /* arg 3 */
     emit_load_eax(DISPOSITION_RVA);
-    emit_byte(0x50);                          /* DesiredAccess (arg 2) */
+    emit_byte(0x50);                          /* arg 2 */
     emit_load_eax(SID_VALUE_RVA);
-    emit_byte(0x50);                          /* DirectoryHandle (arg 1) */
+    emit_byte(0x50);                          /* arg 1 */
     emit_call(STUB_STOP_RVA);
     emit_store_eax(STOP_RESULT_RVA);
 
@@ -461,7 +463,7 @@ static size_t build_module(void)
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);      /* NtClose */
     emit_stub(STUB_TOKEN_RVA, 0x0021u, 20u);     /* NtQueryInformationToken */
     emit_stub(STUB_CREATE_RVA, 0x001du, 28u);    /* NtCreateKey */
-    emit_stub(STUB_STOP_RVA, 0x0058u, 12u);      /* NtOpenDirectoryObject */
+    emit_stub(STUB_STOP_RVA, 0x0019u, 20u);      /* NtQueryInformationProcess */
     emit_byte(0xc3);
 
     /* Pointers stored inside the data section need their own base
@@ -710,7 +712,7 @@ int main(void)
     (void)pw_wine_gate_run(&config, &report);
     assert(report.registry_configured == 1u);
     assert(report.stop == PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED);
-    assert(report.observed_syscall_id == 0x0058u);
+    assert(report.observed_syscall_id == 0x0019u);
     assert(report.calls.records == 23u);
     assert(report.calls.handled == 22u);
     assert(report.calls.unimplemented == 1u);
@@ -793,7 +795,7 @@ int main(void)
      * memory: the SID's last subauthority as the host declared it (12074), and
      * the disposition the create reported (REG_OPENED_EXISTING_KEY).
      */
-    assert(report.calls.sequence[22].id == 0x0058u);
+    assert(report.calls.sequence[22].id == 0x0019u);
     assert(report.calls.sequence[22].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
     assert(report.calls.sequence[22].args[0] == 12074u);
     assert(report.calls.sequence[22].args[1] == 2u);

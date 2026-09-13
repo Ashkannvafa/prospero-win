@@ -216,6 +216,47 @@ static const uint8_t host_user_sid[] = {
 };
 
 /*
+ * The object namespace this distribution declares: the \KnownDlls directory
+ * the loader opens once at startup, and no section objects in it. That is the
+ * honest profile for a distribution that carries PE files rather than a
+ * preloaded section namespace - Wine then falls back to loading a module from
+ * the file system, which is what it does on a prefix without known DLLs.
+ */
+static const char *host_object_directories[] = {
+    "\\knowndlls",
+};
+
+static PwWineObjectStatus host_object_open(void *context,
+                                           PwWineObjectKind kind,
+                                           const char *path, void **token)
+{
+    (void)context;
+    if (kind == PW_WINE_OBJECT_DIRECTORY) {
+        for (unsigned index = 0;
+             index < sizeof(host_object_directories) /
+                         sizeof(host_object_directories[0]);
+             ++index) {
+            if (strcmp(host_object_directories[index], path) != 0)
+                continue;
+            *token = (void *)(uintptr_t)host_object_directories[index];
+            return PW_WINE_OBJECT_OK;
+        }
+    }
+    /* No section is preloaded: \KnownDlls\<name> is not in this namespace. */
+    return PW_WINE_OBJECT_NOT_FOUND;
+}
+
+static void host_object_close(void *context, void *token)
+{
+    (void)context;
+    (void)token;
+}
+
+static const PwWineObjectService host_objects = {
+    .context = NULL, .open = host_object_open, .close = host_object_close,
+};
+
+/*
  * The version block ntdll asks for with SystemWineVersionInformation: the
  * four NUL-terminated strings Wine packs together (version, build id, host
  * system name, host release). It is built from the staged distribution's own
@@ -444,6 +485,7 @@ int main(int argc, char **argv)
     config.entry_module = entry_module;
     config.entry_symbol = entry_symbol;
     config.registry = &host_registry;
+    config.objects = &host_objects;
     config.token_user_sid = host_user_sid;
     config.token_user_sid_bytes = (uint32_t)sizeof(host_user_sid);
     {
@@ -557,6 +599,7 @@ int main(int argc, char **argv)
     if (config.bridge_calls) {
         char file_path[2u * (PW_WINE_GATE_MAX_PATH + 1u)];
         char key_path[2u * (PW_WINE_GATE_MAX_PATH + 1u)];
+        char object_path[2u * (PW_WINE_GATE_MAX_PATH + 1u)];
 
         printf("kind=host-wine-calls serviced=%u handled=%llu unimplemented=%llu "
                "unknown=%llu rejected=%llu allocations=%u releases=%u "
@@ -564,7 +607,9 @@ int main(int argc, char **argv)
                "regions=%u files=%u opens=%llu reads=%llu bytes=%llu closes=%llu "
                "directories=%llu refusals=%llu last=%s "
                "registry=%u key_opens=%llu key_queries=%llu key_values=%llu "
-               "key_creates=%llu key_refusals=%llu tokens=%llu last_key=%s\n",
+               "key_creates=%llu key_refusals=%llu tokens=%llu last_key=%s "
+               "objects=%u object_opens=%llu object_refusals=%llu "
+               "last_object=%s\n",
                report.calls_serviced,
                (unsigned long long)report.calls.handled,
                (unsigned long long)report.calls.unimplemented,
@@ -587,7 +632,12 @@ int main(int argc, char **argv)
                (unsigned long long)report.key_refusals,
                (unsigned long long)report.token_queries,
                recorded_path(report.last_key[0] ? report.last_key : "-",
-                             key_path, sizeof(key_path)));
+                             key_path, sizeof(key_path)),
+               report.objects_configured,
+               (unsigned long long)report.object_opens,
+               (unsigned long long)report.object_refusals,
+               recorded_path(report.last_object[0] ? report.last_object : "-",
+                             object_path, sizeof(object_path)));
         for (uint32_t index = 0; index < report.calls.records; ++index) {
             const PwUnixCallRecord *record = &report.calls.sequence[index];
 

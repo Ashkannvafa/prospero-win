@@ -1293,6 +1293,32 @@ int main(int argc, char **argv)
         assert(run(fs_store_edi,sizeof(fs_store_edi),0x910)==0);
         assert(run(fs_load_esi,sizeof(fs_load_esi),0x920)==0);
         assert(state.gpr[7]==written && state.gpr[6]==written);
+        /*
+         * "call dword ptr fs:[disp32]": Wine's other syscall stub shape. The
+         * target comes from the guest's own FS block (TEB.WOW32Reserved,
+         * where the unix side installs the dispatcher) and the guest return
+         * address is pushed exactly as an indirect call pushes it, so the
+         * engine ends the block at the target.
+         */
+        {
+            const uint8_t fs_call[]={0x64,0xff,0x15,0xc0,0,0,0};
+            uint32_t target=0x00123456u,pushed=0u;
+            const uint32_t saved_esp=state.gpr[4];
+            const uint32_t scratch_address=state.stack_high-0x104u;
+            uint32_t saved=0u;
+
+            memcpy(&saved,(void *)(uintptr_t)scratch_address,4);
+            memcpy((uint8_t *)(uintptr_t)state.fs_base+0xc0,&target,4);
+            state.gpr[4]=state.stack_high-0x100u;
+            assert(run(fs_call,sizeof(fs_call),0x930)==0);
+            assert(state.eip==target);
+            assert(state.gpr[4]==scratch_address);
+            memcpy(&pushed,(void *)(uintptr_t)scratch_address,4);
+            assert(pushed==0x00000937u);
+            /* Leave the stack exactly as the later tests expect it. */
+            memcpy((void *)(uintptr_t)scratch_address,&saved,4);
+            state.gpr[4]=saved_esp;
+        }
         if (argc==2 && strcmp(argv[1],"--emit")==0) {
             assert(fwrite(&state.gpr[7],4,1,stdout)==1);
             assert(fwrite(&state.gpr[6],4,1,stdout)==1);

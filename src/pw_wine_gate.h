@@ -117,6 +117,35 @@ typedef struct PwWineRegistryService {
     void (*close)(void *context, void *token);
 } PwWineRegistryService;
 
+/*
+ * Platform object-namespace service. Wine's loader opens directories and
+ * sections by NT object path (`\KnownDlls`, `\KnownDlls\kernel32.dll`), so
+ * this is where the host says what the namespace contains. A name the profile
+ * does not declare answers NOT_FOUND, which is what makes the loader fall back
+ * to loading the module from the file system - the same thing Wine does on a
+ * prefix without known DLLs - and the gate never passes the service a path the
+ * guest did not name inside the namespace.
+ */
+typedef enum PwWineObjectStatus {
+    PW_WINE_OBJECT_OK = 0,
+    PW_WINE_OBJECT_NOT_FOUND = 1,
+    PW_WINE_OBJECT_DENIED = 2,
+    PW_WINE_OBJECT_ERROR = 3,
+} PwWineObjectStatus;
+
+typedef enum PwWineObjectKind {
+    PW_WINE_OBJECT_DIRECTORY = 1,
+    PW_WINE_OBJECT_SECTION = 2,
+} PwWineObjectKind;
+
+typedef struct PwWineObjectService {
+    void *context;
+    /* path is a canonical lower-case NT object path starting with '\'. */
+    PwWineObjectStatus (*open)(void *context, PwWineObjectKind kind,
+                               const char *path, void **token);
+    void (*close)(void *context, void *token);
+} PwWineObjectService;
+
 typedef enum PwWineStop {
     PW_WINE_STOP_NONE = 0,
     PW_WINE_STOP_UNIX_CALL_BOUNDARY = 1,
@@ -155,6 +184,7 @@ typedef struct PwWineGateConfig {
     const PwVmBackend *backend;
     const PwWineFileService *files;  /* NULL refuses every open */
     const PwWineRegistryService *registry;  /* NULL answers NOT_SUPPORTED */
+    const PwWineObjectService *objects;     /* NULL answers NOT_SUPPORTED */
     /*
      * The version block of the distribution being run, in the exact shape
      * Wine answers SystemWineVersionInformation with: four NUL-terminated
@@ -261,6 +291,10 @@ typedef struct PwWineGateReport {
     uint32_t registry_configured;
     char last_key[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t token_queries;
+    uint64_t object_opens;
+    uint64_t object_refusals;
+    uint32_t objects_configured;
+    char last_object[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t dispatches;
     uint64_t retired;
     uint64_t translated_blocks;
