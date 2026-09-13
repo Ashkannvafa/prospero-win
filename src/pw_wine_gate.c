@@ -201,6 +201,121 @@ static PwWineStop classify(int status)
     }
 }
 
+/*
+ * Declares the guest memory the dispatcher may touch. The DBT's guard is
+ * region-granular, so each module contributes its whole image as readable
+ * plus the union of its writable sections as writable; a write into code is
+ * then classified instead of relying on a native fault. Exact page
+ * protection is still the mapper's installed protection, which the loader
+ * already validated.
+ */
+static int declare_guest_memory(PwX86State *state, const PwLoader *loader,
+                                uint32_t stack_base, uint32_t stack_bytes,
+                                const PwVmRegion *thread_block,
+                                const PwVmRegion *process_block)
+{
+    uint32_t used = 0u;
+
+    if (loader->module_count * 2u + 3u > PW_X86_MEMORY_REGIONS)
+        return PW_ERR_LIMIT;
+    state->stack_low = stack_base;
+    state->stack_high = stack_base + stack_bytes;
+    state->memory[used++] = (PwX86Memory){
+        .low = stack_base, .high = stack_base + stack_bytes,
+        .permissions = PW_X86_READ | PW_X86_WRITE,
+    };
+    if (thread_block && thread_block->write_base) {
+        /* The TEB the guest reaches through FS: its own block, writable. */
+        state->memory[used++] = (PwX86Memory){
+            .low = (uint32_t)(uintptr_t)thread_block->exec_base,
+            .high = (uint32_t)((uintptr_t)thread_block->exec_base +
+                               thread_block->bytes),
+            .permissions = PW_X86_READ | PW_X86_WRITE,
+        };
+    }
+    if (process_block && process_block->write_base) {
+        /* The PEB ntdll reaches through TEB->ProcessEnvironmentBlock. */
+        state->memory[used++] = (PwX86Memory){
+            .low = (uint32_t)(uintptr_t)process_block->exec_base,
+            .high = (uint32_t)((uintptr_t)process_block->exec_base +
+                               process_block->bytes),
+            .permissions = PW_X86_READ | PW_X86_WRITE,
+        };
+    }
+    for (uint32_t index = 0; index < loader->module_count; ++index) {
+        const PwModule *module = &loader->modules[index];
+        uint32_t writable_low = 0u;
+        uint32_t writable_high = 0u;
+
+        if (!module->mapped_ok)
+            continue;
+        state->memory[used++] = (PwX86Memory){
+            .low = (uint32_t)module->mapped.actual_base,
+            .high = (uint32_t)(module->mapped.actual_base +
+                               module->mapped.image_bytes),
+            .permissions = PW_X86_READ,
+        };
+        for (uint32_t section = 0; section < module->layout.section_count;
+             ++section) {
+            const PeLayoutSection *entry = &module->layout.sections[section];
+            const uint32_t low = (uint32_t)module->mapped.actual_base +
+                                 entry->rva;
+            const uint32_t high = low + entry->mapped_bytes;
+
+            if ((entry->protection & PW_PROT_WRITE) == 0u)
+                continue;
+            if (writable_low == 0u || low < writable_low)
+                writable_low = low;
+            if (high > writable_high)
+                writable_high = high;
+        }
+        if (writable_low != 0u && writable_low < writable_high) {
+            if (used == PW_X86_MEMORY_REGIONS)
+                return PW_ERR_LIMIT;
+            state->memory[used++] = (PwX86Memory){
+                .low = writable_low, .high = writable_high,
+                .permissions = PW_X86_READ | PW_X86_WRITE,
+            };
+        }
+    }
+    state->memory_count = used;
+    return PW_OK;
+}
+
+/*
+ * One zeroed guest page, reserved below the 32-bit boundary. The gate uses
+ * two: the thread's TEB (what FS points at) and a PEB handed to ntdll's
+ * initialization entry as its first argument.
+ */
+static int allocate_guest_page(const PwWineGateConfig *config,
+                               PwWineLowBackend *low, uint32_t base,
+                               PwVmRegion *region, uint32_t *address)
+{
+    int status;
+
+    if ((low->base.capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
+        status = low->base.reserve_at(low->base.context, base,
+                                      PW_WINE_GATE_STACK_BYTES,
+                                      low->base.page_bytes, region);
+    else
+        status = config->backend->reserve(config->backend->context,
+                                          PW_WINE_GATE_STACK_BYTES,
+                                          config->backend->page_bytes, region);
+    if (status != PW_OK)
+        return status;
+    if ((uint64_t)(uintptr_t)region->exec_base + region->bytes >
+        0x100000000ull)
+        return PW_ERR_UNSUPPORTED;
+    status = config->backend->commit(config->backend->context, region, 0u,
+                                     region->bytes,
+                                     PW_PROT_READ | PW_PROT_WRITE);
+    if (status != PW_OK)
+        return status;
+    memset(region->write_base, 0, region->bytes);
+    *address = (uint32_t)(uintptr_t)region->exec_base;
+    return PW_OK;
+}
+
 int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 {
     /* Large by design: the bind workspace holds one module's import table. */
@@ -217,6 +332,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     PwGuestCall call;
     PwFileSpan root_span;
     PwVmRegion stack;
+    PwVmRegion teb;
+    PwVmRegion peb;
     PwX86State state;
     uint32_t thunks[PW_WINE_GATE_MAX_BOUNDARIES];
     const PwModule *entry_module;
@@ -226,6 +343,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     int have_loader = 0;
     int have_engine = 0;
     int have_stack = 0;
+    int have_teb = 0;
+    int have_peb = 0;
 
     if (!config || !report || !config->provider || !config->backend ||
         config->module_count == 0u ||
@@ -233,6 +352,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         return PW_ERR_PRECONDITION;
     memset(report, 0, sizeof(*report));
     memset(&root_span, 0, sizeof(root_span));
+    memset(&teb, 0, sizeof(teb));
+    memset(&peb, 0, sizeof(peb));
     memset(&call, 0, sizeof(call));
     budget = config->step_budget != 0u ? config->step_budget
                                        : PW_WINE_GATE_DEFAULT_STEPS;
@@ -430,15 +551,50 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             goto done;
     }
 
+    /* Minimal guest thread and process blocks. They are deliberately small:
+     * enough for ntdll's first initialization instructions to read a TEB
+     * through FS and a PEB through its argument, not a Windows process
+     * environment. The offsets are the documented NT TEB fields. */
+    {
+        uint32_t stack_high =
+            report->stack_base + report->stack_bytes;
+
+        status = allocate_guest_page(config, &low, 0x0e000000u, &teb,
+                                     &report->teb_base);
+        if (status != PW_OK)
+            goto done;
+        have_teb = 1;
+        report->teb_bytes = (uint32_t)teb.bytes;
+        status = allocate_guest_page(config, &low, 0x0d000000u, &peb,
+                                     &report->peb_base);
+        if (status != PW_OK)
+            goto done;
+        have_peb = 1;
+        {
+            uint8_t *block = teb.write_base;
+
+            memcpy(block + 0x04, &stack_high, 4u);   /* StackBase */
+            memcpy(block + 0x08, &report->stack_base, 4u); /* StackLimit */
+            memcpy(block + 0x18, &report->teb_base, 4u);   /* Self */
+            /* TEB->ProcessEnvironmentBlock: ntdll's first server-side reads
+             * go through this pointer, so the gate links the two blocks. */
+            memcpy(block + 0x30, &report->peb_base, 4u);
+            /* ThreadLocalStoragePointer stays zero: no module of this
+             * distribution declares a TLS directory, and a zeroed slot is
+             * the honest value until the TLS owner publishes an index. */
+        }
+    }
+
     memset(&state, 0, sizeof(state));
-    state.stack_low = report->stack_base;
-    state.stack_high = report->stack_base + report->stack_bytes;
     state.gpr[4] = (report->stack_base + report->stack_bytes - 16u) & ~15u;
     state.eip = report->entry_eip;
-    state.memory[0].low = report->stack_base;
-    state.memory[0].high = state.stack_high;
-    state.memory[0].permissions = PW_X86_READ | PW_X86_WRITE;
-    state.memory_count = 1u;
+    state.fs_base = report->teb_base;
+    state.fs_bytes = report->teb_bytes;
+    status = declare_guest_memory(&state, &loader, report->stack_base,
+                                  report->stack_bytes, &teb, &peb);
+    if (status != PW_OK)
+        goto done;
+    report->guest_regions = state.memory_count;
     {
         const uint32_t token = 0u;
 
@@ -452,9 +608,25 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     if (status != PW_OK)
         goto done;
     have_engine = 1;
+    /* Mode toggles exist so the same real code can be run with chaining,
+     * register residency and lazy flags on and off and compared. */
+    if (config->modes_set) {
+        status = pw_x86_engine_set_chaining(&engine, config->chaining);
+        if (status == PW_OK)
+            status = pw_x86_engine_set_residency(&engine, config->residency);
+        if (status == PW_OK)
+            status = pw_x86_engine_set_lazy_flags(&engine, config->lazy_flags);
+        if (status != PW_OK)
+            goto done;
+    }
+    report->chaining = engine.chaining_enabled;
+    report->residency = engine.residency_enabled;
+    report->lazy_flags = engine.lazy_flags_enabled;
     status = pw_guest_call_begin(&call, &state, PW_GUEST_STDCALL, 4u, 0);
     if (status != PW_OK)
         goto done;
+    /* ntdll's initialization entry takes the PEB as its first argument. */
+    memcpy((void *)(uintptr_t)(state.gpr[4] + 4u), &report->peb_base, 4u);
 
     report->first_eip = state.eip;
     report->stop = PW_WINE_STOP_STEP_BUDGET;
@@ -500,6 +672,12 @@ done:
         if (config->backend->release(config->backend->context, &stack) == PW_OK)
             report->cleanup_mappings++;
     }
+    if (have_teb &&
+        config->backend->release(config->backend->context, &teb) == PW_OK)
+        report->cleanup_mappings++;
+    if (have_peb &&
+        config->backend->release(config->backend->context, &peb) == PW_OK)
+        report->cleanup_mappings++;
     if (have_loader) {
         report->cleanup_modules = loader.module_count;
         report->cleanup_mappings += loader.module_count;

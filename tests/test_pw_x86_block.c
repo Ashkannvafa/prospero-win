@@ -743,6 +743,56 @@ static void immediate_tests(void)
     }
     state.stack_low=low;state.stack_high=high;state.memory_count=0;
 }
+
+static void lock_prefix_tests(void)
+{
+    const uint32_t low=state.stack_low;
+    const uint32_t high=state.stack_high;
+    const uint8_t lock_add[]={0xf0,0x83,0x00,0x01};   /* lock add [eax],1 */
+    const uint8_t plain_add[]={0x83,0x00,0x01};
+    uint32_t flags=0;
+
+    state.memory_count=0;
+    state.gpr[0]=low;
+    state.eflags=0x202;
+    uint32_t seed=5;memcpy((void *)(uintptr_t)low,&seed,4);
+    assert(run(lock_add,sizeof(lock_add),0x7000)==0);
+    uint32_t memory=0;memcpy(&memory,(void *)(uintptr_t)low,4);
+    flags=state.eflags;
+    assert(memory==6 && (flags&1)==0 && (flags&0x40)==0);
+    /* The same instruction without LOCK produces the same result and the
+     * same flags: the prefix asks for atomicity, it does not change
+     * architectural semantics. */
+    state.eflags=0x202;
+    memcpy((void *)(uintptr_t)low,&seed,4);
+    assert(run(plain_add,sizeof(plain_add),0x7010)==0);
+    uint32_t plain_memory=0;memcpy(&plain_memory,(void *)(uintptr_t)low,4);
+    assert(plain_memory==memory && state.eflags==flags);
+
+    /* Only legal LOCK forms are accepted. A register destination or a pure
+     * compare is not one, and neither is a form this translator does not
+     * handle yet: those must stay refused rather than silently unlocked. */
+    uint8_t scratch[4096];PwX86Block block;
+    const uint8_t lock_register[]={0xf0,0x83,0xc0,0x01};
+    const uint8_t lock_compare[]={0xf0,0x83,0x38,0x01};
+    const uint8_t lock_inc[]={0xf0,0xff,0x00};
+    const uint8_t lock_unterminated[]={0xf0,0x83};
+    assert(pw_x86_translate(lock_register,sizeof(lock_register),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(lock_compare,sizeof(lock_compare),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(lock_inc,sizeof(lock_inc),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(lock_unterminated,sizeof(lock_unterminated),0,scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
+    /* A locked read-modify-write still requires write permission. */
+    state.stack_low=state.stack_high=0;
+    state.memory_count=1;
+    state.memory[0]=(PwX86Memory){low,high,PW_X86_READ};
+    state.gpr[0]=low;
+    uint32_t before;memcpy(&before,(void *)(uintptr_t)low,4);
+    assert(run(lock_add,sizeof(lock_add),0x7020)==-1);
+    uint32_t after;memcpy(&after,(void *)(uintptr_t)low,4);
+    assert(after==before);
+    state.memory_count=0;
+    state.stack_low=low;state.stack_high=high;
+}
 static void comparison_tests(void)
 {
     state.gpr[0]=0x12348000;state.gpr[1]=0xffff8000;state.eflags=0xad7;
@@ -816,6 +866,46 @@ int main(int argc, char **argv)
     assert(state.gpr[2]==0x28);
     if (argc==2 && strcmp(argv[1],"--emit")==0)
         assert(fwrite(&state.gpr[2],4,1,stdout)==1);
+    /* FS-prefixed absolute operands, the same shape the native reference in
+     * tests/test_pw_x86_reference.S executes with a real 32-bit FS base. */
+    {
+        const uint8_t fs_load_edi[]={0x64,0x8b,0x3d,0x18,0,0,0};
+        const uint8_t fs_store_edi[]={0x64,0x89,0x3d,0x1c,0,0,0};
+        const uint8_t fs_load_esi[]={0x64,0x8b,0x35,0x1c,0,0,0};
+        PwVmRegion fs_block;
+        uint32_t written=0x11223344u;
+
+        assert(backend.reserve_at(NULL,0x03004000,4096,4096,&fs_block)==PW_OK);
+        assert(backend.commit(NULL,&fs_block,0,fs_block.bytes,
+                              PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+        state.fs_base=0x03004000;state.fs_bytes=4096;
+        memcpy((uint8_t *)(uintptr_t)state.fs_base+0x18,&written,4);
+        assert(run(fs_load_edi,sizeof(fs_load_edi),0x900)==0);
+        assert(run(fs_store_edi,sizeof(fs_store_edi),0x910)==0);
+        assert(run(fs_load_esi,sizeof(fs_load_esi),0x920)==0);
+        assert(state.gpr[7]==written && state.gpr[6]==written);
+        if (argc==2 && strcmp(argv[1],"--emit")==0) {
+            assert(fwrite(&state.gpr[7],4,1,stdout)==1);
+            assert(fwrite(&state.gpr[6],4,1,stdout)==1);
+        }
+        assert(backend.release(NULL,&fs_block)==PW_OK);
+    }
+    /* LOCK-prefixed read-modify-write, the same shape the native reference
+     * executes with a real "lock addl $1, mem". */
+    {
+        const uint8_t lock_add[]={0xf0,0x83,0x05,0,0,0,0,0x01};
+        uint8_t instruction[sizeof(lock_add)];
+        uint32_t five=5,result=0,address=state.stack_low;
+
+        memcpy(instruction,lock_add,sizeof(lock_add));
+        memcpy(instruction+3,&address,4);
+        memcpy((void *)(uintptr_t)address,&five,4);
+        assert(run(instruction,sizeof(instruction),0xa00)==0);
+        memcpy(&result,(void *)(uintptr_t)address,4);
+        assert(result==5+1);
+        if (argc==2 && strcmp(argv[1],"--emit")==0)
+            assert(fwrite(&result,4,1,stdout)==1);
+    }
     const uint8_t ret[]={0xc3};
     assert(run(ret,1,0x02000000)==0);
     assert(state.eip==0x0100000c && state.gpr[4]==state.stack_high-8);
@@ -875,6 +965,42 @@ int main(int argc, char **argv)
     state.gpr[0]=0x03000100;
     assert(run(fswrite,sizeof(fswrite),0x510)==0);
     assert(*(uint32_t *)thread.write_base==0x03000100);
+    /* FS-prefixed absolute dword operands. Wine's ntdll begins with
+     * "mov edi, fs:[0x18]" (the TEB self pointer), so the general form has
+     * to work in both directions, through the guest's own FS base. */
+    const uint8_t fsload_edi[]={0x64,0x8b,0x3d,0x18,0,0,0};
+    const uint8_t fsstore_ecx[]={0x64,0x89,0x0d,0x1c,0,0,0};
+    *(uint32_t *)((uint8_t *)thread.write_base+0x18)=0x11223344u;
+    state.gpr[7]=0;state.eflags=0xad7;
+    assert(run(fsload_edi,sizeof(fsload_edi),0x570)==0);
+    assert(state.gpr[7]==0x11223344u && state.eip==0x577);
+    assert(state.eflags==0xad7);        /* mov defines no flags */
+    state.gpr[1]=0x55667788u;
+    assert(run(fsstore_ecx,sizeof(fsstore_ecx),0x580)==0);
+    assert(*(uint32_t *)((uint8_t *)thread.write_base+0x1c)==0x55667788u);
+    /* The last dword inside the block is still addressable. */
+    const uint8_t fsload_last[]={0x64,0x8b,0x15,0xfc,0x0f,0,0};
+    memcpy((uint8_t *)thread.write_base+4092,&state.gpr[0],4);
+    state.gpr[2]=0;
+    assert(run(fsload_last,sizeof(fsload_last),0x585)==0);
+    assert(state.gpr[2]==state.gpr[0]);
+    /* The FS block's own size is the bound: an offset outside it is refused
+     * before any dereference, and the block is left untouched. */
+    const uint32_t before_write=*(uint32_t *)((uint8_t *)thread.write_base+0x1c);
+    state.fs_bytes=0x1cu;
+    assert(run(fsstore_ecx,sizeof(fsstore_ecx),0x590)==-1);
+    assert(*(uint32_t *)((uint8_t *)thread.write_base+0x1c)==before_write);
+    /* The last dword at 0x18 is exactly the end of that shorter block, so
+     * the load still succeeds while the store above did not. */
+    assert(run(fsload_edi,sizeof(fsload_edi),0x591)==0);
+    assert(state.gpr[7]==0x11223344u);
+    state.fs_bytes=4096;
+    assert(run(fsstore_ecx,sizeof(fsstore_ecx),0x592)==0);
+    /* Past the end of the FS block: rejected before any dereference. */
+    const uint8_t fsload_oob[]={0x64,0x8b,0x3d,0x00,0x10,0,0};
+    state.gpr[7]=0x11111111u;
+    assert(run(fsload_oob,sizeof(fsload_oob),0x5a0)==-1);
+    assert(state.gpr[7]==0x11111111u && state.eip==0x5a0);
     uint8_t last[]={0x64,0xa3,0xfc,0x0f,0,0};
     assert(run(last,sizeof(last),0x520)==0);
     assert(*(uint32_t *)((uint8_t *)thread.write_base+4092)==state.gpr[0]);
@@ -918,6 +1044,7 @@ int main(int argc, char **argv)
     comparison_tests();
     immediate_tests();
     absolute_tests();
+    lock_prefix_tests();
     optimization_safety_tests();
     push_operand_tests();
     logical_test_tests();
@@ -951,6 +1078,19 @@ int main(int argc, char **argv)
     const uint8_t fs[]={0x64,0x90};
     assert(pw_x86_translate(fs,sizeof(fs),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(block.code_bytes==0);
+    /* Only FS absolute dword operands are supported: GS, an FS memory
+     * operand with a base or index, and byte-width FS forms stay refused
+     * rather than being translated as something else. */
+    const uint8_t gs_load[]={0x65,0x8b,0x3d,0x18,0,0,0};
+    const uint8_t fs_indexed[]={0x64,0x8b,0x3c,0x0d,0x18,0,0,0};
+    const uint8_t fs_base_only[]={0x64,0x8b,0x38};
+    const uint8_t fs_byte[]={0x64,0x8a,0x3d,0x18,0,0,0};
+    const uint8_t fs_unterminated[]={0x64,0x8b,0x3d,0x18,0,0};
+    assert(pw_x86_translate(gs_load,sizeof(gs_load),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(fs_indexed,sizeof(fs_indexed),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(fs_base_only,sizeof(fs_base_only),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(fs_byte,sizeof(fs_byte),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(fs_unterminated,sizeof(fs_unterminated),0,scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
     assert(pw_x86_translate(fsread,5,0,scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
     assert(pw_x86_translate(input,1,0,scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
     assert(pw_x86_translate(input,sizeof(input),0,scratch,1,&block)==PW_ERR_LIMIT);

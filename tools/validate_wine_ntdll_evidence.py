@@ -37,6 +37,7 @@ REQUIRED = {
     "tls": {"modules"},
     "boundary": {"slot_rva", "slot_va", "thunks", "thunk_rva", "thunk_va"},
     "entry": {"module", "symbol", "rva", "eip", "pe_entry_rva", "stub_id"},
+    "modes": {"chaining", "residency", "lazy_flags"},
     "run": {"first_eip", "last_eip", "retired", "dispatches", "blocks",
             "bytes", "stop_address", "stop", "syscall", "host_calls"},
     "cleanup": {"modules", "mappings", "translations", "status"},
@@ -178,6 +179,10 @@ def validate(records: dict[str, list[dict[str, str]]],
         raise Failure("entry RVA is outside ntdll")
     if stub_id == 0:
         raise Failure("the entry stub does not encode a syscall number")
+
+    modes = one(records, "modes")
+    notes.append("engine modes chaining=%s residency=%s lazy_flags=%s"
+                 % (modes["chaining"], modes["residency"], modes["lazy_flags"]))
 
     run = one(records, "run")
     retired = number(run, "retired", "run")

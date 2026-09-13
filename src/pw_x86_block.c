@@ -822,6 +822,7 @@ typedef struct DecodedInst {
     unsigned alu;
     unsigned short_imm;
     unsigned word_operand;
+    unsigned lock_prefix;
     unsigned conditional;
     unsigned extend;
     unsigned setcc;
@@ -865,7 +866,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         size_t length = 0;
         Operand operand;
         memset(&operand, 0, sizeof(operand));
-        unsigned compare=0,alu=7,short_imm=0,word_operand=0,conditional=0,extend=0,setcc=0;
+        unsigned compare=0,alu=7,short_imm=0,word_operand=0,lock_prefix=0,conditional=0,extend=0,setcc=0;
         unsigned extend_word_destination=0;
         unsigned x87=0,x87_width=0,x87_write=0,x87_register=0;
         unsigned string_op=0,string_width=0,string_repeat=0;
@@ -1053,19 +1054,30 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                     else if(operand.reg==3) flags_def=0x8d5;
                 }
             }
-        } else if(op==0x66 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
-            size_t prefix=op==0x66?1:0;
+        } else if(op==0x66 || op==0xf0 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
+            size_t prefix=(op==0x66 || op==0xf0)?1:0;
             if(bytes-cursor<=prefix)DECODE_FAIL(PW_ERR_TRUNCATED);
             unsigned cmpop=source[cursor+prefix];
             unsigned accumulator=cmpop<=0x3d && (cmpop&7)==5;
             if(cmpop!=0x81 && cmpop!=0x83 && !accumulator)DECODE_FAIL(PW_ERR_UNSUPPORTED);
-            word_operand=(unsigned)prefix;short_imm=cmpop==0x83;compare=1;
+            /*
+             * LOCK on a group-1 memory read-modify-write. The guest needs it
+             * for cross-thread synchronisation (Wine's critical sections use
+             * "lock add [mem], 1"), so the emitted host instruction carries
+             * the same prefix and the host guarantees the atomicity. A
+             * register destination or a pure compare is not a legal LOCK
+             * form and stays refused.
+             */
+            lock_prefix=op==0xf0?1u:0u;
+            word_operand=op==0x66?1u:0u;short_imm=cmpop==0x83;compare=1;
             if(accumulator) {memset(&operand,0,sizeof(operand));operand.mod=3;operand.rm=0;alu=cmpop>>3;}
             else {
                 int result=decode_operand(source+cursor+prefix+1,bytes-cursor-prefix-1,&operand);
                 if(result!=PW_OK)DECODE_FAIL(result);
                 alu=operand.reg;
             }
+            if(lock_prefix && (operand.mod==3 || alu==7))
+                DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=prefix+1+operand.bytes+(short_imm?1:word_operand?2:4);
             can_fault=(operand.mod!=3);
             flags_def=(alu==1||alu==4||alu==6)?0x8c5:0x8d5;
@@ -1094,9 +1106,25 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
             } else DECODE_FAIL(PW_ERR_UNSUPPORTED);
         } else if (op == 0x64) {
             if (bytes-cursor < 2) DECODE_FAIL(PW_ERR_TRUNCATED);
-            if (source[cursor+1]!=0xa1 && source[cursor+1]!=0xa3)
+            if (source[cursor+1]==0xa1 || source[cursor+1]==0xa3) {
+                length=6;can_fault=1;
+            } else if (source[cursor+1]==0x8b || source[cursor+1]==0x89) {
+                /*
+                 * FS-prefixed absolute dword operand: "mov r32, fs:[disp32]"
+                 * or "mov fs:[disp32], r32". Wine's ntdll reads the TEB this
+                 * way (mov edi, fs:[0x18]) on its very first instructions.
+                 * The segment base is the guest's own FS base, never the
+                 * host's, and fs_address validates the offset against the
+                 * declared FS block before the guard checks the address.
+                 */
+                if (bytes-cursor < 3) DECODE_FAIL(PW_ERR_TRUNCATED);
+                if ((source[cursor+2] & 0xc7u) != 0x05u)
+                    DECODE_FAIL(PW_ERR_UNSUPPORTED);
+                length=7;can_fault=1;
+                operand.reg=(uint8_t)((source[cursor+2]>>3)&7u);
+                operand.rm=5u;
+            } else
                 DECODE_FAIL(PW_ERR_UNSUPPORTED);
-            length=6;can_fault=1;
         } else if (op == 0x89 || op == 0x8b || op == 0x8d || op==0xc7 ||
                    op==0x01 || op==0x03 || op==0x09 || op==0x0b ||
                    op==0x11 || op==0x13 || op==0x19 || op==0x1b ||
@@ -1140,6 +1168,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->alu = alu;
         d->short_imm = short_imm;
         d->word_operand = word_operand;
+        d->lock_prefix = lock_prefix;
         d->conditional = conditional;
         d->extend = extend;
         d->setcc = setcc;
@@ -1259,6 +1288,7 @@ analyze_and_emit:
         unsigned alu = d->alu;
         unsigned short_imm = d->short_imm;
         unsigned word_operand = d->word_operand;
+        unsigned lock_prefix = d->lock_prefix;
         unsigned conditional = d->conditional;
         unsigned extend = d->extend;
         unsigned setcc = d->setcc;
@@ -1716,7 +1746,11 @@ analyze_and_emit:
                 }
                 if(word_operand)byte(&e,0x66);
                 if(operand.mod==3)byte(&e,(uint8_t)(5+alu*8));
-                else {byte(&e,0x81);byte(&e,(uint8_t)(alu*8));}
+                else {
+                    /* The guest asked for atomicity; ask the host for it. */
+                    if(lock_prefix)byte(&e,0xf0);
+                    byte(&e,0x81);byte(&e,(uint8_t)(alu*8));
+                }
                 if(word_operand){byte(&e,(uint8_t)value);byte(&e,(uint8_t)(value>>8));}else word(&e,value);
                 if(operand.mod==3 && alu!=7) {
                     if(word_operand) {
@@ -1824,15 +1858,32 @@ analyze_and_emit:
                 byte(&e,0xc7);byte(&e,0x00);word(&e,value);
             }
         } else if (op == 0x64 || op==0xa1 || op==0xa3) {
-            unsigned load=op==0xa1 || (op==0x64 && source[cursor+1]==0xa1);
-            if(op==0x64)fs_address(&e,read32(source+cursor+2));
-            else {byte(&e,0xb8);word(&e,read32(source+cursor+1));memory_address(&e,!load);}
-            if (load) {
-                byte(&e,0x8b); byte(&e,0x00);
-                store_guest_reg(&e, &block->exit_contract, 0);
+            if (op == 0x64 &&
+                (source[cursor+1]==0x8b || source[cursor+1]==0x89)) {
+                const unsigned reg=(unsigned)((source[cursor+2]>>3)&7u);
+
+                /* fs_address is the bound for every FS form: the offset
+                 * must lie inside the guest's FS block, exactly as it does
+                 * for the accumulator encodings above. */
+                fs_address(&e,read32(source+cursor+3));
+                if (source[cursor+1]==0x8b) {
+                    byte(&e,0x8b); byte(&e,0x00);
+                    store_guest_reg(&e, &block->exit_contract, reg);
+                } else {
+                    load_guest_reg_ecx(&e, &block->exit_contract, reg);
+                    byte(&e,0x89); byte(&e,0x08);
+                }
             } else {
-                load_guest_reg_ecx(&e, &block->exit_contract, 0);
-                byte(&e,0x89); byte(&e,0x08);
+                unsigned load=op==0xa1 || (op==0x64 && source[cursor+1]==0xa1);
+                if(op==0x64)fs_address(&e,read32(source+cursor+2));
+                else {byte(&e,0xb8);word(&e,read32(source+cursor+1));memory_address(&e,!load);}
+                if (load) {
+                    byte(&e,0x8b); byte(&e,0x00);
+                    store_guest_reg(&e, &block->exit_contract, 0);
+                } else {
+                    load_guest_reg_ecx(&e, &block->exit_contract, 0);
+                    byte(&e,0x89); byte(&e,0x08);
+                }
             }
         } else if (op == 0x89 || op == 0x8b || op == 0x8d) {
             if (operand.mod==3) {

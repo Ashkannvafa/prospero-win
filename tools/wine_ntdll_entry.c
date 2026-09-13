@@ -91,6 +91,24 @@ int main(int argc, char **argv)
     config.entry_symbol = entry_symbol;
     config.step_budget = argument_number(argc, argv, "--budget", 0u);
     {
+        const char *modes = argument_value(argc, argv, "--modes", NULL);
+
+        if (modes) {
+            /* chaining,residency,lazy-flags: 0 or 1 each. */
+            unsigned values[3] = {1u, 1u, 1u};
+
+            for (unsigned index = 0; index < 3u && *modes; ++index) {
+                values[index] = (unsigned)strtoul(modes, NULL, 0) != 0u;
+                const char *comma = strchr(modes, ',');
+                modes = comma ? comma + 1 : modes + strlen(modes);
+            }
+            config.chaining = (uint8_t)values[0];
+            config.residency = (uint8_t)values[1];
+            config.lazy_flags = (uint8_t)values[2];
+            config.modes_set = 1u;
+        }
+    }
+    {
         char *copy = malloc(strlen(dlls) + 1u);
 
         if (!copy)
@@ -123,6 +141,8 @@ int main(int argc, char **argv)
            "pe_entry_rva=0x%08x stub_id=0x%08x\n",
            entry_module, entry_symbol, report.entry_rva, report.entry_eip,
            report.entry_pe_rva, report.stub_syscall_id);
+    printf("kind=host-wine-modes chaining=%u residency=%u lazy_flags=%u\n",
+           report.chaining, report.residency, report.lazy_flags);
     printf("kind=host-wine-run first_eip=0x%08x last_eip=0x%08x "
            "retired=%llu dispatches=%llu blocks=%llu bytes=%llu "
            "stop_address=0x%08x stop=%s syscall=0x%08x host_calls=%llu\n",

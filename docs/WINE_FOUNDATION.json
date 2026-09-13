@@ -28,7 +28,7 @@
       "id": "ia32-dbt",
       "status": "validated",
       "depends_on": ["pe-loader"],
-      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence.",
+      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator now also covers FS-prefixed absolute dword operands (the TEB reads ntdll begins with) and LOCK-prefixed group-1 memory read-modify-write, both with a native i386 differential oracle; real ntdll retires 166 instructions through its initialization entry before reaching an untranslated family (bit test), with identical results across chaining, residency and lazy-flag modes.",
       "exit_criteria": ["wine-ntdll-instruction-closure", "sse2", "indirect-branch-cache", "multi-thread-code-cache"]
     },
     {
@@ -56,7 +56,7 @@
       "id": "nt-process-thread",
       "status": "partial",
       "depends_on": ["virtual-memory"],
-      "evidence": "One guest thread has isolated CPU/FP/FS state. PE32 TLS now has a process/thread owner: stable module indices published through mapped guest memory, per-thread template-plus-zero-fill storage from a caller-owned arena, guest FS:[0x2C] lookup and deterministic attach/detach callback plans driven by the DBT's guest-callback mechanism, with two-thread and rollback coverage. Real PEB/TEB construction, module entry-point ordering and native thread adapters remain.",
+      "evidence": "One guest thread has isolated CPU/FP/FS state. PE32 TLS now has a process/thread owner: stable module indices published through mapped guest memory, per-thread template-plus-zero-fill storage from a caller-owned arena, guest FS:[0x2C] lookup and deterministic attach/detach callback plans driven by the DBT's guest-callback mechanism, with two-thread and rollback coverage. The Wine gate additionally owns a minimal guest TEB (FS base, StackBase, StackLimit, Self, ProcessEnvironmentBlock) and a zeroed PEB so real ntdll initialization can run. Real PEB/PEB_LDR_DATA construction, module entry-point ordering and native thread adapters remain.",
       "exit_criteria": ["peb32", "teb32", "native-thread-adapter", "orderly-thread-exit"]
     },
     {

@@ -55,6 +55,7 @@ def base_records() -> dict[str, list[dict[str, str]]]:
         "entry": [{"module": "ntdll.dll", "symbol": "NtClose",
                    "rva": hex(ENTRY_RVA), "eip": hex(NTDLL_BASE + ENTRY_RVA),
                    "pe_entry_rva": "0x00010c60", "stub_id": "0x0000000f"}],
+        "modes": [{"chaining": "1", "residency": "1", "lazy_flags": "1"}],
         "run": [{"first_eip": hex(NTDLL_BASE + ENTRY_RVA),
                  "last_eip": hex(NTDLL_BASE + THUNK_RVA), "retired": "3",
                  "dispatches": "1", "blocks": "1", "bytes": "160",
@@ -72,7 +73,7 @@ def base_records() -> dict[str, list[dict[str, str]]]:
 def render(records: dict[str, list[dict[str, str]]]) -> str:
     lines = ["HELLO ps5log/1 title=PPSA99994 app=prospero-win boot=0x1 tag=test"]
     for kind in ("gate", "module", "bind", "tls", "boundary", "entry", "run",
-                 "cleanup", "verdict"):
+                 "modes", "cleanup", "verdict"):
         for index, record in enumerate(records.get(kind, [])):
             fields = " ".join(f"{key}={value}" for key, value in record.items())
             lines.append(f"{index}\t0\tINFO\tkind=host-wine-{kind} {fields}")
@@ -252,6 +253,11 @@ class Case(unittest.TestCase):
         def mutate(records):
             del records["run"]
         self.expect_failure("expected exactly one run record", mutate)
+
+    def test_missing_modes_record(self) -> None:
+        def mutate(records):
+            del records["modes"]
+        self.expect_failure("expected exactly one modes record", mutate)
 
     def test_parse_rejects_malformed_field(self) -> None:
         text = render(base_records()).replace("stop=wine-unix-call-boundary",

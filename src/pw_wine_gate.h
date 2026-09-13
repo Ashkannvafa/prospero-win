@@ -78,6 +78,10 @@ typedef struct PwWineGateConfig {
     uint32_t module_count;
     uint32_t step_budget;           /* 0 uses PW_WINE_GATE_DEFAULT_STEPS */
     uint32_t stack_base;            /* 0 lets the gate choose */
+    uint8_t chaining;               /* DBT mode toggles, for parity evidence */
+    uint8_t residency;
+    uint8_t lazy_flags;
+    uint8_t modes_set;              /* 0 keeps the engine defaults */
 } PwWineGateConfig;
 
 typedef struct PwWineGateReport {
@@ -101,8 +105,15 @@ typedef struct PwWineGateReport {
     uint32_t first_eip;
     uint32_t last_eip;
     uint32_t stop_address;
+    uint32_t chaining;
+    uint32_t residency;
+    uint32_t lazy_flags;
     uint32_t stack_base;
     uint32_t stack_bytes;
+    uint32_t guest_regions;         /* declared DBT memory regions */
+    uint32_t teb_base;              /* minimal guest TEB (FS base) */
+    uint32_t teb_bytes;
+    uint32_t peb_base;              /* minimal guest PEB (first argument) */
     uint64_t dispatches;
     uint64_t retired;
     uint64_t translated_blocks;

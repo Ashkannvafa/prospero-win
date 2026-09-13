@@ -137,3 +137,46 @@ What the gate proves, and what it does not:
 It does not implement the Unix call, does not create a PEB/TEB, does not run
 ntdll's process initialization and is not wired into title startup. A
 classified stop is evidence, not a compatibility claim.
+
+### How far real ntdll execution currently gets
+
+Two entry points are measured, each with the engine's chaining, register
+residency and lazy-flag modes toggled (four configurations, identical stop
+kind, retired count and stop address):
+
+| Entry | Result |
+|---|---|
+| `NtClose` | stops on the dispatcher thunk after 3 retired instructions, syscall `0x000f` |
+| `LdrInitializeThunk` | retires 166 instructions over 22 dispatches and stops at an instruction family the DBT does not translate yet |
+
+Reaching that point required two general instruction families and a minimal
+guest thread block, all of which are now implemented and host-tested:
+
+- **FS-prefixed absolute operands** (`mov r32, fs:[disp32]` and
+  `mov fs:[disp32], r32`). Wine's ntdll reads `fs:[0x18]` (the TEB self
+  pointer) on its first initialization instructions. The segment base is the
+  guest's own FS base from `PwX86State`, never the host's, and the offset is
+  bounded by the declared FS block before any dereference. GS and FS operands
+  with a base or index stay refused.
+- **LOCK-prefixed read-modify-write** for the group-1 memory forms
+  (`lock add [mem], 1`, which Wine's critical sections use). The emitted host
+  instruction carries the same prefix, so the host provides the atomicity; a
+  register destination or a pure compare is not a legal LOCK form and stays
+  refused.
+- A **minimal guest TEB and PEB** owned by the gate: the TEB is what FS points
+  at, with the documented NT offsets for `StackBase` (0x04), `StackLimit`
+  (0x08), `Self` (0x18) and `ProcessEnvironmentBlock` (0x30), and the PEB is
+  handed to ntdll's initialization entry as its first argument.
+  `ThreadLocalStoragePointer` (0x2C) stays zero because no module of this
+  distribution declares a TLS directory.
+
+Both families have native i386 differential coverage: `make test` runs a
+32-bit reference program that installs a real FS base with `set_thread_area`
+and executes the same `mov edi, fs:[0x18]` and `lock addl $1, mem`
+instructions on the host CPU, and the translated engine's output must match
+it byte for byte.
+
+The next unimplemented family on that path is the bit-test group
+(`bt r/m32, r32`, `0f a3`), followed by the rest of Wine's loader
+initialization, which needs a real PEB/`PEB_LDR_DATA` rather than the gate's
+zeroed page. Neither is claimed as working.
