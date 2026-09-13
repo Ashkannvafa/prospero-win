@@ -6,7 +6,11 @@
 #include "pw_guest_fp.h"
 #include "../include/prospero_win.h"
 
-enum { PW_X86_MEMORY_REGIONS=8, PW_X86_READ=1, PW_X86_WRITE=2, PW_X86_MAX_HOST_REGS=3 };
+/* The gate declares the stack, each module's image, the TEB and the PEB, and
+ * every NT allocation the guest is handed, so the region table is wider than
+ * the single-title profile needed. Fields after memory[] are addressed with
+ * disp32, so widening it does not move anything the emitter indexes. */
+enum { PW_X86_MEMORY_REGIONS=16, PW_X86_READ=1, PW_X86_WRITE=2, PW_X86_MAX_HOST_REGS=3 };
 typedef struct PwX86Memory {
     uint32_t low;
     uint64_t high; /* exclusive; can represent 4 GiB */

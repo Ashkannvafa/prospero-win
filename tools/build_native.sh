@@ -144,6 +144,7 @@ sources=(
     src/pe_image.c src/pe_import.c src/pe_layout.c src/pe_reloc.c src/pw_guest_heap.c
     src/pe_export.c src/pe_tls.c src/pw_export.c src/pw_tls.c src/pw_sha256.c
     src/pw_wine_gate.c
+    src/pw_unix_call.c
     src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
     src/pw_module_name.c src/pw_result.c src/pw_segment.c src/pw_vm.c src/pw_ini.c
     src/pw_vm_posix.c src/pw_exec_probe.c src/pw_x86_block.c src/pw_x86_cache.c src/pw_x86_engine.c src/pw_x87.c src/pw_guest_call.c src/pw_import_bind.c src/pw_win32.c src/pw_user32.c src/pw_pad.c src/pw_gdi.c src/pw_crt_format.c src/pw_registry.c src/pw_registry_store.c src/pw_guest_fp.c src/pw_guest_args.c src/pe_resource.c

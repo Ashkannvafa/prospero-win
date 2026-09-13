@@ -48,6 +48,12 @@ REQUIRED = {
 MODULE_FIELDS = {"name", "sha256", "size", "machine", "base", "image_bytes",
                  "loaded", "runtime", "imports", "tls", "path"}
 ACCEPTED_STOP = "wine-unix-call-boundary"
+BRIDGED_STOPS = {
+    "unix-call-unimplemented": "unimplemented",
+    "unix-call-unknown": "unknown",
+    "unix-call-rejected": "rejected",
+}
+NT_ERROR = 0x80000000
 
 
 class Failure(SystemExit):
@@ -201,11 +207,70 @@ def validate(records: dict[str, list[dict[str, str]]],
     stop_address = number(run, "stop_address", "run")
     if first_eip != entry_eip:
         raise Failure("the run did not start at the entry point")
-    if run["stop"] != ACCEPTED_STOP:
-        raise Failure(f"the gate stopped with {run['stop']}")
-    if stop_address != thunk_va or last_eip != thunk_va:
-        raise Failure("the run did not stop exactly on the dispatcher thunk")
     syscall = number(run, "syscall", "run")
+    if run["stop"] != ACCEPTED_STOP:
+        if run["stop"] not in BRIDGED_STOPS and \
+                run["stop"] != "unsupported-instruction":
+            raise Failure(f"the gate stopped with {run['stop']}")
+        serviced = records.get("calls", [])
+        if len(serviced) != 1:
+            raise Failure("a bridged run must report exactly one calls record")
+        sequence = records.get("call-seq", [])
+        if not sequence:
+            raise Failure("a bridged run must report its call sequence")
+        for index, serviced_call in enumerate(sequence):
+            if number(serviced_call, "index", "call-seq") != index:
+                raise Failure("call sequence indices are not contiguous")
+            require_fields(serviced_call,
+                           {"index", "id", "name", "args", "return", "status",
+                            "outcome", "argument", "stub_return"}, "call-seq")
+            if number(serviced_call, "args", "call-seq") % 4 != 0:
+                raise Failure("a call argument width is not a multiple of four")
+            stub_return = number(serviced_call, "stub_return", "call-seq")
+            if stub_return < ntdll_base or \
+                    stub_return >= ntdll_base + \
+                    number(ntdll, "image_bytes", "ntdll.dll"):
+                raise Failure("a serviced call did not return into ntdll")
+        first = sequence[0]
+        if number(first, "id", "call-seq") != 0x18 or \
+                first["name"] != "NtAllocateVirtualMemory":
+            raise Failure("the first serviced call is not NtAllocateVirtualMemory")
+        if first["outcome"] != "handled" or \
+                number(first, "status", "call-seq") & NT_ERROR:
+            raise Failure("the first serviced call did not succeed")
+        last = sequence[-1]
+        if run["stop"] == "unsupported-instruction":
+            # The bridge serviced calls and the run then met an instruction
+            # family the translator does not cover yet: nothing may have been
+            # refused, and the stop must still be inside ntdll.
+            for serviced_call in sequence:
+                if serviced_call["outcome"] != "handled":
+                    raise Failure("a run that stopped on an instruction may "
+                                  "not report a refused call")
+            stop_address = number(run, "stop_address", "run")
+            if stop_address < ntdll_base or \
+                    stop_address >= ntdll_base + \
+                    number(ntdll, "image_bytes", "ntdll.dll"):
+                raise Failure("the instruction stop is not inside ntdll")
+        else:
+            expected = BRIDGED_STOPS[run["stop"]]
+            if last["outcome"] != expected:
+                raise Failure(f"the last call outcome is {last['outcome']}, "
+                              f"expected {expected}")
+            if number(last, "id", "call-seq") != syscall:
+                raise Failure("the last call id disagrees with the run record")
+            if expected == "rejected" and \
+                    number(last, "argument", "call-seq") == 0:
+                raise Failure("a rejected call must name the argument")
+        tallies = one(records, "calls")
+        notes.append(f"bridged: {tallies.get('handled')} handled, "
+                     f"{tallies.get('unimplemented')} unimplemented, "
+                     f"{tallies.get('unknown')} unknown, "
+                     f"{tallies.get('rejected')} rejected; "
+                     f"{tallies.get('allocations')} allocations")
+    if run["stop"] == ACCEPTED_STOP or run["stop"] in BRIDGED_STOPS:
+        if stop_address != thunk_va or last_eip != thunk_va:
+            raise Failure("the run did not stop exactly on the dispatcher thunk")
     if stub_id != 0 and syscall != stub_id:
         raise Failure(f"syscall {syscall:#x} does not match the stub id "
                       f"{stub_id:#x}")
@@ -213,19 +278,20 @@ def validate(records: dict[str, list[dict[str, str]]],
     # The syscall number is bound to the image, not to a register: the stub
     # that called the dispatcher must encode the number we observed.
     call = one(records, "call")
-    if number(call, "in_module", "call") != 1:
-        raise Failure("the boundary call did not return into the entry module")
-    caller_id = number(call, "caller_id", "call")
-    if caller_id == 0:
-        raise Failure("the issuing stub does not encode a syscall number")
-    if caller_id != syscall:
-        raise Failure(f"the issuing stub names syscall {caller_id:#x}, "
-                      f"the run observed {syscall:#x}")
-    caller_rva = number(call, "caller_rva", "call")
-    if caller_rva >= number(ntdll, "image_bytes", "ntdll.dll"):
-        raise Failure("the issuing stub is outside ntdll")
-    if number(call, "observed", "call") != syscall:
-        raise Failure("the call record disagrees with the run record")
+    if run["stop"] == ACCEPTED_STOP:
+        if number(call, "in_module", "call") != 1:
+            raise Failure("the boundary call did not return into the entry module")
+        caller_id = number(call, "caller_id", "call")
+        if caller_id == 0:
+            raise Failure("the issuing stub does not encode a syscall number")
+        if caller_id != syscall:
+            raise Failure(f"the issuing stub names syscall {caller_id:#x}, "
+                          f"the run observed {syscall:#x}")
+        caller_rva = number(call, "caller_rva", "call")
+        if caller_rva >= number(ntdll, "image_bytes", "ntdll.dll"):
+            raise Failure("the issuing stub is outside ntdll")
+        if number(call, "observed", "call") != syscall:
+            raise Failure("the call record disagrees with the run record")
     notes.append(f"{entry['symbol']} retired {retired} instructions and "
                  f"reached syscall {syscall:#06x}")
 
@@ -240,10 +306,15 @@ def validate(records: dict[str, list[dict[str, str]]],
         raise Failure("translated code was not destroyed")
 
     verdict = one(records, "verdict")
-    if number(verdict, "accepted", "verdict") != 1:
-        raise Failure("the runner did not accept its own evidence")
-    if verdict["stop"] != ACCEPTED_STOP:
-        raise Failure(f"verdict stop is {verdict['stop']}")
+    if run["stop"] == ACCEPTED_STOP:
+        if number(verdict, "accepted", "verdict") != 1:
+            raise Failure("the runner did not accept its own evidence")
+    elif number(verdict, "accepted", "verdict") != 0:
+        raise Failure("the runner accepted a run that did not reach the "
+                      "Unix-call boundary")
+    if verdict["stop"] != run["stop"]:
+        raise Failure(f"verdict stop is {verdict['stop']}, "
+                      f"the run stopped with {run['stop']}")
     if number(verdict, "entry_id", "verdict") != stub_id:
         raise Failure("verdict entry id disagrees with the entry record")
     if number(verdict, "syscall", "verdict") != syscall:

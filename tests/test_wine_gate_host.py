@@ -111,6 +111,23 @@ def main() -> int:
           f"({len(MODES)} configurations, {reference[1]} retired "
           f"instructions, stop {reference[0]} at {reference[2]}, "
           f"syscall {observed_syscall})")
+
+    # With the Unix-call bridge enabled the run must service real calls and
+    # continue; how far it gets afterwards depends on instruction coverage,
+    # so the contract is about the calls, not about the final stop.
+    bridged = run_gate("--entry-symbol", "LdrInitializeThunk", "--budget",
+                       "4000", "--bridge", "1", expect_acceptance=False)
+    print(validate_transcript(bridged, "LdrInitializeThunk"))
+    tallies = (field(bridged, "calls", "handled"),
+               field(bridged, "calls", "rejected"),
+               field(bridged, "calls", "allocations"))
+    if int(tallies[0]) < 1 or int(tallies[1]) != 0 or int(tallies[2]) < 1:
+        raise SystemExit("wine ntdll gate: the bridge did not service a call "
+                         f"cleanly: handled={tallies[0]} rejected={tallies[1]} "
+                         f"allocations={tallies[2]}")
+    print("wine ntdll gate: bridge serviced "
+          f"{tallies[0]} calls and mapped {tallies[2]} guest region(s); "
+          f"final stop {field(bridged, 'run', 'stop')}")
     return 0
 
 

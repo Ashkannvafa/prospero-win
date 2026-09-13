@@ -25,6 +25,7 @@
 #include "pw_import_bind.h"
 #include "pw_loader.h"
 #include "pw_sha256.h"
+#include "pw_unix_call.h"
 #include "pw_x86_engine.h"
 
 enum {
@@ -35,6 +36,12 @@ enum {
     PW_WINE_GATE_STACK_BYTES = 64u * 1024u,
     PW_WINE_GATE_CACHE_ENTRIES = 1024,
     PW_WINE_GATE_ARENA_BYTES = 256u * 1024u,
+    PW_WINE_GATE_DEFAULT_CALLS = 64,
+    PW_WINE_GATE_MAX_CALL_REGIONS = 16,
+    PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT = 4u * 1024u * 1024u,
+    /* Where the NT allocator hands out guest memory that ntdll asks for. */
+    PW_WINE_GATE_HEAP_BASE = 0x20000000u,
+    PW_WINE_GATE_HEAP_LIMIT = 0x30000000u,
 };
 
 typedef enum PwWineStop {
@@ -49,6 +56,9 @@ typedef enum PwWineStop {
     PW_WINE_STOP_STEP_BUDGET = 8,
     PW_WINE_STOP_RETURNED_TO_CALLER = 9,
     PW_WINE_STOP_GATE_ERROR = 10,
+    PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED = 11,
+    PW_WINE_STOP_UNIX_CALL_UNKNOWN = 12,
+    PW_WINE_STOP_UNIX_CALL_REJECTED = 13,
 } PwWineStop;
 
 typedef struct PwWineModuleRecord {
@@ -86,6 +96,9 @@ typedef struct PwWineGateConfig {
     uint8_t residency;
     uint8_t lazy_flags;
     uint8_t modes_set;              /* 0 keeps the engine defaults */
+    uint8_t bridge_calls;           /* service Unix calls instead of stopping */
+    uint32_t call_budget;           /* 0 uses PW_WINE_GATE_DEFAULT_CALLS */
+    uint32_t allocation_limit;      /* bytes one run may allocate; 0 = default */
 } PwWineGateConfig;
 
 typedef struct PwWineGateReport {
@@ -122,6 +135,11 @@ typedef struct PwWineGateReport {
     uint32_t teb_base;              /* minimal guest TEB (FS base) */
     uint32_t teb_bytes;
     uint32_t peb_base;              /* minimal guest PEB (first argument) */
+    PwUnixCallTally calls;
+    uint32_t calls_serviced;
+    uint32_t allocations;
+    uint32_t allocated_bytes;
+    uint32_t call_regions;          /* guest regions this run mapped for NT */
     uint64_t dispatches;
     uint64_t retired;
     uint64_t translated_blocks;

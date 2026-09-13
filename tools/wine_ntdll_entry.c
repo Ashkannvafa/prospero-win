@@ -104,6 +104,8 @@ int main(int argc, char **argv)
     config.step_budget = argument_number(argc, argv, "--budget", 0u);
     config.trace = argument_value(argc, argv, "--trace", NULL) ? trace_step
                                                                : NULL;
+    config.bridge_calls = (uint8_t)(argument_number(argc, argv, "--bridge", 0u) != 0u);
+    config.call_budget = argument_number(argc, argv, "--call-budget", 0u);
     {
         const char *modes = argument_value(argc, argv, "--modes", NULL);
 
@@ -173,9 +175,47 @@ int main(int argc, char **argv)
            (unsigned long long)report.translated_bytes,
            report.stop_address, pw_wine_stop_name(report.stop),
            report.observed_syscall_id, (unsigned long long)report.host_calls);
+    /*
+     * The cleanup verdict is about releasing what this run mapped and
+     * translated; the run's own result is already carried by the stop kind,
+     * because a bridged run that meets an unimplemented instruction family
+     * stops honestly without being a leak.
+     */
     printf("kind=host-wine-cleanup modules=%u mappings=%u translations=%u "
-           "status=%s\n", report.cleanup_modules, report.cleanup_mappings,
-           report.cleanup_translations, pw_result_name(report.status));
+           "status=%s gate_status=%s\n", report.cleanup_modules,
+           report.cleanup_mappings, report.cleanup_translations,
+           (report.cleanup_modules == report.module_count &&
+            report.cleanup_translations >= 1u &&
+            report.cleanup_mappings >= report.module_count) ? "ok"
+                                                           : "incomplete",
+           pw_result_name(report.status));
+    if (config.bridge_calls) {
+        printf("kind=host-wine-calls serviced=%u handled=%llu unimplemented=%llu "
+               "unknown=%llu rejected=%llu allocations=%u allocated_bytes=%u "
+               "regions=%u\n", report.calls_serviced,
+               (unsigned long long)report.calls.handled,
+               (unsigned long long)report.calls.unimplemented,
+               (unsigned long long)report.calls.unknown,
+               (unsigned long long)report.calls.rejected, report.allocations,
+               report.allocated_bytes, report.call_regions);
+        for (uint32_t index = 0; index < report.calls.records; ++index) {
+            const PwUnixCallRecord *record = &report.calls.sequence[index];
+
+            printf("kind=host-wine-call-seq index=%u id=0x%08x name=%s "
+                   "args=%u stub_return=0x%08x return=0x%08x status=0x%08x "
+                   "outcome=%s argument=%u\n", index, record->id,
+                   record->name[0] ? record->name : "unknown",
+                   record->arg_bytes, record->stub_return_pc,
+                   record->return_pc, record->status,
+                   pw_unix_call_outcome_name(record->outcome),
+                   record->argument_index);
+            printf("kind=host-wine-call-args index=%u a0=0x%08x a1=0x%08x "
+                   "a2=0x%08x a3=0x%08x a4=0x%08x a5=0x%08x esp=0x%08x\n",
+                   index, record->args[0], record->args[1], record->args[2],
+                   record->args[3], record->args[4], record->args[5],
+                   record->esp);
+        }
+    }
     printf("kind=host-wine-verdict accepted=%d stop=%s entry_id=0x%08x "
            "syscall=0x%08x retired=%llu\n",
            status == PW_OK && pw_wine_stop_is_acceptance(report.stop),

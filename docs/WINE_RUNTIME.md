@@ -211,3 +211,62 @@ The next unimplemented behaviours on that path are the rest of Wine's loader
 initialization — which needs a real `PEB_LDR_DATA` and process parameters
 rather than the gate's zeroed page — and the Unix call itself. Neither is
 claimed as working.
+
+### Servicing the first Unix calls
+
+`--bridge 1` turns the gate's boundary from a stopping point into a bridge:
+the call is identified, its arguments are read out of validated guest memory,
+a handler services it, and the guest continues exactly where the stub's own
+`ret imm16` would have left it.
+
+The call number is a position in a table that belongs to one Wine revision,
+so `src/pw_unix_call.c` carries the first 64 entries of the pinned i386 table
+with their exported names and stdcall argument widths, and
+`tests/test_unix_call_table.py` re-derives that table from
+`dlls/ntdll/ntsyscalls.h` at the revision named in the source and fails on any
+difference. Numbers outside the table are reported as unknown, never guessed.
+
+The frame has two levels, because a Wine stub reaches the dispatcher with a
+call rather than a jump:
+
+```text
+[esp]      return address into the issuing stub   (provenance, and where the
+                                                   syscall number is re-read)
+[esp+4]    the caller's return address            (where the guest resumes)
+[esp+8..]  the stdcall arguments
+```
+
+Servicing a call therefore means: `EAX = NTSTATUS`, `EIP = [esp+4]` and
+`ESP += 8 + arg_bytes` — the state the stub's own `ret imm16` would have
+produced.
+
+The first handler is `NtAllocateVirtualMemory` for the profile a boot attempt
+reaches: the current process handle, `ZeroBits == 0`, `MEM_RESERVE`,
+`MEM_COMMIT` or both, `PAGE_READWRITE` (or the reserve-only value), a bounded
+total per run, and guest pointers that must pass the dispatcher's own region
+check before anything is read or written. Value errors are answered with an
+NTSTATUS, because that is the guest's contract; a guest pointer the bridge
+cannot safely touch is a refusal that names the argument index instead. Every
+block it maps joins the dispatcher's declared regions, so the guest can
+immediately use what it was given, and every block is released at cleanup.
+
+A `MEM_COMMIT` that lands inside a block this run already mapped is treated as
+the second half of "reserve then commit" rather than a new reservation, which
+is what Wine's loader does.
+
+Measured on the pinned runtime:
+
+```text
+LdrInitializeThunk, --bridge 1
+  retires 315 instructions over 44 dispatches
+  services  2 NtAllocateVirtualMemory calls, both STATUS_SUCCESS
+  maps      1 guest region of 65536 bytes, addressable to the guest
+  stops at  ntdll RVA 0x1cdd5 on "movd xmm0, eax" (SSE), the next family
+            the translator does not cover
+```
+
+Honest limits: the reserve/commit distinction is not modelled (the dispatcher
+knows one kind of guest region), `NtFreeVirtualMemory` and every other call
+still have no handler, a handler failing midway is not rolled back, and the
+SSE register file is not implemented, so the run stops there rather than
+continuing through Wine's loader. None of that is claimed as working.

@@ -47,10 +47,10 @@
     },
     {
       "id": "unix-call-bridge",
-      "status": "planned",
+      "status": "partial",
       "depends_on": ["ia32-dbt", "nt-process-thread"],
-      "evidence": "The dispatcher boundary is identified in the pinned Wine sources and located in the built image: the gate finds the exported __wine_syscall_dispatcher slot and the single jmp-dword-ptr thunk that references it, then stops there. The call number is verified independently by re-reading it from the stub that issued the call inside the mapped image (the guest return address points into it), and ntdll's own initialization path reaches its first call this way. No call table, argument validation or nested-call handling exists yet.",
-      "exit_criteria": ["versioned-call-table", "argument-validation", "nested-calls", "fault-atomicity"]
+      "evidence": "The dispatcher boundary is located in the built image (exported __wine_syscall_dispatcher slot plus the single jmp-dword-ptr thunk that references it) and the call number is re-read from the issuing stub inside the mapped image. A versioned table of the pinned i386 syscall numbers, names and argument widths is cross-checked against the Wine source; the two-level stub frame is unwound correctly; and NtAllocateVirtualMemory is serviced for the first-boot profile with guest pointers validated through the dispatcher's own region check, so real ntdll initialization proceeds past its first two calls before meeting an unimplemented instruction family. Remaining: every other call, reserve/commit distinction, nested calls and rollback of a partially failed handler.",
+      "exit_criteria": ["nested-calls", "fault-atomicity", "remaining-call-table-handlers"]
     },
     {
       "id": "nt-process-thread",

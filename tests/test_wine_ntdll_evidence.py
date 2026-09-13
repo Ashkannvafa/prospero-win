@@ -208,9 +208,13 @@ class Case(unittest.TestCase):
 
     def test_wrong_stop(self) -> None:
         def mutate(records):
+            records["run"][0]["stop"] = "memory-bounds"
+        self.expect_failure("the gate stopped with memory-bounds", mutate)
+
+    def test_instruction_stop_without_a_bridge(self) -> None:
+        def mutate(records):
             records["run"][0]["stop"] = "unsupported-instruction"
-        self.expect_failure("the gate stopped with unsupported-instruction",
-                            mutate)
+        self.expect_failure("must report exactly one calls record", mutate)
 
     def test_stop_not_on_the_thunk(self) -> None:
         def mutate(records):
@@ -312,6 +316,96 @@ class Case(unittest.TestCase):
         records = VALIDATOR.parse_transcript(render(base_records()))
         self.assertEqual(len(records["module"]), 2)
         self.run_validation(copy.deepcopy(records))
+
+    # --- bridged runs -------------------------------------------------
+
+    def bridged_records(self) -> dict:
+        """A run that serviced one call and stopped on an instruction."""
+        records = base_records()
+        # The bridged run enters ntdll's initialization, so the entry has no
+        # stub id of its own; the serviced calls carry the provenance.
+        records["entry"][0].update(symbol="LdrInitializeThunk",
+                                   rva="0x00013530",
+                                   eip=hex(NTDLL_BASE + 0x13530),
+                                   stub_id="0x00000000",
+                                   kind="initialization")
+        records["run"][0].update(stop="unsupported-instruction",
+                                 stop_address="0x10420dd5",
+                                 first_eip=hex(NTDLL_BASE + 0x13530),
+                                 last_eip="0x10420dd5", retired="315",
+                                 syscall="0x00000018")
+        records["verdict"][0].update(accepted="0", stop="unsupported-instruction",
+                                     entry_id="0x00000000", syscall="0x00000018",
+                                     retired="315")
+        records["call"][0].update(return_eip="0x00000000", in_module="0",
+                                  caller_rva="0x00000000", caller_id="0x00000000",
+                                  observed="0x00000018")
+        records["calls"] = [{"serviced": "1", "handled": "1",
+                             "unimplemented": "0", "unknown": "0",
+                             "rejected": "0", "allocations": "1",
+                             "allocated_bytes": "65536", "regions": "1"}]
+        records["call-seq"] = [{
+            "index": "0", "id": "0x00000018", "name": "NtAllocateVirtualMemory",
+            "args": "24", "stub_return": hex(NTDLL_BASE + 0xD3F0),
+            "return": hex(NTDLL_BASE + 0x4AED1), "status": "0x00000000",
+            "outcome": "handled", "argument": "6"}]
+        return records
+
+    def test_accepts_a_bridged_run_that_stopped_on_an_instruction(self) -> None:
+        notes = self.run_validation(self.bridged_records())
+        self.assertTrue(any("bridged:" in note for note in notes))
+
+    def test_bridged_first_call_must_be_the_allocator(self) -> None:
+        records = self.bridged_records()
+        records["call-seq"][0]["id"] = "0x00000019"
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("not NtAllocateVirtualMemory", str(caught.exception))
+
+    def test_bridged_call_may_not_fail(self) -> None:
+        records = self.bridged_records()
+        records["call-seq"][0]["status"] = "0xc0000008"
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("did not succeed", str(caught.exception))
+
+    def test_bridged_stub_must_be_inside_ntdll(self) -> None:
+        records = self.bridged_records()
+        records["call-seq"][0]["stub_return"] = "0x00100000"
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("did not return into ntdll", str(caught.exception))
+
+    def test_bridged_stop_must_be_inside_ntdll(self) -> None:
+        records = self.bridged_records()
+        records["run"][0]["stop_address"] = "0x00100000"
+        records["run"][0]["last_eip"] = "0x00100000"
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("not inside ntdll", str(caught.exception))
+
+    def test_bridged_sequence_indices_must_be_contiguous(self) -> None:
+        records = self.bridged_records()
+        records["call-seq"].append(dict(records["call-seq"][0], index="2"))
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("not contiguous", str(caught.exception))
+
+    def test_bridged_outcome_must_explain_the_stop(self) -> None:
+        records = self.bridged_records()
+        records["run"][0]["stop"] = "unix-call-unimplemented"
+        records["run"][0]["syscall"] = "0x00000019"
+        records["verdict"][0]["stop"] = "unix-call-unimplemented"
+        records["verdict"][0]["syscall"] = "0x00000019"
+        records["call-seq"].append({
+            "index": "1", "id": "0x00000019",
+            "name": "NtQueryInformationProcess", "args": "20",
+            "stub_return": hex(NTDLL_BASE + 0xD420),
+            "return": hex(NTDLL_BASE + 0x4EF03), "status": "0xc0000002",
+            "outcome": "handled", "argument": "0"})
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("last call outcome is handled", str(caught.exception))
 
 
 if __name__ == "__main__":

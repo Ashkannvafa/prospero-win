@@ -202,6 +202,316 @@ static PwWineStop classify(int status)
 }
 
 /*
+ * Guest memory accessor handed to a Unix-call handler. It applies exactly
+ * the rules the dispatcher's own guard applies, so a handler can never read
+ * or write an address the DBT would have faulted on: address zero is never
+ * valid, the range must lie inside the stack or a declared region, and a
+ * write needs that region to be writable.
+ */
+static int gate_guest_access(void *context, uint32_t address, void *bytes,
+                             uint32_t size, int write)
+{
+    const PwX86State *state = context;
+    uint64_t end;
+
+    if (!state || !bytes || size == 0u)
+        return PW_ERR_PRECONDITION;
+    end = (uint64_t)address + size;
+    if (address == 0u || end > 0x100000000ull)
+        return PW_ERR_MALFORMED;
+    if (address >= state->stack_low && end <= state->stack_high) {
+        if (write)
+            memcpy((void *)(uintptr_t)address, bytes, size);
+        else
+            memcpy(bytes, (const void *)(uintptr_t)address, size);
+        return PW_OK;
+    }
+    for (uint32_t index = 0; index < state->memory_count; ++index) {
+        const PwX86Memory *region = &state->memory[index];
+        const unsigned needed = write ? (PW_X86_READ | PW_X86_WRITE)
+                                      : PW_X86_READ;
+
+        if (region->high > 0x100000000ull)
+            continue;
+        if (address < region->low || end > region->high)
+            continue;
+        if ((region->permissions & needed) != needed)
+            continue;
+        if (write)
+            memcpy((void *)(uintptr_t)address, bytes, size);
+        else
+            memcpy(bytes, (const void *)(uintptr_t)address, size);
+        return PW_OK;
+    }
+    return PW_ERR_VM;
+}
+
+/*
+ * State the NT call handlers need: the gate's low-address allocator, the
+ * per-run accounting and the regions this run mapped on the guest's behalf
+ * (released at cleanup).
+ */
+typedef struct PwWineCallContext {
+    PwWineLowBackend *low;
+    const PwWineGateConfig *config;
+    PwWineGateReport *report;
+    uint32_t heap_cursor;
+    uint32_t limit;
+    PwVmRegion regions[PW_WINE_GATE_MAX_CALL_REGIONS];
+    uint32_t region_count;
+} PwWineCallContext;
+
+static int reserve_guest_block(PwWineCallContext *calls, uint32_t desired,
+                               uint32_t bytes, PwVmRegion *region,
+                               uint32_t *base)
+{
+    const PwVmBackend *backend = &calls->low->base;
+    const uint32_t page = (uint32_t)backend->page_bytes;
+    const uint32_t aligned = (bytes + page - 1u) & ~(page - 1u);
+    int status;
+
+    if (aligned == 0u || (uint64_t)aligned > PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT)
+        return PW_ERR_LIMIT;
+    if (calls->region_count >= PW_WINE_GATE_MAX_CALL_REGIONS)
+        return PW_ERR_LIMIT;
+    if ((backend->capabilities & PW_VM_CAP_EXACT_ADDRESS) == 0u)
+        return PW_ERR_UNSUPPORTED;
+    if (desired == 0u) {
+        uint32_t candidate = (calls->heap_cursor + page - 1u) & ~(page - 1u);
+
+        for (; (uint64_t)candidate + aligned <= PW_WINE_GATE_HEAP_LIMIT;
+             candidate += page) {
+            status = backend->reserve_at(backend->context, candidate, aligned,
+                                         page, region);
+            if (status == PW_OK) {
+                calls->heap_cursor = candidate + aligned;
+                *base = candidate;
+                return PW_OK;
+            }
+        }
+        return PW_ERR_VM;
+    }
+    if ((desired & (page - 1u)) != 0u)
+        return PW_ERR_MALFORMED;
+    status = backend->reserve_at(backend->context, desired, aligned, page,
+                                 region);
+    if (status != PW_OK)
+        return status;
+    *base = desired;
+    return PW_OK;
+}
+
+/* True when [base, base+bytes) lies entirely inside a region we mapped. */
+static int region_covers(const PwWineCallContext *calls, uint32_t base,
+                         uint32_t bytes)
+{
+    for (uint32_t index = 0; index < calls->region_count; ++index) {
+        const PwWineCallContext *context = calls;
+        const uint32_t low = (uint32_t)(uintptr_t)context->regions[index].exec_base;
+        const uint64_t high = low + context->regions[index].bytes;
+
+        if ((uint64_t)base >= low && (uint64_t)base + bytes <= high)
+            return 1;
+    }
+    return 0;
+}
+
+/*
+ * NtAllocateVirtualMemory for the profile a first boot attempt reaches:
+ * the current process, no zero bits, MEM_COMMIT|MEM_RESERVE and
+ * PAGE_READWRITE. Value errors are answered with an NTSTATUS, because that
+ * is what the guest's own contract expects; a guest pointer that does not
+ * pass the accessor is a bridge refusal instead, and the argument index is
+ * reported so the evidence names it.
+ */
+static int gate_nt_allocate_virtual_memory(PwWineCallContext *calls,
+                                           const PwUnixCallFrame *frame,
+                                           PwUnixCallAccess guest_access,
+                                           void *access_context,
+                                           uint32_t *status,
+                                           uint32_t *argument_index)
+{
+    const uint32_t process_handle = frame->args[0];
+    const uint32_t base_pointer = frame->args[1];
+    const uint32_t zero_bits = frame->args[2];
+    const uint32_t size_pointer = frame->args[3];
+    const uint32_t allocation_type = frame->args[4];
+    const uint32_t protect = frame->args[5];
+    uint32_t base_value = 0u;
+    uint32_t size_value = 0u;
+    uint32_t base = 0u;
+    PwVmRegion region;
+    int result;
+
+    if (process_handle != 0xffffffffu) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (guest_access(access_context, base_pointer, &base_value, 4u, 0) != PW_OK) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (guest_access(access_context, size_pointer, &size_value, 4u, 0) != PW_OK) {
+        *argument_index = 4u;
+        return PW_ERR_MALFORMED;
+    }
+    if (zero_bits != 0u) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    /*
+     * MEM_RESERVE, MEM_COMMIT and their combination are all accepted; the
+     * reserve/commit distinction is not yet modelled, because the dispatcher
+     * only knows one kind of guest region. PAGE_READWRITE and the
+     * reserve-only "no access yet" value are accepted for the same reason.
+     */
+    if ((allocation_type != 0x1000u && allocation_type != 0x2000u &&
+         allocation_type != 0x3000u) ||
+        (protect != 0u && protect != 0x04u) || size_value == 0u) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    if (calls->report->allocated_bytes > calls->limit ||
+        size_value > calls->limit - calls->report->allocated_bytes) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    /*
+     * MEM_COMMIT on a range this run already mapped is the normal second half
+     * of "reserve then commit": it is idempotent, not a new reservation.
+     */
+    if ((allocation_type == 0x1000u || allocation_type == 0x3000u) &&
+        base_value != 0u &&
+        region_covers(calls, base_value, (size_value + 0xfffu) & ~0xfffu)) {
+        uint32_t rounded = (size_value + 0xfffu) & ~0xfffu;
+
+        if (guest_access(access_context, size_pointer, &rounded, 4u, 1) != PW_OK ||
+            guest_access(access_context, base_pointer, &base_value, 4u, 1) != PW_OK) {
+            *argument_index = 4u;
+            return PW_ERR_MALFORMED;
+        }
+        *status = PW_NT_SUCCESS;
+        return PW_OK;
+    }
+    memset(&region, 0, sizeof(region));
+    result = reserve_guest_block(calls, base_value,
+                                 (size_value + 0xfffu) & ~0xfffu, &region,
+                                 &base);
+    if (result == PW_ERR_LIMIT) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    if (result != PW_OK) {
+        *status = PW_NT_CONFLICTING_ADDRESSES;
+        return PW_OK;
+    }
+    result = calls->low->base.commit(calls->low->base.context, &region, 0u,
+                                     region.bytes,
+                                     PW_PROT_READ | PW_PROT_WRITE);
+    if (result != PW_OK) {
+        (void) calls->low->base.release(calls->low->base.context, &region);
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    /*
+     * The guest must be able to address what it was just given, so the new
+     * block joins the dispatcher's declared regions. Without this the very
+     * next access to an NT allocation would be classified as out of bounds.
+     */
+    {
+        PwX86State *state = access_context;
+
+        if (state->memory_count >= PW_X86_MEMORY_REGIONS) {
+            (void) calls->low->base.release(calls->low->base.context, &region);
+            *status = PW_NT_INVALID_PARAMETER;
+            return PW_OK;
+        }
+        state->memory[state->memory_count++] = (PwX86Memory){
+            .low = base,
+            .high = (uint64_t)base + region.bytes,
+            .permissions = PW_X86_READ | PW_X86_WRITE,
+        };
+    }
+    calls->regions[calls->region_count++] = region;
+    calls->report->allocations++;
+    calls->report->allocated_bytes += (uint32_t)region.bytes;
+    calls->report->call_regions = calls->region_count;
+    {
+        uint32_t written_size = (uint32_t)region.bytes;
+
+        if (guest_access(access_context, size_pointer, &written_size, 4u, 1) != PW_OK ||
+            guest_access(access_context, base_pointer, &base, 4u, 1) != PW_OK) {
+            *argument_index = 4u;
+            return PW_ERR_MALFORMED;
+        }
+    }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
+ * Services one intercepted Unix call. PW_WINE_STOP_NONE means the guest may
+ * continue: the handler's NTSTATUS is in EAX, the stdcall frame is popped and
+ * EIP returns to the stub, exactly as Wine's own dispatcher would leave it.
+ * Any other value is the reason the run stopped, and the guest state is
+ * untouched so the evidence describes the boundary itself.
+ */
+static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
+                                    PwWineGateReport *report)
+{
+    const uint32_t id = state->gpr[0];
+    const PwUnixCallInfo *info = pw_unix_call_lookup(id);
+    PwUnixCallFrame frame;
+    uint32_t argument_index = 0u;
+    uint32_t status = PW_NT_NOT_IMPLEMENTED;
+    int result;
+
+    report->observed_syscall_id = id;
+    if (!info) {
+        pw_unix_call_record(&report->calls, NULL, NULL, status, 0u,
+                            PW_UNIX_CALL_UNKNOWN);
+        return PW_WINE_STOP_UNIX_CALL_UNKNOWN;
+    }
+    result = pw_unix_call_read(info, gate_guest_access, state, state->gpr[4],
+                               &frame, &argument_index);
+    if (result != PW_OK) {
+        pw_unix_call_record(&report->calls, &frame, info, status,
+                            argument_index, PW_UNIX_CALL_REJECTED);
+        return PW_WINE_STOP_UNIX_CALL_REJECTED;
+    }
+    if (info->id != 0x0018u) {
+        /* A known call number with no handler yet: the frame is understood
+         * and reported, but the guest must not continue past it. */
+        pw_unix_call_record(&report->calls, &frame, info, PW_NT_NOT_IMPLEMENTED,
+                            0u, PW_UNIX_CALL_UNIMPLEMENTED);
+        return PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED;
+    }
+    result = gate_nt_allocate_virtual_memory(calls, &frame, gate_guest_access,
+                                             state, &status, &argument_index);
+    if (result != PW_OK) {
+        pw_unix_call_record(&report->calls, &frame, info, status,
+                            argument_index, PW_UNIX_CALL_REJECTED);
+        return PW_WINE_STOP_UNIX_CALL_REJECTED;
+    }
+    if (status == PW_NT_NOT_IMPLEMENTED) {
+        pw_unix_call_record(&report->calls, &frame, info, status, 0u,
+                            PW_UNIX_CALL_UNIMPLEMENTED);
+        return PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED;
+    }
+    pw_unix_call_record(&report->calls, &frame, info, status,
+                        info->arg_bytes / 4u, PW_UNIX_CALL_HANDLED);
+    /* Return to the stub with its stdcall frame popped. */
+    state->gpr[0] = status;
+    /* [esp] is the stub's own return address and [esp+4] the caller's, so
+     * resuming means dropping both plus the arguments the stub's ret would
+     * have popped. */
+    state->gpr[4] += 8u + info->arg_bytes;
+    state->eip = frame.return_pc;
+    report->calls_serviced++;
+    return PW_WINE_STOP_NONE;
+}
+
+/*
  * Declares the guest memory the dispatcher may touch. The DBT's guard is
  * region-granular, so each module contributes its whole image as readable
  * plus the union of its writable sections as writable; a write into code is
@@ -334,6 +644,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     PwVmRegion stack;
     PwVmRegion teb;
     PwVmRegion peb;
+    PwWineCallContext calls;
     PwX86State state;
     uint32_t thunks[PW_WINE_GATE_MAX_BOUNDARIES];
     const PwModule *entry_module;
@@ -354,6 +665,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     memset(&root_span, 0, sizeof(root_span));
     memset(&teb, 0, sizeof(teb));
     memset(&peb, 0, sizeof(peb));
+    memset(&calls, 0, sizeof(calls));
     memset(&call, 0, sizeof(call));
     budget = config->step_budget != 0u ? config->step_budget
                                        : PW_WINE_GATE_DEFAULT_STEPS;
@@ -608,6 +920,12 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     if (status != PW_OK)
         goto done;
     have_engine = 1;
+    calls.low = &low;
+    calls.config = config;
+    calls.report = report;
+    calls.heap_cursor = PW_WINE_GATE_HEAP_BASE;
+    calls.limit = config->allocation_limit != 0u ? config->allocation_limit
+                                                 : PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT;
     /* Mode toggles exist so the same real code can be run with chaining,
      * register residency and lazy flags on and off and compared. */
     if (config->modes_set) {
@@ -639,6 +957,23 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             /* Stopped before executing the dispatcher jump: no unvalidated
              * guest pointer is dereferenced to reach it. */
             report->observed_syscall_id = state.gpr[0];
+            if (config->bridge_calls) {
+                const uint32_t budget = config->call_budget != 0u
+                    ? config->call_budget : PW_WINE_GATE_DEFAULT_CALLS;
+                PwWineStop serviced;
+
+                report->stop_address = state.eip;
+                if (report->calls_serviced >= budget) {
+                    report->stop = PW_WINE_STOP_STEP_BUDGET;
+                    break;
+                }
+                serviced = service_unix_call(&calls, &state, report);
+                if (serviced == PW_WINE_STOP_NONE)
+                    continue;
+                report->stop = serviced;
+                report->stop_address = state.eip;
+                break;
+            }
             report->stop = PW_WINE_STOP_UNIX_CALL_BOUNDARY;
             report->stop_address = state.eip;
             break;
@@ -665,7 +1000,10 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
      * syscall we observed in EAX. This binds the number to the image instead
      * of trusting the register alone.
      */
-    if (report->stop == PW_WINE_STOP_UNIX_CALL_BOUNDARY && entry_module &&
+    /* Any stop that happened at the thunk leaves the same two-level frame on
+     * the guest stack, including the ones a bridged run stops with. */
+    if (report->stop_address == report->boundary_thunk_va &&
+        report->boundary_thunk_va != 0u && entry_module &&
         state.gpr[4] >= state.stack_low &&
         (uint64_t)state.gpr[4] + 4u <= state.stack_high) {
         uint32_t return_eip = 0u;
@@ -721,6 +1059,11 @@ done:
     if (have_peb &&
         config->backend->release(config->backend->context, &peb) == PW_OK)
         report->cleanup_mappings++;
+    for (uint32_t index = 0; index < calls.region_count; ++index) {
+        if (calls.low->base.release(calls.low->base.context,
+                                    &calls.regions[index]) == PW_OK)
+            report->cleanup_mappings++;
+    }
     if (have_loader) {
         report->cleanup_modules = loader.module_count;
         report->cleanup_mappings += loader.module_count;
@@ -749,6 +1092,9 @@ const char *pw_wine_stop_name(PwWineStop stop)
     case PW_WINE_STOP_STEP_BUDGET: return "step-budget";
     case PW_WINE_STOP_RETURNED_TO_CALLER: return "returned-to-caller";
     case PW_WINE_STOP_GATE_ERROR: return "gate-error";
+    case PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED: return "unix-call-unimplemented";
+    case PW_WINE_STOP_UNIX_CALL_UNKNOWN: return "unix-call-unknown";
+    case PW_WINE_STOP_UNIX_CALL_REJECTED: return "unix-call-rejected";
     default: return "unknown";
     }
 }
