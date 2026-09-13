@@ -636,6 +636,93 @@ static int allocate_guest_page(const PwWineGateConfig *config,
     return PW_OK;
 }
 
+/*
+ * A minimal but populated RTL_USER_PROCESS_PARAMETERS: sizes, the current
+ * directory, the DLL and image paths, the command line and an environment
+ * block, all as UTF-16LE strings inside the same declared page. ntdll reads
+ * these during loader and heap initialisation; a zeroed page is what makes it
+ * dereference a null Buffer. This is still not a Windows process environment
+ * - there is no registry, no NLS data and no drive-letter table - but the
+ * fields the loader asks for are present and self-consistent.
+ */
+static uint32_t write_wide(uint8_t *page, uint32_t *cursor, const char *ascii)
+{
+    const uint32_t offset = *cursor;
+
+    while (*ascii != '\0') {
+        page[*cursor] = (uint8_t)*ascii++;
+        page[*cursor + 1u] = 0u;
+        *cursor += 2u;
+    }
+    page[*cursor] = 0u;
+    page[*cursor + 1u] = 0u;
+    *cursor += 2u;
+    return offset;
+}
+
+static void set_unicode_string(uint8_t *page, uint32_t field, uint32_t offset,
+                               const char *text)
+{
+    const uint32_t base = (uint32_t)(uintptr_t)page;
+    const uint16_t bytes = (uint16_t)(strlen(text) * 2u);
+
+    memcpy(page + field, &bytes, 2u);
+    memcpy(page + field + 2u, &bytes, 2u);
+    {
+        const uint32_t buffer = base + offset;
+
+        memcpy(page + field + 4u, &buffer, 4u);
+    }
+}
+
+static int populate_process_parameters(uint8_t *page, uint32_t page_bytes,
+                                       const char *root_module,
+                                       uint32_t *length_out)
+{
+    uint32_t cursor = 0x100u;
+    uint32_t current_offset;
+    uint32_t dll_offset;
+    uint32_t image_offset;
+    uint32_t command_offset;
+    uint32_t environment_offset;
+    char image_path[128];
+
+    if (!page || page_bytes < 4096u || !root_module)
+        return PW_ERR_PRECONDITION;
+    if (strlen(root_module) + sizeof("C:\\windows\\system32\\") >
+        sizeof(image_path))
+        return PW_ERR_LIMIT;
+    memcpy(image_path, "C:\\windows\\system32\\",
+           sizeof("C:\\windows\\system32\\") - 1u);
+    memcpy(image_path + sizeof("C:\\windows\\system32\\") - 1u,
+           root_module, strlen(root_module) + 1u);
+
+    current_offset = write_wide(page, &cursor, "C:\\windows");
+    dll_offset = write_wide(page, &cursor, "C:\\windows\\system32");
+    image_offset = write_wide(page, &cursor, image_path);
+    command_offset = write_wide(page, &cursor, image_path);
+    environment_offset = write_wide(page, &cursor, "SystemRoot=C:\\windows");
+    page[cursor] = 0u;
+    page[cursor + 1u] = 0u;
+    cursor += 2u;
+
+    set_unicode_string(page, 0x24u, current_offset, "C:\\windows");
+    set_unicode_string(page, 0x30u, dll_offset, "C:\\windows\\system32");
+    set_unicode_string(page, 0x38u, image_offset, image_path);
+    set_unicode_string(page, 0x40u, command_offset, image_path);
+    {
+        const uint32_t base = (uint32_t)(uintptr_t)page;
+        const uint32_t environment = base + environment_offset;
+
+        memcpy(page + 0x48u, &environment, 4u);
+    }
+    memcpy(page + 0x00u, &cursor, 4u);      /* MaximumLength */
+    memcpy(page + 0x04u, &cursor, 4u);      /* Length */
+    if (length_out)
+        *length_out = cursor;
+    return PW_OK;
+}
+
 int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 {
     /* Large by design: the bind workspace holds one module's import table. */
@@ -900,13 +987,26 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         if (status != PW_OK)
             goto done;
         have_parameters = 1;
+        status = populate_process_parameters(parameters.write_base,
+                                             (uint32_t)parameters.bytes,
+                                             root_canonical,
+                                             &report->parameters_length);
+        if (status != PW_OK)
+            goto done;
         {
             uint8_t *peb_block = peb.write_base;
+            const PwModule *root_module_loaded =
+                pw_loader_module(&loader, 0u);
 
-            /* PEB->ProcessParameters (0x10): ntdll reads process parameters
-             * during heap and loader initialisation. The gate provides a
-             * zeroed page rather than a populated structure, and says so. */
+            /* PEB->ProcessParameters (0x10) and PEB->ImageBaseAddress
+             * (0x08): ntdll reads both during loader initialisation. */
             memcpy(peb_block + 0x10, &report->parameters_base, 4u);
+            if (root_module_loaded) {
+                const uint32_t image_base =
+                    (uint32_t)root_module_loaded->mapped.actual_base;
+
+                memcpy(peb_block + 0x08, &image_base, 4u);
+            }
         }
         {
             uint8_t *block = teb.write_base;

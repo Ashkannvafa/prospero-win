@@ -345,3 +345,45 @@ dereferencing something it was never given, not the guard refusing mapped
 memory) and the stop address is inside ntdll. Nothing about it is reported as
 acceptance: the verdict still says the run did not reach the Unix-call
 boundary.
+
+### A populated process environment, and the first I/O call
+
+The null `CurrentDirectory.Buffer` was the binding constraint, so the gate now
+builds a small but self-consistent `RTL_USER_PROCESS_PARAMETERS` in its page:
+`MaximumLength`/`Length`, `CurrentDirectory.DosPath`, `DllPath`,
+`ImagePathName`, `CommandLine` and an `Environment` block, all as UTF-16LE
+strings (`C:\windows`, `C:\windows\system32`, the root module's path and
+`SystemRoot=C:\windows`). `PEB->ProcessParameters` points at the page and
+`PEB->ImageBaseAddress` at the root module. It is still not a Windows process
+environment - no registry, no NLS data, no drive-letter table - but the fields
+the loader asks for are present and self-consistent.
+
+That closed the architectural gap: the run jumped from 8582 to 11 707 retired
+instructions, and three more forms the compiler emits as padding or prefixing
+were needed along the way:
+
+- `66 90` (the 16-bit NOP) and `0F 1F /0` (the multi-byte NOP), which compilers
+  emit for alignment;
+- a **segment override on LEA** (`2E 8D B4 26 ...`), which is exact to ignore
+  because LEA never accesses memory.
+
+The gate's translated-code arena was also raised to 4 MiB: ntdll's loader path
+translates far more code than a title's startup, and running out of the arena
+now has its own classified stop (`cache-limit`) instead of surfacing as a
+guest fault. The evidence validator accepts that stop under the same rule as
+the others: the calls record must be present and nothing may have been
+refused.
+
+The result is the first **Unix call that has no handler**:
+
+```text
+retired 11707 instructions over 2252 dispatches and 404 translated blocks
+3 NtAllocateVirtualMemory calls serviced, 2 guest regions mapped (88 KiB)
+4th call: syscall 0x0033 = NtOpenFile, 24 argument bytes -> unimplemented
+stop: unix-call-unimplemented, verdict not accepted
+```
+
+So the next work is concrete and architectural rather than an instruction
+family: implement the file/open path (`NtOpenFile` and the calls that follow
+it) behind the same table, with guest-pointer validation and a documented
+mapping onto the gate's read-only runtime directory.

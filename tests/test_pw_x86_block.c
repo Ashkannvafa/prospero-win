@@ -864,6 +864,9 @@ static void sse_and_scan_tests(void)
     const uint8_t shr16[]={0x66,0xd1,0xea};               /* shr dx,1 */
     const uint8_t shl16_imm[]={0x66,0xc1,0xe0,0x04};      /* shl ax,4 */
     const uint8_t shr16_cl[]={0x66,0xd3,0xe8};            /* shr ax,cl */
+    const uint8_t nop16[]={0x66,0x90};                    /* xchg ax,ax */
+    const uint8_t nop_multibyte[]={0x0f,0x1f,0x44,0x00,0x00};
+    const uint8_t lea_cs[]={0x2e,0x8d,0x74,0x26,0x00};   /* padding form */
 
     state.memory_count=0;
     memset(state.fp.xmm,0,sizeof(state.fp.xmm));
@@ -955,6 +958,17 @@ static void sse_and_scan_tests(void)
     state.gpr[0]=0x00008000;state.gpr[1]=1;state.eflags=0x202;
     assert(run(shr16_cl,sizeof(shr16_cl),0x8170)==0);
     assert(state.gpr[0]==0x00004000 && (state.eflags&1)==0);
+    /* Padding and prefix forms: a 16-bit NOP, a multi-byte NOP, and a
+     * segment override on LEA (which never accesses memory). None of them
+     * may change a register or a flag. */
+    state.gpr[6]=0x12345678;state.gpr[0]=0xabcdef01;state.eflags=0xad7;
+    assert(run(nop16,sizeof(nop16),0x8180)==0);
+    assert(state.gpr[0]==0xabcdef01 && state.eflags==0xad7 && state.eip==0x8182);
+    assert(run(nop_multibyte,sizeof(nop_multibyte),0x8190)==0);
+    assert(state.gpr[0]==0xabcdef01 && state.eip==0x8195);
+    state.gpr[6]=0x00001000;state.eflags=0xad7;
+    assert(run(lea_cs,sizeof(lea_cs),0x81a0)==0);
+    assert(state.gpr[6]==0x00001000 && state.eflags==0xad7 && state.eip==0x81a5);
     /* Every one of them must behave identically in all engine modes. */
     for(unsigned residency=0;residency<2;residency++)
         for(unsigned lazy=0;lazy<2;lazy++) {
@@ -976,6 +990,10 @@ static void sse_and_scan_tests(void)
     const uint8_t movq_reg[]={0xf3,0x0f,0x7e,0xc1};
     const uint8_t movss_reg[]={0xf3,0x0f,0x10,0xc1};
     const uint8_t movups_oob[]={0x0f,0x11,0x00};
+    const uint8_t lea_cs_reg[]={0x2e,0x8d,0xc0};
+    const uint8_t nop_bad[]={0x0f,0x1f,0xc8};
+    assert(pw_x86_translate(lea_cs_reg,sizeof(lea_cs_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(nop_bad,sizeof(nop_bad),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(mmx_movq,sizeof(mmx_movq),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(movq_reg,sizeof(movq_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(movss_reg,sizeof(movss_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);

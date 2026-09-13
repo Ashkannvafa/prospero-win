@@ -35,7 +35,10 @@ enum {
     PW_WINE_GATE_MAX_STEPS = 1048576,
     PW_WINE_GATE_STACK_BYTES = 64u * 1024u,
     PW_WINE_GATE_CACHE_ENTRIES = 1024,
-    PW_WINE_GATE_ARENA_BYTES = 256u * 1024u,
+    /* ntdll's loader path translates far more code than a title's startup:
+     * the arena is the gate's own budget, and running out of it is reported
+     * as its own classified stop rather than as a guest fault. */
+    PW_WINE_GATE_ARENA_BYTES = 4u * 1024u * 1024u,
     PW_WINE_GATE_DEFAULT_CALLS = 64,
     PW_WINE_GATE_MAX_CALL_REGIONS = 16,
     PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT = 4u * 1024u * 1024u,
@@ -139,6 +142,7 @@ typedef struct PwWineGateReport {
     uint32_t teb_bytes;
     uint32_t peb_base;              /* minimal guest PEB (first argument) */
     uint32_t parameters_base;       /* zeroed process-parameters page */
+    uint32_t parameters_length;     /* bytes of the populated structure */
     PwUnixCallTally calls;
     uint32_t calls_serviced;
     uint32_t allocations;

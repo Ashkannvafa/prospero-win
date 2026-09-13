@@ -870,6 +870,7 @@ typedef struct DecodedInst {
     uint8_t bit_scan_opcode;
     unsigned bit_scan_word;         /* the 0x66 (16-bit) form */
     unsigned shift_word;            /* 0x66 shift/rotate group */
+    unsigned lea_prefixed;          /* a segment override on LEA */
     unsigned conditional;
     unsigned extend;
     unsigned setcc;
@@ -1082,6 +1083,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         unsigned bit_scan=0,bit_scan_word=0;
         uint8_t bit_scan_opcode=0;
         unsigned shift_word=0;
+        unsigned lea_prefixed=0;
         unsigned extend_word_destination=0;
         unsigned x87=0,x87_width=0,x87_write=0,x87_register=0;
         unsigned string_op=0,string_width=0,string_repeat=0;
@@ -1315,6 +1317,23 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                 flags_def=0x8c5;
                 if(source[cursor+1]==0xd3)flags_use=0x8c5;
             }
+        } else if(op==0x66 && bytes-cursor>=2 && source[cursor+1]==0x90) {
+            /* The 16-bit encoding of NOP: compilers emit it as padding. */
+            length=2;
+        } else if((op==0x2e || op==0x3e || op==0x26 || op==0x36) &&
+                  bytes-cursor>=2 && source[cursor+1]==0x8d) {
+            /*
+             * A segment override on LEA. LEA never accesses memory, so the
+             * override is architecturally irrelevant; compilers emit
+             * "2e 8d b4 26 ..." as an eight-byte alignment padding, and
+             * dropping it is exact rather than an approximation.
+             */
+            int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            if(operand.mod==3)DECODE_FAIL(PW_ERR_UNSUPPORTED);
+            lea_prefixed=1;
+            length=2+operand.bytes;
+            can_fault=0;
         } else if(op==0x66 && bytes-cursor>=3 && source[cursor+1]==0x0f) {
             /* SSE with a mandatory 0x66 prefix. */
             int result=decode_sse(0x66u,0u,source+cursor+1,bytes-cursor-1,
@@ -1445,6 +1464,14 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                 length=2+operand.bytes;
                 can_fault=(operand.mod!=3);
                 flags_def=0x40;
+            }
+            else if(source[cursor+1]==0x1f) {
+                /* Multi-byte NOP ("0f 1f /0"): padding only, no effect. */
+                int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+                if(result!=PW_OK)DECODE_FAIL(result);
+                if(operand.reg!=0)DECODE_FAIL(PW_ERR_UNSUPPORTED);
+                length=2+operand.bytes;
+                can_fault=0;
             } else DECODE_FAIL(PW_ERR_UNSUPPORTED);
         } else if (op == 0x64) {
             if (bytes-cursor < 2) DECODE_FAIL(PW_ERR_TRUNCATED);
@@ -1525,6 +1552,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->bit_scan_opcode = bit_scan_opcode;
         d->bit_scan_word = bit_scan_word;
         d->shift_word = shift_word;
+        d->lea_prefixed = lea_prefixed;
         d->conditional = conditional;
         d->extend = extend;
         d->setcc = setcc;
@@ -1658,6 +1686,7 @@ analyze_and_emit:
         uint8_t bit_scan_opcode = d->bit_scan_opcode;
         unsigned bit_scan_word = d->bit_scan_word;
         unsigned shift_word = d->shift_word;
+        unsigned lea_prefixed = d->lea_prefixed;
         unsigned conditional = d->conditional;
         unsigned extend = d->extend;
         unsigned setcc = d->setcc;
@@ -2448,7 +2477,7 @@ analyze_and_emit:
                     byte(&e,0x89); byte(&e,0x08);
                 }
             }
-        } else if (op == 0x89 || op == 0x8b || op == 0x8d) {
+        } else if (op == 0x89 || op == 0x8b || op == 0x8d || lea_prefixed) {
             if (operand.mod==3) {
                 if (operand.reg != operand.rm) {
                     load_guest_reg(&e, &block->exit_contract, (op==0x89 ? operand.reg:operand.rm));
@@ -2456,7 +2485,8 @@ analyze_and_emit:
                 }
             } else {
                 effective_address(&e,&operand,&block->exit_contract);
-                if (op==0x8d) store_guest_reg(&e, &block->exit_contract, operand.reg);
+                if (op==0x8d || lea_prefixed)
+                    store_guest_reg(&e, &block->exit_contract, operand.reg);
                 else {
                     memory_address(&e,op==0x89);
                     if (op==0x8b) {

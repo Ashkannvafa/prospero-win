@@ -457,6 +457,29 @@ class Case(unittest.TestCase):
             self.run_validation(records)
         self.assertIn("does not describe an access", str(caught.exception))
 
+    def test_accepts_a_translation_arena_stop(self) -> None:
+        records = self.memory_stop_records()
+        del records["fault"]
+        records["run"][0]["stop"] = "cache-limit"
+        records["verdict"][0]["stop"] = "cache-limit"
+        notes = self.run_validation(records)
+        self.assertTrue(any("bridged:" in note for note in notes))
+
+    def test_arena_stop_with_a_refused_call(self) -> None:
+        records = self.memory_stop_records()
+        del records["fault"]
+        records["run"][0]["stop"] = "cache-limit"
+        records["verdict"][0]["stop"] = "cache-limit"
+        records["call-seq"].append({
+            "index": "1", "id": "0x00000019",
+            "name": "NtQueryInformationProcess", "args": "20",
+            "stub_return": hex(NTDLL_BASE + 0xD420),
+            "return": hex(NTDLL_BASE + 0x4EF03), "status": "0xc0000002",
+            "outcome": "rejected", "argument": "2"})
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("may not report a refused call", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -211,7 +211,8 @@ def validate(records: dict[str, list[dict[str, str]]],
     if run["stop"] != ACCEPTED_STOP:
         if run["stop"] not in BRIDGED_STOPS and \
                 run["stop"] != "unsupported-instruction" and \
-                run["stop"] != "memory-bounds":
+                run["stop"] != "memory-bounds" and \
+                run["stop"] != "cache-limit":
             raise Failure(f"the gate stopped with {run['stop']}")
         serviced = records.get("calls", [])
         if len(serviced) != 1:
@@ -280,6 +281,13 @@ def validate(records: dict[str, list[dict[str, str]]],
                     stop_address >= ntdll_base + \
                     number(ntdll, "image_bytes", "ntdll.dll"):
                 raise Failure("the memory stop is not inside ntdll")
+        elif run["stop"] == "cache-limit":
+            # The gate ran out of its own translated-code arena: a capacity
+            # stop, not a guest fault. Nothing may have been refused.
+            for serviced_call in sequence:
+                if serviced_call["outcome"] != "handled":
+                    raise Failure("a run that stopped on the translation "
+                                  "arena may not report a refused call")
         else:
             expected = BRIDGED_STOPS[run["stop"]]
             if last["outcome"] != expected:

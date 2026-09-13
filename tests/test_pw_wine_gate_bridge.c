@@ -295,6 +295,11 @@ int main(void)
     assert(report.allocations == 1u);
     assert(report.allocated_bytes == ALLOCATION_SIZE);
     assert(report.call_regions == 1u);
+    /* The gate populated a process-parameters structure: the loader reads the
+     * current directory, the DLL and image paths and the environment from
+     * it, and a zeroed page is what used to make it fault. */
+    assert(report.parameters_length > 0x100u);
+    assert(report.parameters_base == 0x0c000000u);
     /*
      * The second call's first argument was loaded by the guest from the slot
      * the bridge filled in, so this value can only be right if the write-back
