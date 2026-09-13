@@ -27,7 +27,9 @@ enum {
     PE_FIXTURE_MAX_SECTIONS = 8,
     PE_FIXTURE_MAX_IMPORTS = 6,
     PE_FIXTURE_MAX_NAMES = 8,
-    PE_FIXTURE_MAX_RELOCS = 32,
+    /* Enough for a synthetic caller that builds several OBJECT_ATTRIBUTES
+     * and stores as many absolute pointers as a real image would. */
+    PE_FIXTURE_MAX_RELOCS = 64,
     PE_FIXTURE_MAX_EXPORTS = 16,
     PE_FIXTURE_MAX_TLS_CALLBACKS = 40,
 };

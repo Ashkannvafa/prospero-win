@@ -177,12 +177,16 @@ typedef struct PwWineGateReport {
     uint32_t allocations;
     uint32_t allocated_bytes;
     uint32_t call_regions;          /* guest regions this run mapped for NT */
+    /* file_opens counts every NtOpenFile the gate answered with a handle;
+     * file_directories counts how many of those were the gate-owned Windows
+     * directory, which has no platform token behind it. */
     uint64_t file_opens;
     uint64_t file_reads;
     uint64_t file_bytes;
     uint64_t file_closes;
     uint64_t file_refusals;
     uint32_t file_handles;
+    uint64_t file_directories;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t dispatches;

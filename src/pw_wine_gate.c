@@ -263,6 +263,7 @@ typedef struct PwWineCallContext {
         void *token;
         uint64_t size;
         uint64_t offset;
+        uint8_t directory;
         uint8_t used;
     } handles[PW_WINE_GATE_MAX_HANDLES];
 } PwWineCallContext;
@@ -478,13 +479,14 @@ static int file_handle_lookup(PwWineCallContext *calls, uint32_t value,
 }
 
 static int file_handle_alloc(PwWineCallContext *calls, void *token,
-                             uint64_t size, uint32_t *value)
+                             uint64_t size, int directory, uint32_t *value)
 {
     for (uint32_t index = 0; index < PW_WINE_GATE_MAX_HANDLES; ++index) {
         if (calls->handles[index].used)
             continue;
         calls->handles[index] = (struct PwWineHandle){
-            .token = token, .size = size, .offset = 0u, .used = 1u,
+            .token = token, .size = size, .offset = 0u,
+            .directory = (uint8_t)(directory != 0), .used = 1u,
         };
         *value = file_handle_value(index);
         calls->report->file_handles++;
@@ -534,18 +536,31 @@ static int prefix_matches(const char *text, const char *prefix, size_t *used)
  * is lower-cased, so ".." or an absolute host path cannot reach the service.
  */
 static int translate_runtime_path(const char *path, char *out, size_t out_bytes,
-                                  uint32_t *status)
+                                  int *is_directory, uint32_t *status)
 {
     const char *rest = path;
     size_t used = 0u;
     size_t length = 0u;
+    int directory = 0;
 
     if (prefix_matches(rest, "\\??\\", &used))
         rest += used;
-    if (prefix_matches(rest, "C:\\windows\\system32\\", &used) ||
-        prefix_matches(rest, "C:\\windows\\", &used))
+    if (prefix_matches(rest, "C:\\windows\\system32", &used) ||
+        prefix_matches(rest, "C:\\windows", &used)) {
         rest += used;
-    else {
+        /* The directory itself: a single trailing separator, no component. */
+        if (*rest == '\\' && rest[1] == '\0') {
+            rest += 1u;
+            directory = 1;
+        } else if (*rest == '\0') {
+            directory = 1;
+        } else if (*rest != '\\') {
+            *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+            return PW_ERR_NOT_FOUND;
+        } else {
+            rest += 1u;
+        }
+    } else {
         *status = PW_NT_OBJECT_NAME_NOT_FOUND;
         return PW_ERR_NOT_FOUND;
     }
@@ -560,12 +575,23 @@ static int translate_runtime_path(const char *path, char *out, size_t out_bytes,
         out[length] = ascii_lower(character);
         ++length;
     }
-    if (length == 0u || (length >= 2u && out[length - 1u] == '.' &&
-                         out[length - 2u] == '.')) {
+    if (length == 0u) {
+        if (!directory) {
+            *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+            return PW_ERR_MALFORMED;
+        }
+        out[0] = '\0';
+        if (is_directory)
+            *is_directory = 1;
+        return PW_OK;
+    }
+    if (length >= 2u && out[length - 1u] == '.' && out[length - 2u] == '.') {
         *status = PW_NT_OBJECT_NAME_NOT_FOUND;
         return PW_ERR_MALFORMED;
     }
     out[length] = '\0';
+    if (is_directory)
+        *is_directory = 0;
     return PW_OK;
 }
 
@@ -608,6 +634,36 @@ static void write_io_status(PwUnixCallAccess guest, void *context,
     (void)guest(context, address, block, sizeof(block), 1);
 }
 
+
+/*
+ * The Windows directory itself is a gate-owned object. There is no
+ * enumeration and no platform token behind it: the loader only needs its
+ * existence, and FileStandardInformation reporting Directory = 1.
+ */
+static int open_directory_handle(PwWineCallContext *calls, const char *reported,
+                                 uint32_t handle_pointer, uint32_t io_pointer,
+                                 PwUnixCallAccess guest, void *context,
+                                 uint32_t *status, uint32_t *argument_index)
+{
+    uint32_t handle = 0u;
+
+    if (file_handle_alloc(calls, NULL, 0u, 1, &handle) != PW_OK) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
+    if (guest(context, handle_pointer, &handle, 4u, 1) != PW_OK) {
+        (void)file_handle_release(calls, handle);
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    write_io_status(guest, context, io_pointer, PW_NT_SUCCESS, 0u);
+    memcpy(calls->report->last_file, reported, strlen(reported) + 1u);
+    calls->report->file_opens++;
+    calls->report->file_directories++;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
 /*
  * NtOpenFile for the runtime distribution. The accepted shape is the one a
  * loader uses: an OBJECT_ATTRIBUTES with a UNICODE_STRING name under the
@@ -625,6 +681,7 @@ static int gate_nt_open_file(PwWineCallContext *calls,
     uint32_t name_pointer = 0u;
     char wide[2u * PW_WINE_GATE_MAX_PATH];
     char name[PW_WINE_GATE_MAX_PATH + 1];
+    int directory = 0;
     uint64_t size = 0u;
     void *token = NULL;
     uint32_t handle = 0u;
@@ -648,7 +705,8 @@ static int gate_nt_open_file(PwWineCallContext *calls,
         *argument_index = 3u;
         return PW_ERR_MALFORMED;
     }
-    if (translate_runtime_path(wide, name, sizeof(name), status) != PW_OK) {
+    if (translate_runtime_path(wide, name, sizeof(name), &directory, status) !=
+        PW_OK) {
         const size_t length = strlen(wide);
 
         if (length <= PW_WINE_GATE_MAX_PATH)
@@ -656,6 +714,14 @@ static int gate_nt_open_file(PwWineCallContext *calls,
         calls->report->file_refusals++;
         return PW_OK;
     }
+    /*
+     * The Windows directory itself is a gate-owned object: there is no
+     * enumeration and no platform token behind it, and the loader only needs
+     * its existence and Directory = 1 from the standard information.
+     */
+    if (directory)
+        return open_directory_handle(calls, wide, handle_pointer, io_pointer,
+                                     guest, context, status, argument_index);
     if (!calls->config->files) {
         *status = PW_NT_NOT_IMPLEMENTED;
         calls->report->file_refusals++;
@@ -678,7 +744,7 @@ static int gate_nt_open_file(PwWineCallContext *calls,
         calls->report->file_refusals++;
         return PW_OK;
     }
-    if (file_handle_alloc(calls, token, size, &handle) != PW_OK) {
+    if (file_handle_alloc(calls, token, size, 0, &handle) != PW_OK) {
         calls->config->files->close(calls->config->files->context, token);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
@@ -712,6 +778,11 @@ static int gate_nt_read_file(PwWineCallContext *calls,
 
     if (file_handle_lookup(calls, handle, &index) != PW_OK) {
         *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (calls->handles[index].directory) {
+        *status = PW_NT_INVALID_DEVICE_REQUEST;
+        calls->report->file_refusals++;
         return PW_OK;
     }
     if (io_pointer == 0u || buffer == 0u || length == 0u) {
@@ -787,6 +858,7 @@ static int gate_nt_query_information_file(PwWineCallContext *calls,
     memset(block, 0, sizeof(block));
     memcpy(block, &calls->handles[index].size, 8u);        /* AllocationSize */
     memcpy(block + 8u, &calls->handles[index].size, 8u);   /* EndOfFile */
+    block[21] = calls->handles[index].directory;   /* Directory */
     written = length < sizeof(block) ? length : sizeof(block);
     if (written != 0u &&
         (information_pointer == 0u ||
@@ -796,6 +868,71 @@ static int gate_nt_query_information_file(PwWineCallContext *calls,
     }
     if (io_pointer != 0u)
         write_io_status(guest, context, io_pointer, PW_NT_SUCCESS, written);
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/* FileFsDeviceInformation: FILE_FS_DEVICE_INFORMATION {DeviceType, Characteristics}. */
+enum {
+    PW_WINE_FS_DEVICE_INFORMATION = 4u,
+    PW_WINE_FS_DEVICE_INFORMATION_BYTES = 8u,
+    /* FILE_DEVICE_DISK_FILE_SYSTEM: the runtime distribution is a directory
+     * tree on a fixed disk, and the gate does not probe the host for it. */
+    PW_WINE_DEVICE_DISK_FILE_SYSTEM = 0x00000008u,
+};
+
+/*
+ * NtQueryVolumeInformationFile for a gate-owned handle. The loader asks one
+ * question about the directory it just opened: RtlSetCurrentDirectory_U
+ * queries FileFsDeviceInformation and closes the handle again when
+ * FILE_REMOVABLE_MEDIA is set. The runtime distribution is a fixed disk, so
+ * the answer carries no characteristics; every other information class stays
+ * unhandled and the guest is told so with a real NTSTATUS.
+ */
+static int gate_nt_query_volume_information_file(PwWineCallContext *calls,
+                                                 const PwUnixCallFrame *frame,
+                                                 PwUnixCallAccess guest,
+                                                 void *context,
+                                                 uint32_t *status,
+                                                 uint32_t *argument_index)
+{
+    const uint32_t handle = frame->args[0];
+    const uint32_t io_pointer = frame->args[1];
+    const uint32_t information_pointer = frame->args[2];
+    const uint32_t length = frame->args[3];
+    const uint32_t information_class = frame->args[4];
+    uint32_t index = 0u;
+    uint8_t block[8];
+    const uint32_t device_type = PW_WINE_DEVICE_DISK_FILE_SYSTEM;
+    const uint32_t characteristics = 0u;
+
+    if (file_handle_lookup(calls, handle, &index) != PW_OK) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (information_class != PW_WINE_FS_DEVICE_INFORMATION) {
+        *status = PW_NT_INVALID_INFO_CLASS;
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    if (length < PW_WINE_FS_DEVICE_INFORMATION_BYTES) {
+        *status = PW_NT_BUFFER_TOO_SMALL;
+        if (io_pointer != 0u)
+            write_io_status(guest, context, io_pointer, *status, 0u);
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    memset(block, 0, sizeof(block));
+    memcpy(block, &device_type, 4u);
+    memcpy(block + 4u, &characteristics, 4u);
+    if (information_pointer == 0u ||
+        guest(context, information_pointer, block, sizeof(block), 1) != PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    if (io_pointer != 0u)
+        write_io_status(guest, context, io_pointer, PW_NT_SUCCESS,
+                        sizeof(block));
     *status = PW_NT_SUCCESS;
     return PW_OK;
 }
@@ -851,6 +988,10 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
         result = gate_nt_query_information_file(calls, &frame,
                                                 gate_guest_access, state,
                                                 &status, &argument_index);
+        break;
+    case 0x0049u:
+        result = gate_nt_query_volume_information_file(
+            calls, &frame, gate_guest_access, state, &status, &argument_index);
         break;
     case 0x000fu:
         if (file_handle_release(calls, frame.args[0]) == PW_OK)

@@ -38,10 +38,23 @@ enum {
     ESCAPE_ATTRIBUTES_RVA = DATA_RVA + 0x160,
     ESCAPE_HANDLE_RVA = DATA_RVA + 0x190,
     ESCAPE_IO_RVA = DATA_RVA + 0x194,
-    THUNK_RVA = TEXT_RVA + 0x80,
-    STUB_OPEN_RVA = TEXT_RVA + 0x90,
-    STUB_READ_RVA = TEXT_RVA + 0xA0,
-    STUB_CLOSE_RVA = TEXT_RVA + 0xB0,
+    DIRECTORY_TEXT_RVA = DATA_RVA + 0x1C0,  /* "C:\windows\system32" */
+    DIRECTORY_RVA = DATA_RVA + 0x200,       /* its UNICODE_STRING header */
+    DIRECTORY_ATTRIBUTES_RVA = DATA_RVA + 0x210,
+    DIRECTORY_HANDLE_RVA = DATA_RVA + 0x230,
+    DIRECTORY_IO_RVA = DATA_RVA + 0x234,
+    INFO_RVA = DATA_RVA + 0x240,            /* FileStandardInformation */
+    INFO_IO_RVA = DATA_RVA + 0x260,
+    DEVICE_INFO_RVA = DATA_RVA + 0x270,     /* FILE_FS_DEVICE_INFORMATION */
+    VOLUME_IO_RVA = DATA_RVA + 0x280,
+    VOLUME_RESULT_RVA = DATA_RVA + 0x290,
+    THUNK_RVA = TEXT_RVA + 0x200,
+    STUB_OPEN_RVA = TEXT_RVA + 0x210,
+    STUB_READ_RVA = TEXT_RVA + 0x220,
+    STUB_CLOSE_RVA = TEXT_RVA + 0x230,
+    STUB_VOLUME_RVA = TEXT_RVA + 0x240,     /* NtQueryVolumeInformationFile */
+    STUB_INFO_RVA = TEXT_RVA + 0x250,       /* NtQueryInformationFile */
+    STUB_ATTRS_RVA = TEXT_RVA + 0x260,      /* NtQueryAttributesFile: no handler */
     CALLER_RVA = TEXT_RVA,
     FILE_BYTES = 16,
 };
@@ -52,10 +65,10 @@ static const uint8_t file_contents[FILE_BYTES] = {
 };
 
 static uint8_t image[64 * 1024];
-static uint8_t text[512];
+static uint8_t text[1024];
 static uint32_t text_bytes;
 static uint8_t data[0x400];
-static PeFixtureReloc relocs[32];
+static PeFixtureReloc relocs[64];
 static uint32_t reloc_count;
 
 static void emit_byte(uint8_t value)
@@ -74,10 +87,21 @@ static void emit_u32(uint32_t value)
 
 static void emit_absolute(uint32_t rva)
 {
+    assert(reloc_count < sizeof(relocs) / sizeof(relocs[0]));
     relocs[reloc_count].rva = TEXT_RVA + text_bytes;
     relocs[reloc_count].type = PE_RELOC_HIGHLOW;
     reloc_count++;
     emit_u32(IMAGE_BASE + rva);
+}
+
+/* A pointer stored inside the data section: it needs its own base relocation
+ * exactly like the absolute operands the code section emits. */
+static void emit_data_reloc(uint32_t rva)
+{
+    assert(reloc_count < sizeof(relocs) / sizeof(relocs[0]));
+    relocs[reloc_count].rva = rva;
+    relocs[reloc_count].type = PE_RELOC_HIGHLOW;
+    reloc_count++;
 }
 
 static void emit_push_absolute(uint32_t rva)
@@ -165,6 +189,8 @@ static size_t build_module(void)
                        "C:\\windows\\system32\\test.dll");
     put_unicode_string(ESCAPE_RVA, ESCAPE_TEXT_RVA,
                        "C:\\windows\\system32\\..\\..\\etc");
+    put_unicode_string(DIRECTORY_RVA, DIRECTORY_TEXT_RVA,
+                       "C:\\windows\\system32");
     {
         const uint32_t name_pointer = IMAGE_BASE + NAME_RVA;
         const uint32_t escape_pointer = IMAGE_BASE + ESCAPE_RVA;
@@ -176,6 +202,13 @@ static size_t build_module(void)
         memcpy(data + (ESCAPE_ATTRIBUTES_RVA - DATA_RVA), &length, 4u);
         memcpy(data + (ESCAPE_ATTRIBUTES_RVA - DATA_RVA) + 8u,
                &escape_pointer, 4u);
+        {
+            const uint32_t directory_pointer = IMAGE_BASE + DIRECTORY_RVA;
+
+            memcpy(data + (DIRECTORY_ATTRIBUTES_RVA - DATA_RVA), &length, 4u);
+            memcpy(data + (DIRECTORY_ATTRIBUTES_RVA - DATA_RVA) + 8u,
+                   &directory_pointer, 4u);
+        }
     }
 
     /* The caller: open, read, close, then try the escaping path. */
@@ -217,6 +250,56 @@ static size_t build_module(void)
     emit_call(STUB_OPEN_RVA);
     emit_store_eax(ESCAPE_IO_RVA);
 
+    /*
+     * The Windows directory itself: the open must succeed as a gate-owned
+     * object, FileStandardInformation must report Directory = 1, and
+     * NtQueryVolumeInformationFile must answer FileFsDeviceInformation
+     * without claiming removable media. The two answers are then read back
+     * out of the guest buffers and handed to a call with no handler, so the
+     * transcript - not this test - shows what the guest actually saw.
+     */
+    emit_push_imm8(0x00);                 /* OpenOptions */
+    emit_push_imm8(0x00);                 /* ShareAccess */
+    emit_push_absolute(DIRECTORY_IO_RVA);
+    emit_push_absolute(DIRECTORY_ATTRIBUTES_RVA);
+    emit_push_imm32(0x00100000u);         /* FILE_READ_DATA */
+    emit_push_absolute(DIRECTORY_HANDLE_RVA);
+    emit_call(STUB_OPEN_RVA);
+    emit_store_eax(VOLUME_RESULT_RVA);
+
+    emit_push_imm8(0x05);                 /* FileStandardInformation */
+    emit_push_imm32(24u);                 /* Length */
+    emit_push_absolute(INFO_RVA);         /* FileInformation */
+    emit_push_absolute(INFO_IO_RVA);      /* IoStatusBlock */
+    emit_byte(0xa1);                      /* mov eax, [DIRECTORY_HANDLE_RVA] */
+    emit_absolute(DIRECTORY_HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_INFO_RVA);
+
+    emit_push_imm8(0x04);                 /* FileFsDeviceInformation */
+    emit_push_imm32(8u);                  /* Length */
+    emit_push_absolute(DEVICE_INFO_RVA);  /* FsInformation */
+    emit_push_absolute(VOLUME_IO_RVA);    /* IoStatusBlock */
+    emit_byte(0xa1);                      /* mov eax, [DIRECTORY_HANDLE_RVA] */
+    emit_absolute(DIRECTORY_HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_VOLUME_RVA);
+    emit_store_eax(VOLUME_RESULT_RVA + 4u);
+
+    emit_byte(0xa1);                      /* mov eax, [DIRECTORY_HANDLE_RVA] */
+    emit_absolute(DIRECTORY_HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_CLOSE_RVA);
+    emit_store_eax(VOLUME_RESULT_RVA + 8u);
+
+    emit_byte(0xa1);                      /* mov eax, [DEVICE_INFO_RVA] */
+    emit_absolute(DEVICE_INFO_RVA);
+    emit_byte(0x50);                      /* push DeviceType (second arg) */
+    emit_byte(0x0f);emit_byte(0xb6);emit_byte(0x05);
+    emit_absolute(INFO_RVA + 21u);        /* movzx eax, byte [Info+21] */
+    emit_byte(0x50);                      /* push Directory (first arg) */
+    emit_call(STUB_ATTRS_RVA);
+
     while (text_bytes < THUNK_RVA - TEXT_RVA)
         emit_byte(0x90);
     emit_byte(0xff); emit_byte(0x25);
@@ -224,6 +307,9 @@ static size_t build_module(void)
     emit_stub(STUB_OPEN_RVA, 0x0033u, 24u);     /* NtOpenFile */
     emit_stub(STUB_READ_RVA, 0x0006u, 36u);     /* NtReadFile */
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);     /* NtClose */
+    emit_stub(STUB_VOLUME_RVA, 0x0049u, 20u);   /* NtQueryVolumeInformationFile */
+    emit_stub(STUB_INFO_RVA, 0x0011u, 20u);     /* NtQueryInformationFile */
+    emit_stub(STUB_ATTRS_RVA, 0x003du, 8u);     /* NtQueryAttributesFile */
     emit_byte(0xc3);
 
     /*
@@ -231,18 +317,12 @@ static size_t build_module(void)
      * relocations, exactly like a real image: without them the guest would
      * hand the gate a preferred-base address that is not mapped.
      */
-    relocs[reloc_count].rva = NAME_RVA + 4u;
-    relocs[reloc_count].type = PE_RELOC_HIGHLOW;
-    reloc_count++;
-    relocs[reloc_count].rva = ATTRIBUTES_RVA + 8u;
-    relocs[reloc_count].type = PE_RELOC_HIGHLOW;
-    reloc_count++;
-    relocs[reloc_count].rva = ESCAPE_RVA + 4u;
-    relocs[reloc_count].type = PE_RELOC_HIGHLOW;
-    reloc_count++;
-    relocs[reloc_count].rva = ESCAPE_ATTRIBUTES_RVA + 8u;
-    relocs[reloc_count].type = PE_RELOC_HIGHLOW;
-    reloc_count++;
+    emit_data_reloc(NAME_RVA + 4u);
+    emit_data_reloc(ATTRIBUTES_RVA + 8u);
+    emit_data_reloc(ESCAPE_RVA + 4u);
+    emit_data_reloc(ESCAPE_ATTRIBUTES_RVA + 8u);
+    emit_data_reloc(DIRECTORY_RVA + 4u);
+    emit_data_reloc(DIRECTORY_ATTRIBUTES_RVA + 8u);
 
     memset(&spec, 0, sizeof(spec));
     spec.pe32plus = 0;
@@ -403,11 +483,16 @@ int main(void)
      * guest has to deal with; what matters here is what the guest saw. */
     (void)pw_wine_gate_run(&config, &report);
     assert(report.files_configured == 1u);
-    assert(report.calls_serviced == 4u);     /* open, read, close, refused open */
-    assert(report.file_opens == 1u);
+    /* open, read, close, refused open, directory open, directory query,
+     * directory volume query, directory close */
+    assert(report.calls_serviced == 8u);
+    assert(report.file_opens == 2u);         /* the DLL and the directory */
+    assert(report.file_directories == 1u);
     assert(report.file_reads == 1u);
     assert(report.file_bytes == FILE_BYTES);
-    assert(report.file_closes == 1u);
+    /* Both handles were closed by the guest, so cleanup released none. */
+    assert(report.file_closes == 2u);
+    assert(report.file_handles == 0u);
     assert(report.file_refusals == 1u);      /* the escaping path */
     /*
      * The escaping path is refused by the gate's path translation, so the
@@ -427,7 +512,36 @@ int main(void)
     assert(report.calls.sequence[3].id == 0x0033u);
     assert(report.calls.sequence[3].status == PW_NT_OBJECT_NAME_NOT_FOUND);
     /* Every one of them was a handled call, not a refusal of the bridge. */
-    assert(report.calls.handled == 4u);
+    /*
+     * The directory case: NtOpenFile("C:\windows\system32") succeeds as a
+     * gate-owned directory object, FileStandardInformation reports
+     * Directory = 1 and NtQueryVolumeInformationFile answers
+     * FileFsDeviceInformation. The guest reads both answers back and passes
+     * them to a call with no handler, so the recorded arguments are the
+     * values the guest actually loaded out of its own buffers.
+     */
+    {
+        uint32_t directory_queries = 0u;
+        uint32_t volume_queries = 0u;
+        const PwUnixCallRecord *last = NULL;
+
+        for (uint32_t index = 0; index < report.calls.records; ++index) {
+            const PwUnixCallRecord *record = &report.calls.sequence[index];
+
+            if (record->id == 0x0011u && record->status == PW_NT_SUCCESS)
+                directory_queries++;
+            if (record->id == 0x0049u && record->status == PW_NT_SUCCESS)
+                volume_queries++;
+            last = record;
+        }
+        assert(directory_queries == 1u);
+        assert(volume_queries == 1u);
+        assert(last != NULL && last->id == 0x003du);
+        assert(last->outcome == PW_UNIX_CALL_UNIMPLEMENTED);
+        assert(last->args[0] == 1u);        /* Directory = 1, read by the guest */
+        assert(last->args[1] == 8u);        /* FILE_DEVICE_DISK_FILE_SYSTEM */
+    }
+    assert(report.calls.handled >= 6u);
     assert(report.calls.rejected == 0u && report.calls.unknown == 0u);
     assert(report.last_file[0] != '\0');
     return 0;

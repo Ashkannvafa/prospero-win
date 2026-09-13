@@ -399,11 +399,17 @@ no file-system call.
 Handlers and their shape:
 
 ```text
-NtOpenFile              (0x0033) OBJECT_ATTRIBUTES + UNICODE_STRING name,
-                                 handle and IO_STATUS_BLOCK written back
-NtReadFile              (0x0006) handle, IO status, buffer, length, offset
-NtQueryInformationFile  (0x0011) FileStandardInformation only (sizes)
-NtClose                 (0x000f) releases a gate-owned handle
+NtOpenFile                    (0x0033) OBJECT_ATTRIBUTES + UNICODE_STRING
+                                       name, handle and IO_STATUS_BLOCK
+                                       written back; a directory of the
+                                       runtime namespace becomes a directory
+                                       object instead of a platform open
+NtReadFile                    (0x0006) handle, IO status, buffer, length,
+                                       offset; a directory handle is refused
+NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
+                                       and Directory for a directory object)
+NtQueryVolumeInformationFile  (0x0049) FileFsDeviceInformation only
+NtClose                       (0x000f) releases a gate-owned handle
 ```
 
 Rules the gate enforces before the platform is ever asked:
@@ -423,7 +429,10 @@ namespace gives `STATUS_OBJECT_NAME_NOT_FOUND`, a value error gives
 `STATUS_INVALID_PARAMETER`, an unsupported information class gives
 `STATUS_INVALID_INFO_CLASS` - because that is the contract the guest expects.
 Handles are released at cleanup, and the counters (`opens`, `reads`, `bytes`,
-`closes`, `refusals`, `last`) are part of the evidence.
+`closes`, `directories`, `refusals`, `last`) are part of the evidence.
+`opens` counts every `NtOpenFile` the gate answered with a handle - file or
+directory - and `directories` how many of those were the gate-owned Windows
+directory, so a directory open can never be mistaken for a platform file.
 
 `tests/test_pw_wine_file_service.c` proves the whole path without a real file:
 a synthetic module builds a UNICODE_STRING and an OBJECT_ATTRIBUTES for
@@ -443,6 +452,44 @@ retired 14918 instructions, 3041 dispatches, 580 translated blocks
 stop: returned-to-caller at EIP 0 (the loader's failure path jumps to null)
 ```
 
-So the next step is a directory object: accepting that open and answering
-`FileStandardInformation` with `Directory = 1` is what should let the loader
-continue past this point.
+### The directory object, and the question the loader asks about it
+
+That open is a directory, not a file, so the gate now owns directory objects
+too. `C:\windows` and `C:\windows\system32` (with or without the `\??\`
+prefix) are accepted by `NtOpenFile` and answered with a gate-owned handle;
+there is no platform token behind it, because the loader only needs the object
+to exist. It queries `FileStandardInformation` - the gate reports
+`Directory = 1` with zero sizes, and `NtReadFile` on that handle is refused
+with `STATUS_INVALID_DEVICE_REQUEST` - and then
+`NtQueryVolumeInformationFile` with `FileFsDeviceInformation`, which is what
+`RtlSetCurrentDirectory_U` uses to decide whether the current directory lives
+on removable media: a `FILE_REMOVABLE_MEDIA` characteristic would make it
+close the handle again. The runtime distribution is a directory tree on a
+fixed disk, so the answer is `FILE_DEVICE_DISK_FILE_SYSTEM` with no
+characteristics. The device type is a property of this profile, not a host
+probe, and every other volume information class is answered with
+`STATUS_INVALID_INFO_CLASS`; a buffer shorter than the 8-byte structure gets
+`STATUS_BUFFER_TOO_SMALL` rather than a silently truncated success.
+
+The call table itself was extended at the same time. It is still generated
+from the pinned `ntsyscalls.h`, and it now covers all 256 i386 numbers, so a
+number the loader reaches is recognized and named in the evidence instead of
+being reported as unknown; `tests/test_unix_call_table.py` re-derives every
+entry (number, name and stdcall argument width) from the pinned Wine revision
+and fails on any difference.
+
+Measured on the same pinned runtime with `--bridge 1`:
+
+```text
+retired 12472 instructions over 2400 dispatches and 490 translated blocks
+5 calls handled: 3 NtAllocateVirtualMemory, NtOpenFile "\??\C:\windows",
+  and NtQueryVolumeInformationFile FileFsDeviceInformation on that directory
+2 guest regions mapped (88 KiB)
+6th call: syscall 0x001e = NtFreeVirtualMemory, 16 argument bytes
+stop: unix-call-unimplemented, verdict not accepted
+```
+
+A directory object is not a file-system implementation: there is no
+enumeration and no `NtQueryDirectoryFile`, and the individual DLLs the loader
+opens later still go through the same single-component translation onto the
+read-only runtime directory.
