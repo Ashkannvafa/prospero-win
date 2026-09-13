@@ -11,6 +11,7 @@
  * a real NTSTATUS, not a silence.
  */
 #include "pe_fixture.h"
+#include "pw_unhandled_call.h"
 
 #include "../src/pw_module_name.h"
 #include "../src/pw_vm_posix.h"
@@ -283,7 +284,9 @@ static size_t build_module(void)
     emit_stub(STUB_DIRECTORY_RVA, 0x0058u, 12u);
     emit_stub(STUB_SECTION_RVA, 0x0037u, 12u);
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);
-    emit_stub(STUB_STOP_RVA, 0x0019u, 20u);
+    /* A call this bridge has no handler for. */
+    emit_stub(STUB_STOP_RVA, PW_TEST_UNHANDLED_CALL_ID,
+              PW_TEST_UNHANDLED_CALL_ARGS);
     emit_byte(0xc3);
 
     emit_data_reloc(KNOWN_RVA + 4u);
@@ -423,7 +426,7 @@ int main(void)
     (void)pw_wine_gate_run(&config, &report);
     assert(report.objects_configured == 1u);
     assert(report.stop == PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED);
-    assert(report.observed_syscall_id == 0x0019u);
+    assert(report.observed_syscall_id == PW_TEST_UNHANDLED_CALL_ID);
     assert(report.calls.records == 7u);
     assert(report.calls.handled == 6u);
     assert(report.calls.unimplemented == 1u);
@@ -465,7 +468,7 @@ int main(void)
      * gate-owned index, so never zero) and the status the section lookup
      * produced, both loaded from the guest's own memory.
      */
-    assert(report.calls.sequence[6].id == 0x0019u);
+    assert(report.calls.sequence[6].id == PW_TEST_UNHANDLED_CALL_ID);
     assert(report.calls.sequence[6].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
     assert(report.calls.sequence[6].args[0] == 0x100u);
     assert(report.calls.sequence[6].args[1] == PW_NT_OBJECT_NAME_NOT_FOUND);

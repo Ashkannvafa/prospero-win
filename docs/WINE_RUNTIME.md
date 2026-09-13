@@ -52,8 +52,12 @@ Requirements the script enforces rather than assumes:
 - the configure line is fixed:
   `--enable-archs=i386,x86_64 --disable-tests`.
 
-`--check-reproducible` performs two clean builds and compares every staged
-module byte for byte before writing the manifest. On this host the PE linker
+`--check-reproducible` stages the modules, forces a rebuild of every target in
+the same configured build directory (`make -B`) and stages them again,
+comparing every module byte for byte before writing the manifest. That is two
+forced rebuilds in one pinned build tree, not yet two independent clean build
+roots: building in two empty roots with different absolute paths is the
+stronger check and is not claimed here. On this host the PE linker
 is GNU `ld` (binutils) through `i686-w64-mingw32-gcc`; it honours
 `SOURCE_DATE_EPOCH` for the PE timestamp, which is the only non-deterministic
 field otherwise present. The observed difference between two builds without
@@ -431,6 +435,11 @@ NtQueryInformationToken       (0x0021) TokenUser for the current-token
 NtOpenDirectoryObject         (0x0058) a directory in the object namespace
 NtOpenSection                 (0x0037) a section by absolute name or relative
                                        to a directory object the gate owns
+NtQueryInformationProcess     (0x0019) ProcessImageInformation only, answered
+                                       from the process module's own PE headers
+NtTerminateProcess            (0x002c) the current process only; the run stops
+                                       with a classified stop instead of
+                                       pretending a terminated process runs on
 ```
 
 Rules the gate enforces before the platform is ever asked:
@@ -749,3 +758,46 @@ an information class with no meaning here and a value name that is not a
 name; then opens the registry root and a key relative to it; closes every
 handle; and hands what it read back to a call with no handler, so the
 recorded arguments are the guest's own memory.
+
+### The process image, and the second dispatcher
+
+The ntdll initialization path then asks a different question, and the answer is
+honest rather than convenient. `build_main_module` calls
+`NtQueryInformationProcess( ProcessImageInformation )` to decide whether the
+module the process was handed is an executable; the gate answers it out of
+**that module's own PE headers** - the transfer address is its entry point, and
+the stack sizes, subsystem and versions, characteristics, DLL characteristics,
+machine, checksum, file size and contains-code flag come from its file and
+optional headers.
+
+The module the gate presents as the process image is `kernelbase.dll`, whose
+characteristics (`0x2106`) include `IMAGE_FILE_DLL`. So ntdll prints
+`wine: ... is a dll, not an executable` and calls `NtTerminateProcess`. The
+bridge services that for the current process: `STATUS_SUCCESS`, and the run
+stops with a classified `process-terminated` stop, because a process that has
+terminated does not keep executing and the evidence should say so rather than
+invent a stop.
+
+Before the termination is reached, the run hits the next real frontier, and it
+is architectural. That `MESSAGE` goes through `__wine_dbg_output`, which calls
+the **unix-call dispatcher**: `__wine_unix_call_dispatcher`, a data export at
+RVA `0x0af034`, immediately next to the `__wine_syscall_dispatcher` slot at
+`0x0af030` that the gate already locates structurally. The unix side installs
+both; the gate only ever published the first, so the guest's call lands on
+address zero and the run stops with `returned-to-caller` at 0.
+
+That is the *unix-call* half of the platform layer this architecture names -
+`__wine_unix_call( unixlib_handle, code, args )`, with `__wine_unixlib_handle`
+alongside - and it is the honest next step rather than one more syscall:
+Wine's PE modules reach the host through it for debug output, server calls and
+the rest of the unixlib surface.
+
+Measured on the same pinned runtime with `--bridge 1`:
+
+```text
+retired 32544 instructions over 6869 dispatches and 968 translated blocks
+19 calls handled; the last is NtQueryInformationProcess ProcessImageInformation
+  -> SUCCESS with image_characteristics=0x2106 (kernelbase's own)
+cleanup modules=2 mappings=7 translations=1 status=ok
+stop: returned-to-caller at 0 - the unix-call dispatcher is not published
+```

@@ -55,6 +55,10 @@ static int parse_optional_header(PeImage *image, const uint8_t *optional,
      * stack/heap sizes differ, which is why the directory count moves.
      */
     image->entry_point = read_u32(optional + 0x10);
+    image->os_version_major = read_u16(optional + 0x28);
+    image->os_version_minor = read_u16(optional + 0x2a);
+    image->subsystem_version_major = read_u16(optional + 0x30);
+    image->subsystem_version_minor = read_u16(optional + 0x32);
     if (image->optional_magic == PE_OPT_MAGIC_PE32)
         image->image_base = read_u32(optional + 0x1c);
     else
@@ -63,8 +67,13 @@ static int parse_optional_header(PeImage *image, const uint8_t *optional,
     image->file_alignment = read_u32(optional + 0x24);
     image->size_of_image = read_u32(optional + 0x38);
     image->size_of_headers = read_u32(optional + 0x3c);
+    image->checksum = read_u32(optional + 0x40);
     image->subsystem = read_u16(optional + 0x44);
     image->dll_characteristics = read_u16(optional + 0x46);
+    /* The stack sizes are 32-bit in both shapes; PE32+ widens them, and the
+     * only consumer of these values here is an i386 image. */
+    image->stack_reserve = read_u32(optional + 0x48);
+    image->stack_commit = read_u32(optional + 0x4c);
     directory_offset = fixed - 4u;
     declared = read_u32(optional + directory_offset);
 

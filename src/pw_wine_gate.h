@@ -161,6 +161,7 @@ typedef enum PwWineStop {
     PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED = 11,
     PW_WINE_STOP_UNIX_CALL_UNKNOWN = 12,
     PW_WINE_STOP_UNIX_CALL_REJECTED = 13,
+    PW_WINE_STOP_PROCESS_TERMINATED = 14,
 } PwWineStop;
 
 typedef struct PwWineModuleRecord {
@@ -291,6 +292,8 @@ typedef struct PwWineGateReport {
     uint32_t registry_configured;
     char last_key[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t token_queries;
+    uint64_t process_queries;
+    uint32_t process_image_characteristics;
     uint64_t object_opens;
     uint64_t object_refusals;
     uint32_t objects_configured;

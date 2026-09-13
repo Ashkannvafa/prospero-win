@@ -19,6 +19,7 @@
  *   - the third, unimplemented call is named exactly and stops the run.
  */
 #include "pe_fixture.h"
+#include "pw_unhandled_call.h"
 
 #include "../src/pw_module_name.h"
 #include "../src/pw_vm_posix.h"
@@ -39,7 +40,9 @@ enum {
     THUNK_RVA = TEXT_RVA + 0x100,
     STUB0_RVA = TEXT_RVA + 0x110,   /* NtAllocateVirtualMemory, 0x18 */
     STUB1_RVA = TEXT_RVA + 0x120,   /* NtFreeVirtualMemory, 0x1e */
-    STUB2_RVA = TEXT_RVA + 0x130,   /* NtQueryInformationProcess, 0x19 */
+    /* A call this bridge has no handler for: the run must stop and name it
+     * exactly. Update it when the handler lands. */
+    STUB2_RVA = TEXT_RVA + 0x130,   /* NtProtectVirtualMemory, 0x50 */
     CALLER_RVA = TEXT_RVA,
     ALLOCATION_SIZE = 0x4000,
 };
@@ -183,7 +186,7 @@ static size_t build_module(void)
     emit_stub(0x001eu, 16u);           /* NtFreeVirtualMemory */
     while (text_bytes < STUB2_RVA - TEXT_RVA)
         emit_byte(0x90);
-    emit_stub(0x0019u, 20u);           /* NtQueryInformationProcess */
+    emit_stub(PW_TEST_UNHANDLED_CALL_ID, PW_TEST_UNHANDLED_CALL_ARGS);
     emit_byte(0xc3);
 
     memset(&spec, 0, sizeof(spec));
@@ -279,7 +282,7 @@ int main(void)
     assert(report.stop == PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED);
     assert(strcmp(pw_wine_stop_name(report.stop),
                   "unix-call-unimplemented") == 0);
-    assert(report.observed_syscall_id == 0x0019u);
+    assert(report.observed_syscall_id == PW_TEST_UNHANDLED_CALL_ID);
     assert(report.calls.handled == 2u);
     assert(report.calls.unimplemented == 1u);
     assert(report.calls.unknown == 0u && report.calls.rejected == 0u);
@@ -316,9 +319,9 @@ int main(void)
     assert(report.calls.sequence[1].status == PW_NT_SUCCESS);
     assert(report.calls.sequence[1].args[0] == 0xffffffffu);
     assert(report.calls.sequence[1].args[3] == 0x8000u);   /* MEM_RELEASE */
-    assert(report.calls.sequence[2].id == 0x0019u);
+    assert(report.calls.sequence[2].id == PW_TEST_UNHANDLED_CALL_ID);
     assert(strcmp(report.calls.sequence[2].name,
-                  "NtQueryInformationProcess") == 0);
+                  PW_TEST_UNHANDLED_CALL_NAME) == 0);
     assert(report.calls.sequence[2].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
     assert(report.allocations == 1u);
     assert(report.releases == 1u);

@@ -52,6 +52,10 @@ BRIDGED_STOPS = {
     "unix-call-unimplemented": "unimplemented",
     "unix-call-unknown": "unknown",
     "unix-call-rejected": "rejected",
+    # The guest ended its own process (ntdll's loader does that when the image
+    # it was handed is not an executable): the terminating call is serviced and
+    # the run stops because there is nothing left to execute.
+    "process-terminated": "handled",
 }
 NT_ERROR = 0x80000000
 

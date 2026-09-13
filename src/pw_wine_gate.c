@@ -255,6 +255,9 @@ typedef struct PwWineCallContext {
     PwWineLowBackend *low;
     const PwWineGateConfig *config;
     PwWineGateReport *report;
+    /* The module that plays the process image: ntdll's loader describes it
+     * back to itself through NtQueryInformationProcess. */
+    const PwModule *root;
     uint32_t heap_cursor;
     uint32_t limit;
     PwVmRegion regions[PW_WINE_GATE_MAX_CALL_REGIONS];
@@ -1721,6 +1724,107 @@ static int gate_nt_query_value_key(PwWineCallContext *calls,
     return PW_OK;
 }
 
+/* PROCESSINFOCLASS value and SECTION_IMAGE_INFORMATION, which is what ntdll's
+ * loader asks about the image the process is running. */
+enum {
+    PW_WINE_PROCESS_IMAGE_INFORMATION = 0x25u,
+    PW_WINE_SECTION_IMAGE_BYTES = 48u,
+    /* ImageFlags: the image was relocated when it was mapped, and it lives
+     * below 4 GiB. Nothing else applies to a native i386 PE. */
+    PW_WINE_IMAGE_FLAG_DYNAMICALLY_RELOCATED = 0x04u,
+    PW_WINE_IMAGE_FLAG_BASE_BELOW_4GB = 0x10u,
+    PW_NT_CURRENT_PROCESS = 0xffffffffu,
+};
+
+/*
+ * NtQueryInformationProcess for ProcessImageInformation: the class
+ * build_main_module asks for before it decides whether the module the process
+ * was handed is an executable. Every field is read out of that module's own PE
+ * headers - the transfer address is its entry point, the stack sizes, versions,
+ * characteristics, machine and checksum are its optional and file headers - so
+ * the answer describes the image that is actually mapped, and ntdll's own
+ * check (ImageCharacteristics & IMAGE_FILE_DLL) sees the truth.
+ */
+static int gate_nt_query_information_process(PwWineCallContext *calls,
+                                             const PwUnixCallFrame *frame,
+                                             PwUnixCallAccess guest,
+                                             void *context, uint32_t *status,
+                                             uint32_t *argument_index)
+{
+    const uint32_t process_handle = frame->args[0];
+    const uint32_t information_class = frame->args[1];
+    const uint32_t information_pointer = frame->args[2];
+    const uint32_t length = frame->args[3];
+    const uint32_t result_pointer = frame->args[4];
+    const PwModule *root = calls->root;
+    uint8_t block[PW_WINE_SECTION_IMAGE_BYTES];
+    uint32_t needed = PW_WINE_SECTION_IMAGE_BYTES;
+
+    if (process_handle != PW_NT_CURRENT_PROCESS) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (information_class != PW_WINE_PROCESS_IMAGE_INFORMATION) {
+        *status = PW_NT_INVALID_INFO_CLASS;
+        return PW_OK;
+    }
+    calls->report->process_queries++;
+    if (root == NULL || root->mapped.actual_base == 0u) {
+        *status = PW_NT_NOT_SUPPORTED;
+        return PW_OK;
+    }
+    if (result_pointer != 0u &&
+        guest(context, result_pointer, &needed, 4u, 1) != PW_OK) {
+        *argument_index = 5u;
+        return PW_ERR_MALFORMED;
+    }
+    if (information_pointer == 0u || length < sizeof(block)) {
+        *status = PW_NT_INFO_LENGTH_MISMATCH;
+        return PW_OK;
+    }
+    {
+        const PeImage *image = &root->image;
+        const uint32_t image_base = (uint32_t)root->mapped.actual_base;
+        const uint32_t transfer = image_base + image->entry_point;
+        const uint32_t subsystem = image->subsystem;
+        const uint16_t characteristics = image->characteristics;
+        const uint16_t dll_characteristics = image->dll_characteristics;
+        const uint16_t machine = image->machine;
+        const uint32_t file_size = (uint32_t)root->span.size;
+        uint8_t contains_code = 0u;
+        uint8_t flags = PW_WINE_IMAGE_FLAG_DYNAMICALLY_RELOCATED |
+                        PW_WINE_IMAGE_FLAG_BASE_BELOW_4GB;
+
+        for (uint32_t index = 0u; index < image->section_count; ++index)
+            if ((image->sections[index].characteristics &
+                 PE_SCN_MEM_EXECUTE) != 0u)
+                contains_code = 1u;
+        memset(block, 0, sizeof(block));
+        memcpy(block + 0u, &transfer, 4u);
+        memcpy(block + 8u, &image->stack_reserve, 4u);
+        memcpy(block + 12u, &image->stack_commit, 4u);
+        memcpy(block + 16u, &subsystem, 4u);
+        memcpy(block + 20u, &image->subsystem_version_minor, 2u);
+        memcpy(block + 22u, &image->subsystem_version_major, 2u);
+        memcpy(block + 24u, &image->os_version_major, 2u);
+        memcpy(block + 26u, &image->os_version_minor, 2u);
+        memcpy(block + 28u, &characteristics, 2u);
+        memcpy(block + 30u, &dll_characteristics, 2u);
+        memcpy(block + 32u, &machine, 2u);
+        block[34] = contains_code;
+        block[35] = flags;
+        memcpy(block + 40u, &file_size, 4u);
+        memcpy(block + 44u, &image->checksum, 4u);
+        calls->report->process_image_characteristics = characteristics;
+    }
+    if (guest(context, information_pointer, block, sizeof(block), 1) != PW_OK) {
+        *argument_index = 3u;
+        return PW_ERR_MALFORMED;
+    }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
 /*
  * Object-namespace paths. An absolute name starts with '\' and every
  * component is validated like a registry component; a relative name is
@@ -1950,6 +2054,7 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     uint32_t argument_index = 0u;
     uint32_t status = PW_NT_NOT_IMPLEMENTED;
     int result;
+    int terminate = 0;
 
     report->observed_syscall_id = id;
     if (!info) {
@@ -2022,6 +2127,10 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
                                      PW_WINE_HANDLE_OBJECT_DIRECTORY, &status,
                                      &argument_index);
         break;
+    case 0x0019u:
+        result = gate_nt_query_information_process(
+            calls, &frame, gate_guest_access, state, &status, &argument_index);
+        break;
     case 0x0037u:
         result = gate_nt_open_object(calls, &frame, gate_guest_access, state,
                                      PW_WINE_OBJECT_SECTION,
@@ -2034,6 +2143,24 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
         else
             status = PW_NT_INVALID_HANDLE;
         result = PW_OK;
+        break;
+    case 0x002cu:
+        /*
+         * NtTerminateProcess for the current process. The guest has asked to
+         * end the process it is initializing, and that is answered honestly:
+         * the call is serviced (a real process would not return from it), and
+         * the run stops because there is nothing left to execute. It is how
+         * ntdll's own loader reacts when the image it was handed is not an
+         * executable - see the process-image query above it.
+         */
+        if (frame.args[0] != 0xffffffffu) {
+            status = PW_NT_INVALID_HANDLE;
+            result = PW_OK;
+            break;
+        }
+        status = PW_NT_SUCCESS;
+        result = PW_OK;
+        terminate = 1;
         break;
     default:
         /* A known call number with no handler: it is reported as
@@ -2054,6 +2181,8 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     }
     pw_unix_call_record(&report->calls, &frame, info, status,
                         info->arg_bytes / 4u, PW_UNIX_CALL_HANDLED);
+    if (terminate)
+        return PW_WINE_STOP_PROCESS_TERMINATED;
     /* Return to the stub with its stdcall frame popped. */
     state->gpr[0] = status;
     /* [esp] is the stub's own return address and [esp+4] the caller's, so
@@ -2634,6 +2763,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     calls.low = &low;
     calls.config = config;
     calls.report = report;
+    calls.root = pw_loader_module(&loader, 0u);
     calls.heap_cursor = PW_WINE_GATE_HEAP_BASE;
     calls.limit = config->allocation_limit != 0u ? config->allocation_limit
                                                  : PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT;
@@ -2816,6 +2946,7 @@ const char *pw_wine_stop_name(PwWineStop stop)
     case PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED: return "unix-call-unimplemented";
     case PW_WINE_STOP_UNIX_CALL_UNKNOWN: return "unix-call-unknown";
     case PW_WINE_STOP_UNIX_CALL_REJECTED: return "unix-call-rejected";
+    case PW_WINE_STOP_PROCESS_TERMINATED: return "process-terminated";
     default: return "unknown";
     }
 }

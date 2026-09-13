@@ -407,6 +407,43 @@ class Case(unittest.TestCase):
             self.run_validation(records)
         self.assertIn("last call outcome is handled", str(caught.exception))
 
+    def test_accepts_a_run_the_guest_ended_itself(self) -> None:
+        """A run that ends because the guest terminated its own process."""
+        records = self.bridged_records()
+        records["run"][0].update(stop="process-terminated",
+                                 stop_address=hex(NTDLL_BASE + THUNK_RVA),
+                                 last_eip=hex(NTDLL_BASE + THUNK_RVA),
+                                 syscall="0x0000002c")
+        records["verdict"][0].update(stop="process-terminated",
+                                     syscall="0x0000002c")
+        records["call"][0]["observed"] = "0x0000002c"
+        records["call-seq"].append({
+            "index": "1", "id": "0x0000002c", "name": "NtTerminateProcess",
+            "args": "8", "stub_return": hex(NTDLL_BASE + 0xD430),
+            "return": hex(NTDLL_BASE + 0x4EF03), "status": "0x00000000",
+            "outcome": "handled", "argument": "2"})
+        notes = self.run_validation(records)
+        self.assertTrue(any("bridged:" in note for note in notes))
+
+    def test_terminating_run_must_have_serviced_the_termination(self) -> None:
+        records = self.bridged_records()
+        records["run"][0].update(stop="process-terminated",
+                                 stop_address=hex(NTDLL_BASE + THUNK_RVA),
+                                 last_eip=hex(NTDLL_BASE + THUNK_RVA),
+                                 syscall="0x0000002c")
+        records["verdict"][0].update(stop="process-terminated",
+                                     syscall="0x0000002c")
+        records["call"][0]["observed"] = "0x0000002c"
+        records["call-seq"].append({
+            "index": "1", "id": "0x0000002c", "name": "NtTerminateProcess",
+            "args": "8", "stub_return": hex(NTDLL_BASE + 0xD430),
+            "return": hex(NTDLL_BASE + 0x4EF03), "status": "0xc0000002",
+            "outcome": "unimplemented", "argument": "0"})
+        with self.assertRaises(SystemExit) as caught:
+            self.run_validation(records)
+        self.assertIn("last call outcome is unimplemented",
+                      str(caught.exception))
+
     # --- classified memory stops --------------------------------------
 
     def memory_stop_records(self) -> dict:

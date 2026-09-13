@@ -100,6 +100,17 @@ typedef struct PeImage {
     uint32_t file_alignment;
     uint32_t entry_point;               /* RVA; 0 is legal for a resource DLL */
     uint64_t image_base;
+    /* The version, stack and checksum fields ntdll reports back through
+     * NtQueryInformationProcess(ProcessImageInformation): they describe the
+     * image the process is running, and both optional-header shapes carry
+     * them at the same offsets except for the stack sizes. */
+    uint32_t checksum;
+    uint32_t stack_reserve;
+    uint32_t stack_commit;
+    uint16_t os_version_major;
+    uint16_t os_version_minor;
+    uint16_t subsystem_version_major;
+    uint16_t subsystem_version_minor;
     uint32_t directory_count;
     PeDataDirectory directories[PE_DIRECTORY_ENTRIES];
     PeSection sections[PE_MAX_SECTIONS];

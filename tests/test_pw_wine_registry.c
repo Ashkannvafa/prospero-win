@@ -12,6 +12,7 @@
  * a registry - and the assertions are about what the guest itself saw.
  */
 #include "pe_fixture.h"
+#include "pw_unhandled_call.h"
 
 #include "../src/pw_module_name.h"
 #include "../src/pw_vm_posix.h"
@@ -463,7 +464,9 @@ static size_t build_module(void)
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);      /* NtClose */
     emit_stub(STUB_TOKEN_RVA, 0x0021u, 20u);     /* NtQueryInformationToken */
     emit_stub(STUB_CREATE_RVA, 0x001du, 28u);    /* NtCreateKey */
-    emit_stub(STUB_STOP_RVA, 0x0019u, 20u);      /* NtQueryInformationProcess */
+    /* A call this bridge has no handler for: the run must stop and name it
+     * exactly. Update it when the handler lands. */
+    emit_stub(STUB_STOP_RVA, PW_TEST_UNHANDLED_CALL_ID, PW_TEST_UNHANDLED_CALL_ARGS);
     emit_byte(0xc3);
 
     /* Pointers stored inside the data section need their own base
@@ -712,7 +715,7 @@ int main(void)
     (void)pw_wine_gate_run(&config, &report);
     assert(report.registry_configured == 1u);
     assert(report.stop == PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED);
-    assert(report.observed_syscall_id == 0x0019u);
+    assert(report.observed_syscall_id == PW_TEST_UNHANDLED_CALL_ID);
     assert(report.calls.records == 23u);
     assert(report.calls.handled == 22u);
     assert(report.calls.unimplemented == 1u);
@@ -795,7 +798,7 @@ int main(void)
      * memory: the SID's last subauthority as the host declared it (12074), and
      * the disposition the create reported (REG_OPENED_EXISTING_KEY).
      */
-    assert(report.calls.sequence[22].id == 0x0019u);
+    assert(report.calls.sequence[22].id == PW_TEST_UNHANDLED_CALL_ID);
     assert(report.calls.sequence[22].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
     assert(report.calls.sequence[22].args[0] == 12074u);
     assert(report.calls.sequence[22].args[1] == 2u);
