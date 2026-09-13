@@ -9,6 +9,7 @@
 #include "pw_guest_call.h"
 #include "pw_guest_vm.h"
 #include "pw_guest_process.h"
+#include "pw_nt_dispatch.h"
 #include "pw_nt_handle.h"
 #include "../include/prospero_win_vm.h"
 
@@ -2039,6 +2040,97 @@ static int gate_nt_open_object(PwWineCallContext *calls,
  * Any other value is the reason the run stopped, and the guest state is
  * untouched so the evidence describes the boundary itself.
  */
+/* The two object-namespace entries differ only in what they ask for, and
+ * NtClose is a service like any other, so each gets a uniform-signature
+ * adapter to appear in the registry. */
+static int handle_open_directory_object(PwWineCallContext *calls,
+                                        const PwUnixCallFrame *frame,
+                                        PwUnixCallAccess guest, void *context,
+                                        uint32_t *status,
+                                        uint32_t *argument_index)
+{
+    return gate_nt_open_object(calls, frame, guest, context,
+                               PW_WINE_OBJECT_DIRECTORY,
+                               PW_NT_HANDLE_OBJECT_DIRECTORY, status,
+                               argument_index);
+}
+
+static int handle_open_section(PwWineCallContext *calls,
+                               const PwUnixCallFrame *frame,
+                               PwUnixCallAccess guest, void *context,
+                               uint32_t *status, uint32_t *argument_index)
+{
+    return gate_nt_open_object(calls, frame, guest, context,
+                               PW_WINE_OBJECT_SECTION, PW_NT_HANDLE_SECTION,
+                               status, argument_index);
+}
+
+static int handle_close(PwWineCallContext *calls, const PwUnixCallFrame *frame,
+                        PwUnixCallAccess guest, void *context,
+                        uint32_t *status, uint32_t *argument_index)
+{
+    (void)guest;
+    (void)context;
+    (void)argument_index;
+    *status = file_handle_release(calls, frame->args[0]) == PW_OK
+                  ? PW_NT_SUCCESS
+                  : PW_NT_INVALID_HANDLE;
+    return PW_OK;
+}
+
+/*
+ * The one place the serviced calls are listed. `classes` names the information
+ * classes the handler answers (PW_NT_CLASS_NONE when the call has none) and
+ * `test` names the self-contained test that owns it; both are what
+ * tests/test_nt_handler_ledger.py checks, and it cross-checks every id against
+ * the versioned table in src/pw_unix_call.c, so an entry can never name a call
+ * the pinned Wine revision does not have.
+ *
+ * NtTerminateProcess is deliberately absent: it is a stop, not a service, and
+ * the dispatcher handles it before it looks here.
+ */
+static const PwNtHandler dispatch_table[] = {
+    { 0x0018u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_gate_bridge.c",
+      gate_nt_allocate_virtual_memory },
+    { 0x001eu, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_gate_bridge.c",
+      gate_nt_free_virtual_memory },
+    { 0x0033u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_file_service.c",
+      gate_nt_open_file },
+    { 0x0006u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_file_service.c",
+      gate_nt_read_file },
+    { 0x0011u, { 5u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_file_service.c",
+      gate_nt_query_information_file },
+    { 0x0049u, { 4u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_file_service.c",
+      gate_nt_query_volume_information_file },
+    { 0x000fu, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_file_service.c",
+      handle_close },
+    { 0x0036u, { 1000u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
+      gate_nt_query_system_information },
+    { 0x0012u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
+      gate_nt_open_key },
+    { 0x001du, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
+      gate_nt_create_key },
+    { 0x0017u, { 2u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
+      gate_nt_query_value_key },
+    { 0x0021u, { 1u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
+      gate_nt_query_information_token },
+    { 0x0058u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_objects.c",
+      handle_open_directory_object },
+    { 0x0037u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_objects.c",
+      handle_open_section },
+    { 0x0019u, { 0x25u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_process_info.c",
+      gate_nt_query_information_process },
+};
+
+static const PwNtHandler *dispatch_find(uint32_t id)
+{
+    for (uint32_t index = 0u;
+         index < sizeof(dispatch_table) / sizeof(dispatch_table[0]); ++index)
+        if (dispatch_table[index].id == id)
+            return &dispatch_table[index];
+    return NULL;
+}
+
 static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
                                     PwWineGateReport *report)
 {
@@ -2066,102 +2158,35 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     /* The switch below services what has a handler; a known number without
      * one falls through to the unimplemented stop, so the frame is still
      * understood and reported and the guest does not continue past it. */
-    switch (info->id) {
-    case 0x0018u:
-        result = gate_nt_allocate_virtual_memory(calls, &frame,
-                                                 gate_guest_access, state,
-                                                 &status, &argument_index);
-        break;
-    case 0x001eu:
-        result = gate_nt_free_virtual_memory(calls, &frame, gate_guest_access,
-                                             state, &status,
-                                             &argument_index);
-        break;
-    case 0x0012u:
-        result = gate_nt_open_key(calls, &frame, gate_guest_access, state,
-                                  &status, &argument_index);
-        break;
-    case 0x001du:
-        result = gate_nt_create_key(calls, &frame, gate_guest_access, state,
-                                    &status, &argument_index);
-        break;
-    case 0x0021u:
-        result = gate_nt_query_information_token(calls, &frame,
-                                                 gate_guest_access, state,
-                                                 &status, &argument_index);
-        break;
-    case 0x0017u:
-        result = gate_nt_query_value_key(calls, &frame, gate_guest_access,
-                                         state, &status, &argument_index);
-        break;
-    case 0x0033u:
-        result = gate_nt_open_file(calls, &frame, gate_guest_access, state,
-                                   &status, &argument_index);
-        break;
-    case 0x0006u:
-        result = gate_nt_read_file(calls, &frame, gate_guest_access, state,
-                                   &status, &argument_index);
-        break;
-    case 0x0011u:
-        result = gate_nt_query_information_file(calls, &frame,
-                                                gate_guest_access, state,
-                                                &status, &argument_index);
-        break;
-    case 0x0049u:
-        result = gate_nt_query_volume_information_file(
-            calls, &frame, gate_guest_access, state, &status, &argument_index);
-        break;
-    case 0x0036u:
-        result = gate_nt_query_system_information(
-            calls, &frame, gate_guest_access, state, &status, &argument_index);
-        break;
-    case 0x0058u:
-        result = gate_nt_open_object(calls, &frame, gate_guest_access, state,
-                                     PW_WINE_OBJECT_DIRECTORY,
-                                     PW_NT_HANDLE_OBJECT_DIRECTORY, &status,
-                                     &argument_index);
-        break;
-    case 0x0019u:
-        result = gate_nt_query_information_process(
-            calls, &frame, gate_guest_access, state, &status, &argument_index);
-        break;
-    case 0x0037u:
-        result = gate_nt_open_object(calls, &frame, gate_guest_access, state,
-                                     PW_WINE_OBJECT_SECTION,
-                                     PW_NT_HANDLE_SECTION, &status,
-                                     &argument_index);
-        break;
-    case 0x000fu:
-        if (file_handle_release(calls, frame.args[0]) == PW_OK)
-            status = PW_NT_SUCCESS;
-        else
-            status = PW_NT_INVALID_HANDLE;
-        result = PW_OK;
-        break;
-    case 0x002cu:
-        /*
-         * NtTerminateProcess for the current process. The guest has asked to
-         * end the process it is initializing, and that is answered honestly:
-         * the call is serviced (a real process would not return from it), and
-         * the run stops because there is nothing left to execute. It is how
-         * ntdll's own loader reacts when the image it was handed is not an
-         * executable - see the process-image query above it.
-         */
-        if (frame.args[0] != 0xffffffffu) {
-            status = PW_NT_INVALID_HANDLE;
+    /*
+     * NtTerminateProcess is a stop rather than a service: a process that has
+     * ended does not keep executing, so the run ends here instead of handing
+     * the guest a status it would never see.
+     */
+    if (info->id == 0x002cu) {
+        status = frame.args[0] == 0xffffffffu ? PW_NT_SUCCESS
+                                             : PW_NT_INVALID_HANDLE;
+        if (status != PW_NT_SUCCESS) {
             result = PW_OK;
-            break;
+        } else {
+            pw_unix_call_record(&report->calls, &frame, info, status,
+                                info->arg_bytes / 4u, PW_UNIX_CALL_HANDLED);
+            report->calls_serviced++;
+            return PW_WINE_STOP_PROCESS_TERMINATED;
         }
-        status = PW_NT_SUCCESS;
-        result = PW_OK;
-        terminate = 1;
-        break;
-    default:
-        /* A known call number with no handler: it is reported as
-         * unimplemented rather than as a refusal of the bridge. */
-        status = PW_NT_NOT_IMPLEMENTED;
-        result = PW_OK;
-        break;
+    } else {
+        /* The registry is the list of serviced calls; a known number without
+         * an entry falls through to the unimplemented stop, so the frame is
+         * still understood and reported and the guest does not continue past
+         * it. */
+        const PwNtHandler *handler = dispatch_find(info->id);
+
+        if (!handler) {
+            result = PW_OK;
+        } else {
+            result = handler->handle(calls, &frame, gate_guest_access, state,
+                                     &status, &argument_index);
+        }
     }
     if (result != PW_OK) {
         pw_unix_call_record(&report->calls, &frame, info, status,

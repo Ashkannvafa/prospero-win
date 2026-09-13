@@ -451,6 +451,11 @@ no file-system call.
 Handlers and their shape:
 
 ```text
+NtAllocateVirtualMemory       (0x0018) the first-boot profile's reserve and
+                                       commit, bounded per run, with both
+                                       output spans preflighted
+NtFreeVirtualMemory           (0x001e) a whole block this run mapped, with the
+                                       same preflight and the same rollback
 NtOpenFile                    (0x0033) OBJECT_ATTRIBUTES + UNICODE_STRING
                                        name, handle and IO_STATUS_BLOCK
                                        written back; a directory of the
