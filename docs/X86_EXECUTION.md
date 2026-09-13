@@ -278,7 +278,7 @@ five representative workloads:
 2. `cond_branch`: Collatz branch sequence exercising flag branches and convergence loops.
 3. `call_ret`: Function call nesting, stack frame management, and return transitions.
 4. `mem_load_store`: ModRM/SIB array indexing, structured traversal, and memory writes.
-5. `x87_fp`: Binary80 extended-precision floating-point arithmetic and transcendentals.
+5. `x87_fp`: Binary80-backed floating-point load, add, multiply and store operations.
 
 Each workload reports deterministic register and full-state checksums used as
 regression fingerprints. `tests/test_dynarec_bench.py` also executes the

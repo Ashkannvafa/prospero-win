@@ -204,7 +204,7 @@ static void setup_mem_load_store(PwX86State *s, uint32_t mem, uint32_t stack)
 /* --- Workload 5: x87 Floating Point --- */
 /*
  * x87 computation loop: 5000 iterations.
- * Computes series using FLD, FADD, FMUL, FDIV, FSTP.
+ * Computes a series using FLD, FADD, FMUL and FSTP.
  */
 static const uint8_t CODE_X87_FP[] = {
     /* 0x1000: loop_start */
