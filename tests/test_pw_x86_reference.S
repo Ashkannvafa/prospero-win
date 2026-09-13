@@ -67,6 +67,26 @@ target:
     movl $1, %ebx
     movl $4, %eax
     int $0x80
+/*
+ * Bit test and conditional move: "btsl %ecx, %eax" sets a bit and reports
+ * the previous one in CF, and "cmovel %esi, %edx" moves only when ZF is set.
+ * Both are re-emitted by the translated engine, so these are the values to
+ * match.
+ */
+    movl $0x100, %eax
+    movl $4, %ecx
+    btsl %ecx, %eax
+    movl $0x55, %edx
+    movl $0xaa, %esi
+    cmpl $0x55, %edx
+    cmovel %esi, %edx
+    pushl %edx
+    pushl %eax
+    movl %esp, %ecx
+    movl $8, %edx
+    movl $1, %ebx
+    movl $4, %eax
+    int $0x80
     movl $0, %ebx
     movl $1, %eax
     int $0x80

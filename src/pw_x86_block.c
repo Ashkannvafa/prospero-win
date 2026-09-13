@@ -823,6 +823,10 @@ typedef struct DecodedInst {
     unsigned short_imm;
     unsigned word_operand;
     unsigned lock_prefix;
+    unsigned bit_op;                /* 1 bt, 2 bts, 3 btr, 4 btc; 0 none */
+    unsigned bit_imm;               /* the bit index is an imm8 */
+    unsigned cmov;                  /* 0f 40..4f: conditional move */
+    unsigned cmov_condition;
     unsigned conditional;
     unsigned extend;
     unsigned setcc;
@@ -838,6 +842,44 @@ typedef struct DecodedInst {
     int flags_dead;
     int can_fault;
 } DecodedInst;
+
+/*
+ * Shared decode for the BT/BTS/BTR/BTC family, with or without a 0x66
+ * operand-size prefix. `prefix` is the number of bytes before the 0f opcode:
+ * 0 or 1. The register-index encodings (0f a3/ab/b3/bb) take the index from
+ * the ModRM reg field; 0f ba selects the operation through reg 4..7 and the
+ * index from the imm8.
+ */
+static int decode_bit_test(const uint8_t *source, size_t available,
+                           size_t prefix, Operand *operand, unsigned *bit_op,
+                           unsigned *bit_imm, size_t *length)
+{
+    uint8_t sub;
+    int result;
+
+    if (available < prefix + 3u)
+        return PW_ERR_TRUNCATED;
+    sub = source[prefix + 1u];
+    result = decode_operand(source + prefix + 2u, available - prefix - 2u,
+                            operand);
+    if (result != PW_OK)
+        return result;
+    *length = prefix + 2u + operand->bytes;
+    if (sub == 0xbau) {
+        if (operand->reg < 4u)
+            return PW_ERR_UNSUPPORTED;
+        *bit_op = operand->reg - 3u;
+        *bit_imm = 1u;
+        if (available < *length + 1u)
+            return PW_ERR_TRUNCATED;
+        *length += 1u;
+    } else {
+        *bit_op = sub == 0xa3u ? 1u : sub == 0xabu ? 2u
+                : sub == 0xb3u ? 3u : 4u;
+        *bit_imm = 0u;
+    }
+    return PW_OK;
+}
 
 int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                          uint8_t *output, size_t capacity, PwX86Block *block,
@@ -867,6 +909,8 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         Operand operand;
         memset(&operand, 0, sizeof(operand));
         unsigned compare=0,alu=7,short_imm=0,word_operand=0,lock_prefix=0,conditional=0,extend=0,setcc=0;
+        unsigned bit_op=0,bit_imm=0;
+        unsigned cmov=0,cmov_condition=0;
         unsigned extend_word_destination=0;
         unsigned x87=0,x87_width=0,x87_write=0,x87_register=0;
         unsigned string_op=0,string_width=0,string_repeat=0;
@@ -1054,6 +1098,17 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                     else if(operand.reg==3) flags_def=0x8d5;
                 }
             }
+        } else if(op==0x66 && bytes-cursor>=4 && source[cursor+1]==0x0f &&
+                  (source[cursor+2]==0xa3 || source[cursor+2]==0xab ||
+                   source[cursor+2]==0xb3 || source[cursor+2]==0xbb ||
+                   source[cursor+2]==0xba)) {
+            /* 16-bit BT/BTS/BTR/BTC: one 0x66 prefix, same family. */
+            int result=decode_bit_test(source+cursor,bytes-cursor,1,&operand,
+                                       &bit_op,&bit_imm,&length);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            word_operand=1;
+            can_fault=1;
+            flags_def=0x001;
         } else if(op==0x66 || op==0xf0 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=(op==0x66 || op==0xf0)?1:0;
             if(bytes-cursor<=prefix)DECODE_FAIL(PW_ERR_TRUNCATED);
@@ -1103,6 +1158,38 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
                 if(setcc && operand.mod!=3)DECODE_FAIL(PW_ERR_UNSUPPORTED);
                 length=2+operand.bytes;can_fault=(operand.mod!=3);
                 if(setcc) flags_use=branch_condition_flags(source[cursor+1]&0xf);
+            }
+            else if(source[cursor+1]==0xa3 || source[cursor+1]==0xab ||
+                    source[cursor+1]==0xb3 || source[cursor+1]==0xbb ||
+                    source[cursor+1]==0xba) {
+                /*
+                 * BT/BTS/BTR/BTC. The register-index encodings take the index
+                 * from the ModRM reg field; 0f ba takes an imm8 and selects
+                 * the operation through reg 4..7. Only CF is defined; the
+                 * other flags are architecturally undefined and are left
+                 * untouched, which is deterministic rather than arbitrary.
+                 */
+                int result=decode_bit_test(source+cursor,bytes-cursor,0,&operand,
+                                           &bit_op,&bit_imm,&length);
+                if(result!=PW_OK)DECODE_FAIL(result);
+                can_fault=1;
+                flags_def=0x001;
+            }
+            else if(source[cursor+1]>=0x40 && source[cursor+1]<=0x4f) {
+                /*
+                 * CMOVcc r32, r/m32. The destination is the ModRM reg field
+                 * and it is written only when the condition holds; CMOV
+                 * reads flags and defines none. Only the 32-bit forms are
+                 * translated: the 16-bit forms would need a merging store
+                 * this emitter does not have for arbitrary destinations.
+                 */
+                int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+                if(result!=PW_OK)DECODE_FAIL(result);
+                cmov=1;
+                cmov_condition=source[cursor+1]&0x0fu;
+                length=2+operand.bytes;
+                can_fault=(operand.mod!=3);
+                flags_use=branch_condition_flags(cmov_condition);
             } else DECODE_FAIL(PW_ERR_UNSUPPORTED);
         } else if (op == 0x64) {
             if (bytes-cursor < 2) DECODE_FAIL(PW_ERR_TRUNCATED);
@@ -1169,6 +1256,10 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->short_imm = short_imm;
         d->word_operand = word_operand;
         d->lock_prefix = lock_prefix;
+        d->bit_op = bit_op;
+        d->bit_imm = bit_imm;
+        d->cmov = cmov;
+        d->cmov_condition = cmov_condition;
         d->conditional = conditional;
         d->extend = extend;
         d->setcc = setcc;
@@ -1289,6 +1380,10 @@ analyze_and_emit:
         unsigned short_imm = d->short_imm;
         unsigned word_operand = d->word_operand;
         unsigned lock_prefix = d->lock_prefix;
+        unsigned bit_op = d->bit_op;
+        unsigned bit_imm = d->bit_imm;
+        unsigned cmov = d->cmov;
+        unsigned cmov_condition = d->cmov_condition;
         unsigned conditional = d->conditional;
         unsigned extend = d->extend;
         unsigned setcc = d->setcc;
@@ -1696,6 +1791,31 @@ analyze_and_emit:
                 emit_load_single(&e, &block->exit_contract, reg);
                 block->exit_contract.dirty_mask |= (1 << reg);
             }
+        } else if(cmov) {
+            /*
+             * CMOVcc. Guest conditions live in PwX86State.eflags, not in the
+             * host flags, so the condition is materialised into a 0/1 value
+             * (the same helper SETcc uses) and the move is skipped when it
+             * is false. The destination is always a register, so the store
+             * back is unconditional and correct in both directions.
+             */
+            emit_materialize_flags(&e,branch_condition_flags(cmov_condition));
+            condition_value(&e,cmov_condition);
+            byte(&e,0x89);byte(&e,0xc2);          /* mov edx, eax: keep 0/1 */
+            if(operand.mod==3) {
+                load_guest_reg_ecx(&e,&block->exit_contract,operand.rm);
+            } else {
+                effective_address(&e,&operand,&block->exit_contract);
+                memory_address(&e,0);
+                byte(&e,0x8b);byte(&e,0x08);      /* mov ecx, [rax] */
+            }
+            load_guest_reg(&e,&block->exit_contract,operand.reg);
+            byte(&e,0x85);byte(&e,0xd2);          /* test edx, edx */
+            /* Skip exactly the two-byte "mov eax, ecx" (89 c8) below; a
+             * longer offset would land inside the following instruction. */
+            byte(&e,0x74);byte(&e,0x02);
+            byte(&e,0x89);byte(&e,0xc8);
+            store_guest_reg(&e,&block->exit_contract,operand.reg);
         } else if(op==0x39 || op==0x3b) {
             if(operand.mod==3)load_guest_reg(&e, &block->exit_contract, operand.rm);
             else {effective_address(&e,&operand,&block->exit_contract);memory_address(&e,0);byte(&e,0x8b);byte(&e,0x00);}
@@ -1726,6 +1846,49 @@ analyze_and_emit:
                     block->exit_contract.dirty_mask |= (1 << operand.reg);
                 }
             } else store_guest_reg(&e, &block->exit_contract, operand.reg);
+        } else if(bit_op) {
+            /*
+             * BT/BTS/BTR/BTC. The host has the same instructions, including
+             * the bit-string addressing of a memory operand and the 4/5-bit
+             * index masking of a register operand, so the guest instruction
+             * is re-emitted on guest values instead of being emulated by
+             * hand. BTS/BTR/BTC modify the destination and therefore need
+             * write permission; BT only reads.
+             */
+            const unsigned width=word_operand?2:4;
+            const uint8_t opcode=(uint8_t)(bit_op==1?0xa3:bit_op==2?0xab:
+                                           bit_op==3?0xb3:0xbb);
+            if(operand.mod==3) {
+                load_guest_reg(&e,&block->exit_contract,operand.rm);
+                if(!bit_imm)
+                    load_guest_reg_ecx(&e,&block->exit_contract,operand.reg);
+                if(word_operand)byte(&e,0x66);
+                byte(&e,0x0f);
+                if(bit_imm) {
+                    /* mod 11: the destination is host RAX. */
+                    byte(&e,0xba);
+                    byte(&e,(uint8_t)(0xc0u|((bit_op+3u)<<3)));
+                    byte(&e,source[cursor+length-1]);
+                } else {
+                    byte(&e,opcode);byte(&e,0xc8);   /* mod 11: reg ECX, rm RAX */
+                }
+                if(bit_op!=1)
+                    store_guest_reg(&e,&block->exit_contract,operand.rm);
+            } else {
+                effective_address(&e,&operand,&block->exit_contract);
+                memory_address_width(&e,bit_op==1?0:2,width);
+                if(!bit_imm)
+                    load_guest_reg_ecx(&e,&block->exit_contract,operand.reg);
+                if(word_operand)byte(&e,0x66);
+                byte(&e,0x0f);
+                if(bit_imm) {
+                    byte(&e,0xba);byte(&e,(uint8_t)((bit_op+3u)<<3));
+                    byte(&e,source[cursor+length-1]);
+                } else {
+                    byte(&e,opcode);byte(&e,0x08);   /* mod 00: reg ECX, [RAX] */
+                }
+            }
+            emit_save_flags(&e,0x001,lazy_flags_enabled,d->flags_dead);
         } else if(compare) {
             /* A helper call cannot run after EAX contains the destination or
              * effective address.  Resolve pending guest CF first. */

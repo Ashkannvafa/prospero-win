@@ -25,6 +25,28 @@ static int run(const uint8_t *source, size_t bytes, uint32_t pc)
     assert(backend.protect(NULL,&code,0,code.bytes,PW_PROT_READ|PW_PROT_EXEC)==PW_OK);
     return invoke((BlockFn)code.exec_base,&state);
 }
+/*
+ * Same as run(), but choosing the engine modes and committing pending flags
+ * the way pw_x86_engine_step does. Every new instruction family is executed
+ * through all four combinations: a mode-dependent result here is a defect,
+ * and this is what caught a cmov branch offset that only mis-landed with
+ * register residency disabled.
+ */
+static int run_mode(const uint8_t *source, size_t bytes, uint32_t pc,
+                    unsigned residency, unsigned lazy_flags)
+{
+    PwX86Block block;
+    int status;
+
+    assert(backend.protect(NULL,&code,0,code.bytes,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+    status=pw_x86_translate_ext(source,bytes,pc,code.write_base,code.bytes,
+                                &block,residency,lazy_flags);
+    assert(status==PW_OK && block.source_bytes==bytes);
+    assert(backend.protect(NULL,&code,0,code.bytes,PW_PROT_READ|PW_PROT_EXEC)==PW_OK);
+    status=invoke((BlockFn)code.exec_base,&state);
+    pw_x86_commit_canonical_flags(&state);
+    return status;
+}
 static void addressing_tests(void)
 {
     memset(state.gpr,0,sizeof(state.gpr));
@@ -793,6 +815,128 @@ static void lock_prefix_tests(void)
     state.memory_count=0;
     state.stack_low=low;state.stack_high=high;
 }
+static void bit_and_cmov_tests(void)
+{
+    const uint32_t low=state.stack_low,high=state.stack_high;
+    const uint8_t bt_reg[]={0x0f,0xa3,0xc8};         /* bt eax, ecx */
+    const uint8_t bts_reg[]={0x0f,0xab,0xc8};        /* bts eax, ecx */
+    const uint8_t btr_reg[]={0x0f,0xb3,0xc8};        /* btr eax, ecx */
+    const uint8_t btc_reg[]={0x0f,0xbb,0xc8};        /* btc eax, ecx */
+    const uint8_t bt_memory[]={0x0f,0xa3,0x08};      /* bt [eax], ecx */
+    const uint8_t bts_memory[]={0x0f,0xab,0x08};     /* bts [eax], ecx */
+
+    state.memory_count=0;
+    /* BT defines CF only: the flags the ISA leaves undefined stay put. */
+    state.gpr[0]=0x00000008;state.gpr[1]=3;state.eflags=0x202;
+    assert(run(bt_reg,sizeof(bt_reg),0x7100)==0);
+    assert((state.eflags&1)==1 && state.gpr[0]==0x00000008);
+    assert((state.eflags&0x8d4)==(0x202u&0x8d4u));
+    state.gpr[1]=2;state.eflags=0x202;
+    assert(run(bt_reg,sizeof(bt_reg),0x7101)==0);
+    assert((state.eflags&1)==0);
+    /* A register destination masks the index to five bits. */
+    state.gpr[1]=35;state.eflags=0x202;
+    assert(run(bt_reg,sizeof(bt_reg),0x7102)==0);
+    assert((state.eflags&1)==1);
+    /* BTS/BTR/BTC modify the destination and report the previous bit. */
+    state.gpr[0]=0x100;state.gpr[1]=4;state.eflags=0x202;
+    assert(run(bts_reg,sizeof(bts_reg),0x7110)==0);
+    assert(state.gpr[0]==0x110 && (state.eflags&1)==0);
+    state.gpr[0]=0x110;state.gpr[1]=4;state.eflags=0x202;
+    assert(run(bts_reg,sizeof(bts_reg),0x7111)==0);
+    assert(state.gpr[0]==0x110 && (state.eflags&1)==1);
+    state.gpr[0]=0x110;state.gpr[1]=4;state.eflags=0x202;
+    assert(run(btr_reg,sizeof(btr_reg),0x7120)==0);
+    assert(state.gpr[0]==0x100 && (state.eflags&1)==1);
+    state.gpr[0]=0x100;state.gpr[1]=4;state.eflags=0x202;
+    assert(run(btc_reg,sizeof(btc_reg),0x7130)==0);
+    assert(state.gpr[0]==0x110 && (state.eflags&1)==0);
+    /* Immediate-index forms. */
+    const uint8_t bt_imm[]={0x0f,0xba,0xe0,0x07};    /* bt eax, 7 */
+    const uint8_t bts_imm[]={0x0f,0xba,0xe8,0x07};   /* bts eax, 7 */
+    state.gpr[0]=0x80;state.eflags=0x202;
+    assert(run(bt_imm,sizeof(bt_imm),0x7140)==0);
+    assert((state.eflags&1)==1);
+    state.gpr[0]=0;assert(run(bts_imm,sizeof(bts_imm),0x7141)==0);
+    assert(state.gpr[0]==0x80);
+    /* A memory destination uses bit-string addressing: bit 40 of a dword
+     * operand is bit 8 of the next dword, not a mask of the first one. */
+    memset((void *)(uintptr_t)low,0,8);
+    state.gpr[0]=low;state.gpr[1]=40;state.eflags=0x202;
+    assert(run(bts_memory,sizeof(bts_memory),0x7150)==0);
+    uint32_t first=0,second=0;
+    memcpy(&first,(void *)(uintptr_t)low,4);
+    memcpy(&second,(void *)(uintptr_t)(low+4),4);
+    assert(first==0 && second==0x100 && (state.eflags&1)==0);
+    /* The 16-bit register form masks the index to four bits. */
+    const uint8_t bt16[]={0x66,0x0f,0xa3,0xc8};      /* bt ax, cx */
+    state.gpr[0]=0x8000;state.gpr[1]=15;state.eflags=0x202;
+    assert(run(bt16,sizeof(bt16),0x7160)==0);
+    assert((state.eflags&1)==1);
+    state.gpr[1]=16;state.eflags=0x202;              /* masked to bit 0 */
+    assert(run(bt16,sizeof(bt16),0x7161)==0);
+    assert((state.eflags&1)==0);
+    /* CMOVcc writes the destination only when the condition holds, and it
+     * never writes flags. */
+    const uint8_t cmovb[]={0x0f,0x42,0xc8};          /* cmovb ecx, eax */
+    state.gpr[0]=0x1111;state.gpr[1]=0x2222;state.eflags=0x202|1;
+    assert(run(cmovb,sizeof(cmovb),0x7170)==0);
+    assert(state.gpr[1]==0x1111 && state.eflags==(0x202|1));
+    state.gpr[0]=0x3333;state.gpr[1]=0x2222;state.eflags=0x202;
+    assert(run(cmovb,sizeof(cmovb),0x7171)==0);
+    assert(state.gpr[1]==0x2222 && state.eflags==0x202);
+    uint32_t memory_value=0xabcdef01;
+    memcpy((void *)(uintptr_t)low,&memory_value,4);
+    const uint8_t cmovb_mem[]={0x0f,0x42,0x08};      /* cmovb ecx, [eax] */
+    state.gpr[0]=low;state.gpr[1]=0x55;state.eflags=0x202|1;
+    assert(run(cmovb_mem,sizeof(cmovb_mem),0x7180)==0);
+    assert(state.gpr[1]==0xabcdef01);
+    /* Refused forms: the 16-bit conditional move and the undefined 0f ba
+     * sub-opcodes, plus a truncated immediate. */
+    uint8_t scratch[4096];PwX86Block block;
+    const uint8_t cmov16[]={0x66,0x0f,0x42,0xc1};
+    const uint8_t ba_bad[]={0x0f,0xba,0xc0,0x01};
+    const uint8_t ba_truncated[]={0x0f,0xba,0xe0};
+    assert(pw_x86_translate(cmov16,sizeof(cmov16),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(ba_bad,sizeof(ba_bad),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    assert(pw_x86_translate(ba_truncated,sizeof(ba_truncated),0,scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
+    /* The same two families through every engine mode: chaining is a
+     * separate switch exercised by the engine tests, while residency and
+     * lazy flags change the emitted code for these instructions. */
+    for(unsigned residency=0;residency<2;residency++)
+        for(unsigned lazy=0;lazy<2;lazy++) {
+            state.gpr[0]=0x1111;state.gpr[1]=0x2222;state.eflags=0x202|1;
+            assert(run_mode(cmovb,sizeof(cmovb),0x71a0,residency,lazy)==0);
+            assert(state.gpr[1]==0x1111 && state.eflags==(0x202|1));
+            state.gpr[0]=0x3333;state.gpr[1]=0x2222;state.eflags=0x202;
+            assert(run_mode(cmovb,sizeof(cmovb),0x71b0,residency,lazy)==0);
+            assert(state.gpr[1]==0x2222 && state.eflags==0x202);
+            state.gpr[0]=0x100;state.gpr[1]=4;state.eflags=0x202;
+            assert(run_mode(bts_reg,sizeof(bts_reg),0x71c0,residency,lazy)==0);
+            assert(state.gpr[0]==0x110 && (state.eflags&1)==0);
+            state.gpr[0]=0x80;state.eflags=0x202;
+            assert(run_mode(bt_imm,sizeof(bt_imm),0x71d0,residency,lazy)==0);
+            assert((state.eflags&1)==1);
+            memset((void *)(uintptr_t)low,0,8);
+            state.gpr[0]=low;state.gpr[1]=40;state.eflags=0x202;
+            assert(run_mode(bts_memory,sizeof(bts_memory),0x71e0,residency,lazy)==0);
+            uint32_t tail_low=0,tail_high=0;
+            memcpy(&tail_low,(void *)(uintptr_t)low,4);
+            memcpy(&tail_high,(void *)(uintptr_t)(low+4),4);
+            assert(tail_low==0 && tail_high==0x100);
+        }
+    /* A memory read-modify-write needs write permission; a memory BT does
+     * not, so it still works in the same state. */
+    state.stack_low=state.stack_high=0;
+    state.memory_count=1;
+    state.memory[0]=(PwX86Memory){low,high,PW_X86_READ};
+    state.gpr[0]=low;state.gpr[1]=1;
+    assert(run(bt_memory,sizeof(bt_memory),0x7190)==0);
+    assert(run(bts_memory,sizeof(bts_memory),0x7191)==-1);
+    state.memory_count=0;
+    state.stack_low=low;state.stack_high=high;
+}
+
 static void comparison_tests(void)
 {
     state.gpr[0]=0x12348000;state.gpr[1]=0xffff8000;state.eflags=0xad7;
@@ -905,6 +1049,22 @@ int main(int argc, char **argv)
         assert(result==5+1);
         if (argc==2 && strcmp(argv[1],"--emit")==0)
             assert(fwrite(&result,4,1,stdout)==1);
+    }
+    /* Bit test and conditional move, the same shape the native reference
+     * executes with "btsl %ecx, %eax" and "cmovel %esi, %edx". */
+    {
+        const uint8_t bts[]={0x0f,0xab,0xc8};         /* bts eax, ecx */
+        const uint8_t cmove[]={0x0f,0x44,0xd6};       /* cmove edx, esi */
+        state.gpr[0]=0x100;state.gpr[1]=4;state.eflags=0x202;
+        assert(run(bts,sizeof(bts),0xb00)==0);
+        assert(state.gpr[0]==0x110);
+        state.gpr[2]=0x55;state.gpr[6]=0xaa;state.eflags=0x202|0x40;
+        assert(run(cmove,sizeof(cmove),0xb10)==0);
+        assert(state.gpr[2]==0xaa);
+        if (argc==2 && strcmp(argv[1],"--emit")==0) {
+            assert(fwrite(&state.gpr[0],4,1,stdout)==1);
+            assert(fwrite(&state.gpr[2],4,1,stdout)==1);
+        }
     }
     const uint8_t ret[]={0xc3};
     assert(run(ret,1,0x02000000)==0);
@@ -1045,6 +1205,7 @@ int main(int argc, char **argv)
     immediate_tests();
     absolute_tests();
     lock_prefix_tests();
+    bit_and_cmov_tests();
     optimization_safety_tests();
     push_operand_tests();
     logical_test_tests();

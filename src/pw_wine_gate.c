@@ -633,6 +633,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     for (uint32_t step = 0; step < budget; ++step) {
         PwX86StepReport progress;
 
+        if (config->trace)
+            config->trace(config->trace_context, &state);
         if (state.eip == report->boundary_thunk_va) {
             /* Stopped before executing the dispatcher jump: no unvalidated
              * guest pointer is dereferenced to reach it. */
@@ -656,6 +658,47 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         }
     }
     report->last_eip = state.eip;
+    /*
+     * Independent identification of the call that reached the boundary. The
+     * stub calls the dispatcher, so the guest return address on top of the
+     * stack points into that stub; its own "mov eax, id" must name the
+     * syscall we observed in EAX. This binds the number to the image instead
+     * of trusting the register alone.
+     */
+    if (report->stop == PW_WINE_STOP_UNIX_CALL_BOUNDARY && entry_module &&
+        state.gpr[4] >= state.stack_low &&
+        (uint64_t)state.gpr[4] + 4u <= state.stack_high) {
+        uint32_t return_eip = 0u;
+        const uint64_t base = entry_module->mapped.actual_base;
+        const uint64_t end = base + entry_module->mapped.image_bytes;
+
+        memcpy(&return_eip, (const void *)(uintptr_t)state.gpr[4], 4u);
+        report->boundary_return_eip = return_eip;
+        if ((uint64_t)return_eip >= base && (uint64_t)return_eip < end) {
+            const uint32_t rva = (uint32_t)((uint64_t)return_eip - base);
+            const uint8_t *image = entry_module->mapped.region.write_base;
+
+            report->boundary_return_in_module = 1u;
+            for (uint32_t back = 0; back <= 16u && back <= rva; back++) {
+                const uint32_t here = rva - back;
+                uint32_t operand = 0u;
+
+                /* "mov edx, <dispatcher thunk>" then, five bytes earlier,
+                 * "mov eax, <syscall id>". */
+                if (here + 6u > entry_module->mapped.image_bytes ||
+                    image[here] != 0xbau)
+                    continue;
+                memcpy(&operand, image + here + 1u, 4u);
+                if (operand != report->boundary_thunk_va)
+                    continue;
+                if (here < 5u || image[here - 5u] != 0xb8u)
+                    continue;
+                memcpy(&report->caller_stub_id, image + here - 4u, 4u);
+                report->caller_stub_rva = here - 5u;
+                break;
+            }
+        }
+    }
     report->translated_blocks = engine.cache.publishes;
     report->translated_bytes = engine.cache.cursor;
     /* No host Wine entry point is ever called: the gate only translates and

@@ -147,9 +147,9 @@ kind, retired count and stop address):
 | Entry | Result |
 |---|---|
 | `NtClose` | stops on the dispatcher thunk after 3 retired instructions, syscall `0x000f` |
-| `LdrInitializeThunk` | retires 166 instructions over 22 dispatches and stops at an instruction family the DBT does not translate yet |
+| `LdrInitializeThunk` | retires 266 instructions over 35 dispatches and reaches ntdll's **first Unix call**: syscall `0x0018` (`NtAllocateVirtualMemory`), again stopping before the dispatcher jump |
 
-Reaching that point required two general instruction families and a minimal
+Reaching that point required four general instruction families and a minimal
 guest thread block, all of which are now implemented and host-tested:
 
 - **FS-prefixed absolute operands** (`mov r32, fs:[disp32]` and
@@ -169,14 +169,45 @@ guest thread block, all of which are now implemented and host-tested:
   handed to ntdll's initialization entry as its first argument.
   `ThreadLocalStoragePointer` (0x2C) stays zero because no module of this
   distribution declares a TLS directory.
+- **BT/BTS/BTR/BTC**, both the register-index encodings (`0f a3/ab/b3/bb`) and
+  the immediate form (`0f ba /4../7`), for register and memory destinations
+  and for the 16-bit forms. The host instruction is re-emitted on guest
+  values, so bit-string addressing of a memory operand and the 4/5-bit index
+  masking of a register operand come from the CPU. Only CF is written; the
+  flags the ISA leaves undefined stay unchanged, which is deterministic
+  rather than arbitrary. A register-destination BTS/BTR/BTC reads, modifies
+  and writes back; a memory one needs write permission, while a memory BT
+  only reads.
+- **CMOVcc** (`0f 40..4f`, 32-bit forms) with the condition materialised from
+  guest flags and the move skipped when it does not hold, so flags are never
+  written and the destination keeps its value otherwise.
 
-Both families have native i386 differential coverage: `make test` runs a
+Every family has native i386 differential coverage: `make test` runs a
 32-bit reference program that installs a real FS base with `set_thread_area`
-and executes the same `mov edi, fs:[0x18]` and `lock addl $1, mem`
-instructions on the host CPU, and the translated engine's output must match
-it byte for byte.
+and executes the same `mov edi, fs:[0x18]`, `lock addl $1, mem`,
+`btsl %ecx, %eax` and `cmovel %esi, %edx` instructions on the host CPU, and
+the translated engine's output must match it byte for byte. Each family is
+also executed through residency and lazy-flag modes in the unit suite.
 
-The next unimplemented family on that path is the bit-test group
-(`bt r/m32, r32`, `0f a3`), followed by the rest of Wine's loader
-initialization, which needs a real PEB/`PEB_LDR_DATA` rather than the gate's
-zeroed page. Neither is claimed as working.
+The syscall number itself is verified twice: from the entry stub when the
+entry is a stub, and always from the **issuing stub inside the mapped image**
+— the return address on the guest stack points into the stub that called the
+dispatcher, and the `mov eax, id` immediately before its
+`mov edx, <dispatcher thunk>` must name the number observed in EAX. A number
+that cannot be re-read from the image is rejected by the evidence validator.
+
+Mode parity is asserted on this real code: all eight combinations of
+chaining, register residency and lazy flags retire 266 instructions and stop
+on the same thunk with the same syscall. That check earned its place — it
+exposed a real defect in the first CMOV emission, where the skip branch
+covered three bytes and jumped into the middle of a two-byte `mov` whenever
+the condition did not hold; register residency changed the following bytes
+enough to turn the fault into a silent no-op, so only the mode matrix found
+it. `tests/test_pw_x86_block.c` now runs the new families through all four
+residency/lazy combinations, and the gate runs the real ntdll initialization
+through all eight.
+
+The next unimplemented behaviours on that path are the rest of Wine's loader
+initialization — which needs a real `PEB_LDR_DATA` and process parameters
+rather than the gate's zeroed page — and the Unix call itself. Neither is
+claimed as working.

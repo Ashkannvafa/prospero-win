@@ -28,7 +28,7 @@
       "id": "ia32-dbt",
       "status": "validated",
       "depends_on": ["pe-loader"],
-      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator now also covers FS-prefixed absolute dword operands (the TEB reads ntdll begins with) and LOCK-prefixed group-1 memory read-modify-write, both with a native i386 differential oracle; real ntdll retires 166 instructions through its initialization entry before reaching an untranslated family (bit test), with identical results across chaining, residency and lazy-flag modes.",
+      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator now also covers FS-prefixed absolute dword operands (the TEB reads ntdll begins with), LOCK-prefixed group-1 memory read-modify-write, the BT/BTS/BTR/BTC family and CMOVcc, each with a native i386 differential oracle and residency/lazy-flag coverage. Real ntdll initialization now retires 266 instructions and reaches its first Unix call (syscall 0x0018, NtAllocateVirtualMemory) with identical results in all eight chaining/residency/lazy-flag configurations.",
       "exit_criteria": ["wine-ntdll-instruction-closure", "sse2", "indirect-branch-cache", "multi-thread-code-cache"]
     },
     {
@@ -49,7 +49,7 @@
       "id": "unix-call-bridge",
       "status": "planned",
       "depends_on": ["ia32-dbt", "nt-process-thread"],
-      "evidence": "The dispatcher boundary is identified in the pinned Wine sources and located in the built image: the gate finds the exported __wine_syscall_dispatcher slot and the single jmp-dword-ptr thunk that references it, then stops there with the syscall number the stub encoded. No call table, argument validation or nested-call handling exists yet.",
+      "evidence": "The dispatcher boundary is identified in the pinned Wine sources and located in the built image: the gate finds the exported __wine_syscall_dispatcher slot and the single jmp-dword-ptr thunk that references it, then stops there. The call number is verified independently by re-reading it from the stub that issued the call inside the mapped image (the guest return address points into it), and ntdll's own initialization path reaches its first call this way. No call table, argument validation or nested-call handling exists yet.",
       "exit_criteria": ["versioned-call-table", "argument-validation", "nested-calls", "fault-atomicity"]
     },
     {

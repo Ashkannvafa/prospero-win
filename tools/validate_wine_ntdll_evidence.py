@@ -36,7 +36,9 @@ REQUIRED = {
     "bind": {"modules", "functions", "data", "failures"},
     "tls": {"modules"},
     "boundary": {"slot_rva", "slot_va", "thunks", "thunk_rva", "thunk_va"},
-    "entry": {"module", "symbol", "rva", "eip", "pe_entry_rva", "stub_id"},
+    "entry": {"module", "symbol", "rva", "eip", "pe_entry_rva", "stub_id",
+              "kind"},
+    "call": {"return_eip", "in_module", "caller_rva", "caller_id", "observed"},
     "modes": {"chaining", "residency", "lazy_flags"},
     "run": {"first_eip", "last_eip", "retired", "dispatches", "blocks",
             "bytes", "stop_address", "stop", "syscall", "host_calls"},
@@ -178,7 +180,11 @@ def validate(records: dict[str, list[dict[str, str]]],
     if entry_rva >= number(ntdll, "image_bytes", "ntdll.dll"):
         raise Failure("entry RVA is outside ntdll")
     if stub_id == 0:
-        raise Failure("the entry stub does not encode a syscall number")
+        if entry.get("kind") != "initialization":
+            raise Failure("the entry stub does not encode a syscall number "
+                          "and is not marked as an initialization entry")
+    elif entry.get("kind") != "stub":
+        raise Failure(f"entry kind is {entry.get('kind')!r}, expected stub")
 
     modes = one(records, "modes")
     notes.append("engine modes chaining=%s residency=%s lazy_flags=%s"
@@ -200,9 +206,26 @@ def validate(records: dict[str, list[dict[str, str]]],
     if stop_address != thunk_va or last_eip != thunk_va:
         raise Failure("the run did not stop exactly on the dispatcher thunk")
     syscall = number(run, "syscall", "run")
-    if syscall != stub_id:
+    if stub_id != 0 and syscall != stub_id:
         raise Failure(f"syscall {syscall:#x} does not match the stub id "
                       f"{stub_id:#x}")
+
+    # The syscall number is bound to the image, not to a register: the stub
+    # that called the dispatcher must encode the number we observed.
+    call = one(records, "call")
+    if number(call, "in_module", "call") != 1:
+        raise Failure("the boundary call did not return into the entry module")
+    caller_id = number(call, "caller_id", "call")
+    if caller_id == 0:
+        raise Failure("the issuing stub does not encode a syscall number")
+    if caller_id != syscall:
+        raise Failure(f"the issuing stub names syscall {caller_id:#x}, "
+                      f"the run observed {syscall:#x}")
+    caller_rva = number(call, "caller_rva", "call")
+    if caller_rva >= number(ntdll, "image_bytes", "ntdll.dll"):
+        raise Failure("the issuing stub is outside ntdll")
+    if number(call, "observed", "call") != syscall:
+        raise Failure("the call record disagrees with the run record")
     notes.append(f"{entry['symbol']} retired {retired} instructions and "
                  f"reached syscall {syscall:#06x}")
 

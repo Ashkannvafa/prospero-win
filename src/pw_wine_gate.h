@@ -70,6 +70,10 @@ typedef struct PwWineModuleRecord {
 typedef struct PwWineGateConfig {
     const PwFileProvider *provider;
     const PwVmBackend *backend;
+    /* Optional per-dispatch trace, so a mode difference can be localised to
+     * the block that produced it. */
+    void (*trace)(void *context, const PwX86State *state);
+    void *trace_context;
     const char *root_module;        /* default "kernelbase.dll" */
     const char *entry_module;       /* default "ntdll.dll" */
     const char *entry_symbol;       /* default "NtClose" */
@@ -102,6 +106,10 @@ typedef struct PwWineGateReport {
     uint32_t entry_pe_rva;          /* the module's own entry point */
     uint32_t stub_syscall_id;       /* decoded from the stub's first bytes */
     uint32_t observed_syscall_id;   /* EAX when the boundary was reached */
+    uint32_t boundary_return_eip;   /* guest return address at the boundary */
+    uint32_t caller_stub_id;        /* id re-read from the stub that called it */
+    uint32_t caller_stub_rva;
+    uint8_t boundary_return_in_module;
     uint32_t first_eip;
     uint32_t last_eip;
     uint32_t stop_address;

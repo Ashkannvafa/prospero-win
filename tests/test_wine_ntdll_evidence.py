@@ -54,7 +54,11 @@ def base_records() -> dict[str, list[dict[str, str]]]:
                       "thunk_va": hex(NTDLL_BASE + THUNK_RVA)}],
         "entry": [{"module": "ntdll.dll", "symbol": "NtClose",
                    "rva": hex(ENTRY_RVA), "eip": hex(NTDLL_BASE + ENTRY_RVA),
-                   "pe_entry_rva": "0x00010c60", "stub_id": "0x0000000f"}],
+                   "pe_entry_rva": "0x00010c60", "stub_id": "0x0000000f",
+                   "kind": "stub"}],
+        "call": [{"return_eip": hex(NTDLL_BASE + ENTRY_RVA + 12),
+                  "in_module": "1", "caller_rva": hex(ENTRY_RVA),
+                  "caller_id": "0x0000000f", "observed": "0x0000000f"}],
         "modes": [{"chaining": "1", "residency": "1", "lazy_flags": "1"}],
         "run": [{"first_eip": hex(NTDLL_BASE + ENTRY_RVA),
                  "last_eip": hex(NTDLL_BASE + THUNK_RVA), "retired": "3",
@@ -73,7 +77,7 @@ def base_records() -> dict[str, list[dict[str, str]]]:
 def render(records: dict[str, list[dict[str, str]]]) -> str:
     lines = ["HELLO ps5log/1 title=PPSA99994 app=prospero-win boot=0x1 tag=test"]
     for kind in ("gate", "module", "bind", "tls", "boundary", "entry", "run",
-                 "modes", "cleanup", "verdict"):
+                 "call", "modes", "cleanup", "verdict"):
         for index, record in enumerate(records.get(kind, [])):
             fields = " ".join(f"{key}={value}" for key, value in record.items())
             lines.append(f"{index}\t0\tINFO\tkind=host-wine-{kind} {fields}")
@@ -258,6 +262,44 @@ class Case(unittest.TestCase):
         def mutate(records):
             del records["modes"]
         self.expect_failure("expected exactly one modes record", mutate)
+
+    def test_initialization_entry_without_a_stub_id(self) -> None:
+        def mutate(records):
+            records["entry"][0].update(stub_id="0x00000000",
+                                       kind="initialization")
+            records["run"][0]["syscall"] = "0x00000018"
+            records["verdict"][0].update(entry_id="0x00000000",
+                                         syscall="0x00000018")
+            records["call"][0].update(caller_id="0x00000018",
+                                      observed="0x00000018")
+        records = base_records()
+        mutate(records)
+        # The initialization shape is accepted, and the syscall number is
+        # still bound to the stub that issued it.
+        notes = self.run_validation(records)
+        self.assertTrue(notes)
+
+    def test_initialization_entry_claiming_a_stub_id(self) -> None:
+        def mutate(records):
+            records["entry"][0].update(stub_id="0x0000000f",
+                                       kind="initialization")
+        self.expect_failure("entry kind is 'initialization', expected stub",
+                            mutate)
+
+    def test_caller_stub_disagrees(self) -> None:
+        def mutate(records):
+            records["call"][0]["caller_id"] = "0x00000011"
+        self.expect_failure("the issuing stub names syscall 0x11", mutate)
+
+    def test_caller_outside_the_module(self) -> None:
+        def mutate(records):
+            records["call"][0]["in_module"] = "0"
+        self.expect_failure("did not return into the entry module", mutate)
+
+    def test_missing_call_record(self) -> None:
+        def mutate(records):
+            del records["call"]
+        self.expect_failure("expected exactly one call record", mutate)
 
     def test_parse_rejects_malformed_field(self) -> None:
         text = render(base_records()).replace("stop=wine-unix-call-boundary",

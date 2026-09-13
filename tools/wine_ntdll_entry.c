@@ -22,6 +22,18 @@
 
 static PwWineGateReport report;
 
+static void trace_step(void *context, const PwX86State *state)
+{
+    (void)context;
+    printf("kind=host-wine-step eip=0x%08x esp=0x%08x eax=0x%08x "
+           "ebx=0x%08x ecx=0x%08x edx=0x%08x esi=0x%08x edi=0x%08x "
+           "ebp=0x%08x fs=0x%08x\n", state->eip, state->gpr[4], state->gpr[0],
+           state->gpr[3], state->gpr[1], state->gpr[2], state->gpr[6],
+           state->gpr[7], state->gpr[5], state->fs_base);
+    /* Flush per step: a mode that faults must still leave its trace. */
+    fflush(stdout);
+}
+
 static const char *argument_value(int argc, char **argv, const char *name,
                                   const char *fallback)
 {
@@ -90,6 +102,8 @@ int main(int argc, char **argv)
     config.entry_module = entry_module;
     config.entry_symbol = entry_symbol;
     config.step_budget = argument_number(argc, argv, "--budget", 0u);
+    config.trace = argument_value(argc, argv, "--trace", NULL) ? trace_step
+                                                               : NULL;
     {
         const char *modes = argument_value(argc, argv, "--modes", NULL);
 
@@ -138,9 +152,15 @@ int main(int argc, char **argv)
            report.boundary_count, report.boundary_thunk_rva,
            report.boundary_thunk_va);
     printf("kind=host-wine-entry module=%s symbol=%s rva=0x%08x eip=0x%08x "
-           "pe_entry_rva=0x%08x stub_id=0x%08x\n",
+           "pe_entry_rva=0x%08x stub_id=0x%08x kind=%s\n",
            entry_module, entry_symbol, report.entry_rva, report.entry_eip,
-           report.entry_pe_rva, report.stub_syscall_id);
+           report.entry_pe_rva, report.stub_syscall_id,
+           report.stub_syscall_id != 0u ? "stub" : "initialization");
+    printf("kind=host-wine-call return_eip=0x%08x in_module=%u caller_rva=0x%08x "
+           "caller_id=0x%08x observed=0x%08x\n",
+           report.boundary_return_eip, report.boundary_return_in_module,
+           report.caller_stub_rva, report.caller_stub_id,
+           report.observed_syscall_id);
     printf("kind=host-wine-modes chaining=%u residency=%u lazy_flags=%u\n",
            report.chaining, report.residency, report.lazy_flags);
     printf("kind=host-wine-run first_eip=0x%08x last_eip=0x%08x "
