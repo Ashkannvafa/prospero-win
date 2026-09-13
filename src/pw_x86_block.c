@@ -603,7 +603,16 @@ int pw_x86_translate(const uint8_t *source, size_t bytes, uint32_t pc,
             if(operand.reg!=4 && operand.reg!=5 && operand.reg!=7)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             length=1+operand.bytes+(op==0xc1);
             can_fault=(operand.mod!=3);
-            flags_def=0x8c5;
+            /* A masked zero shift count preserves every flag.  Immediate
+             * zero can be resolved now; CL is dynamic, so model it as both
+             * defining and consuming the deterministic flag subset. */
+            if(op==0xc1 && length<=bytes-cursor) {
+                unsigned count=source[cursor+length-1]&31;
+                flags_def=count==0?0:count==1?0x8c5:0x0c5;
+            } else {
+                flags_def=0x8c5;
+                if(op==0xd3)flags_use=0x8c5;
+            }
         } else if(op==0x69 || op==0x6b) {
             int result=decode_operand(source+cursor+1,bytes-cursor-1,&operand);
             if(result!=PW_OK)DECODE_FAIL(result);
@@ -774,9 +783,6 @@ analyze_and_emit:
     /* Backward liveness analysis across the basic block (FEX Dead Flag Elimination) */
     uint32_t live = 0x8d5; /* All arithmetic flags live at block exit */
     for (int i = (int)count - 1; i >= 0; i--) {
-        if (insts[i].can_fault) {
-            live |= 0x8d5;
-        }
         if (insts[i].flags_def) {
             if ((insts[i].flags_def & live) == 0) {
                 insts[i].flags_dead = 1;
@@ -787,6 +793,10 @@ analyze_and_emit:
         } else {
             live |= insts[i].flags_use;
         }
+        /* Guards run before the guest instruction changes flags.  A fault
+         * therefore observes every incoming arithmetic flag, so the barrier
+         * applies to live-in (after the def/use transfer), not live-out. */
+        if (insts[i].can_fault) live |= 0x8d5;
     }
 
     /* Pass 2: Machine code emission */

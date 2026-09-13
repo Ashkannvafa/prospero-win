@@ -255,8 +255,8 @@ memory ownership or translated-code publication.
 
 Cold block construction originally evaluated source lengths incrementally from
 1 to `available` bytes in an O(N^2) byte-by-byte probing loop. This is replaced
-with single-pass translation: `pw_x86_translate` ingests available source bytes
-directly, committing instructions progressively. When encountering an
+with one bounded, linear-time translation invocation: `pw_x86_translate`
+ingests the available source directly. When encountering an
 unsupported opcode, truncated instruction or terminal jump/call/ret, any
 previously decoded instructions in the basic block are cleanly closed and emitted,
 reducing cold translation from O(N^2) to O(N).
@@ -285,3 +285,24 @@ regression fingerprints. `tests/test_dynarec_bench.py` also executes the
 `reg_alu` workload independently as a native Linux i386 binary and compares its
 four live output registers. The other four workloads are deterministic DBT
 regressions, not native-oracle comparisons.
+
+### Local dead-flag elimination
+
+Translation uses bounded decode, backward-liveness and emission passes over at
+most 32 guest instructions. Arithmetic flags remain fully materialized in
+`PwX86State`; there is no hidden flag state crossing a block boundary. The
+liveness pass only omits a flag snapshot when a later instruction in the same
+block provably overwrites every affected flag before any observation.
+
+Two cases are deliberately conservative:
+
+- A guest memory guard can fail before its instruction changes flags, so every
+  incoming arithmetic flag is live at a potentially faulting instruction.
+- A shift by zero preserves flags. Immediate counts are classified after x86's
+  five-bit mask; a `CL` count is treated as consuming the prior deterministic
+  flag subset because its zero/nonzero value is only known at runtime. For a
+  multi-bit shift, OF remains the runtime's preserved undefined value.
+
+These rules are covered by executable regressions in `test_pw_x86_block`.
+Direct block chaining, host-register residency and cross-block lazy flags are
+not part of this tranche; every block still returns through the C dispatcher.

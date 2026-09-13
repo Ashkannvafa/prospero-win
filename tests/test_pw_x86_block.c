@@ -643,6 +643,45 @@ static void absolute_tests(void)
 
     state.stack_low=low;state.stack_high=high;state.memory_count=0;
 }
+
+static void optimization_safety_tests(void)
+{
+    uint8_t scratch[256];PwX86Block block;
+    const uint8_t truncated_shift[]={0xc1,0xe0};
+    assert(pw_x86_translate(truncated_shift,sizeof(truncated_shift),0x6000,
+                            scratch,sizeof(scratch),&block)==PW_ERR_TRUNCATED);
+
+    /* A faulting RMW observes flags produced by the preceding instruction.
+     * Dead-flag elimination must materialize them before the memory guard. */
+    const uint8_t fault_after_flags[]={
+        0x05,1,0,0,0,       /* add eax, 1 */
+        0x83,0x01,1         /* add dword [ecx], 1 (faults) */
+    };
+    state.gpr[0]=UINT32_MAX;state.gpr[1]=state.stack_high-3;state.eflags=0x202;
+    assert(run(fault_after_flags,sizeof(fault_after_flags),0x6040)==-1 &&
+           state.gpr[0]==0 && state.eip==0x6045 && state.eflags==0x257);
+
+    /* Both static and dynamic zero-count shifts preserve the XOR result's
+     * flags.  Treating a zero-count shift as an unconditional definition
+     * would incorrectly eliminate that producer. */
+    const uint8_t shift_cl_zero[]={0x31,0xc0,0xd3,0xe2,0x74,0xfe};
+    state.gpr[0]=1;state.gpr[1]=0;state.gpr[2]=0x12345678;state.eflags=0x202;
+    assert(run(shift_cl_zero,sizeof(shift_cl_zero),0x6050)==0 &&
+           state.eip==0x6054 && state.gpr[2]==0x12345678 && state.eflags==0x246);
+
+    const uint8_t shift_imm_zero[]={0x31,0xc0,0xc1,0xe2,0,0x74,0xfe};
+    state.gpr[0]=1;state.gpr[2]=0x12345678;state.eflags=0x202;
+    assert(run(shift_imm_zero,sizeof(shift_imm_zero),0x6060)==0 &&
+           state.eip==0x6065 && state.gpr[2]==0x12345678 && state.eflags==0x246);
+
+    /* Multi-bit shifts leave OF undefined; this runtime preserves its prior
+     * deterministic value.  DFE must therefore keep an earlier OF producer. */
+    const uint8_t shift_imm_two[]={0x6b,0xc0,2,0xc1,0xe2,2,0x70,0xfe};
+    state.gpr[0]=0x40000000;state.gpr[2]=1;state.eflags=0x202;
+    assert(run(shift_imm_two,sizeof(shift_imm_two),0x6070)==0 &&
+           state.eip==0x6076 && state.gpr[0]==0x80000000 &&
+           state.gpr[2]==4 && state.eflags==0xa02);
+}
 static void immediate_tests(void)
 {
     state.gpr[2]=0xaabbccdd;state.eflags=0xad7;
@@ -879,6 +918,7 @@ int main(int argc, char **argv)
     comparison_tests();
     immediate_tests();
     absolute_tests();
+    optimization_safety_tests();
     push_operand_tests();
     logical_test_tests();
     arithmetic_memory_tests();
