@@ -19,7 +19,7 @@ bounded host gate, not a running Windows process.
 
 | Area | State |
 |---|---|
-| Runtime distribution | Three i386 PE modules (`ntdll`, `kernelbase`, `kernel32`) built reproducibly from the pinned revision plus the NLS data files the pinned runtime reads at startup (`locale.nls`, `sortdefault.nls`, `l_intl.nls` and the five normalization files), each recorded with its own hash and folded into the distribution digest `3f07309d900358ba76b346ccad625aa62d123723c4273ddbce0847fbc6c22dbd` |
+| Runtime distribution | Three i386 PE modules (`ntdll`, `kernelbase`, `kernel32`) built reproducibly from the pinned revision plus every NLS data file that revision tracks (its whole `nls/*.nls` - the locale tables, the sort keys, the case map, the normalization tables and one file per codepage), each recorded with its own hash and folded into the distribution digest `a70042324ceb268a714936501add18de2cd0a4a6f3fd16b7a758e7893c186bb5` |
 | Module graph | `kernelbase`'s 428 imports bind against `ntdll`'s exports with zero failures, by name, ordinal and forwarder |
 | PE32 TLS | Parsed, with a process/thread owner and deterministic callback plans; the staged modules declare no TLS directory |
 | ntdll under the DBT | Real `LdrInitializeThunk` executes through the IA-32 translator: 32 544 retired instructions, 6869 dispatches, 968 translated blocks, `host_calls=0`, complete cleanup (`modules=2 mappings=7 translations=1`) |
@@ -63,9 +63,10 @@ The modules are PE32/i386 images. The Unix-side modules (`*.so`) are *not*
 staged: they are not loadable objects on this target, and the whole point of
 the DBT is that guest PE code runs natively translated instead.
 
-The `nls/` files are the distribution's own NLS data - `locale.nls`,
-`sortdefault.nls`, `l_intl.nls`, `normidna.nls` and the four normalization
-data files (`dlls/ntdll/unix/env.c:93` names them). The pinned revision tracks
+The `nls/` files are the distribution's own NLS data: every `*.nls` the pinned
+revision tracks, which is `locale.nls`, `sortdefault.nls`, `l_intl.nls`, the
+normalization tables and one file per codepage (`dlls/ntdll/unix/env.c:93`
+names them). The pinned revision tracks
 them as source files, so staging them is a copy and not a second build, and
 the manifest records each one's size and hash and folds them into the
 distribution digest: a distribution that carries the data is not the

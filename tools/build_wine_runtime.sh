@@ -31,14 +31,17 @@ WINE_URL=${PROSPERO_WINE_GIT:-https://github.com/wine-mirror/wine.git}
 MODULES="ntdll kernelbase kernel32"
 LIBRARY=lib/i386-windows
 # The distribution's data files, staged beside the modules and folded into the
-# manifest's digest. These are the NLS data the pinned runtime reads during
-# startup: locale.nls for the locale tables (RtlGetLocaleFileMappingAddress,
-# dlls/ntdll/locale.c:613, and kernelbase's init_locale,
-# dlls/kernelbase/locale.c:438), sortdefault.nls for the sort keys, l_intl.nls
-# for the case map and the four normalization data files plus normidna (their
-# names are dlls/ntdll/unix/env.c:93 get_nls_file_path). Wine tracks all of
-# them as source files, so staging them is a copy and not a second build.
-DATA_FILES="nls/locale.nls nls/sortdefault.nls nls/l_intl.nls nls/normidna.nls nls/normnfc.nls nls/normnfd.nls nls/normnfkc.nls nls/normnfkd.nls"
+# manifest's digest: every NLS data file the pinned revision tracks (its nls/
+# directory), which is what the runtime's own locale code reads - locale.nls
+# for the locale tables (RtlGetLocaleFileMappingAddress, dlls/ntdll/locale.c:613,
+# and kernelbase's init_locale, dlls/kernelbase/locale.c:438), the sort keys,
+# the case map, the normalization tables and one file per codepage the guest
+# asks about (dlls/ntdll/unix/env.c:93 get_nls_file_path). Wine tracks them
+# all as source files, so staging them is a copy and not a second build, and a
+# distribution that carries them is what an installed prefix has: measured, the
+# run asked for c_437.nls and crashed on the unset table pointer that a refused
+# codepage request left behind.
+DATA_SUFFIX=".nls"
 CONFIGURE_ARGS="--enable-archs=i386,x86_64 --disable-tests"
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -125,10 +128,11 @@ stage() {
         [ -f "$built" ] || fail "missing built module: $built"
         cp "$built" "$destination/$LIBRARY/$module.dll"
     done
-    for data in $DATA_FILES; do
-        [ -f "$source_dir/$data" ] || fail "missing data file: $source_dir/$data"
-        mkdir -p "$destination/$(dirname "$data")"
-        cp "$source_dir/$data" "$destination/$data"
+    [ -d "$source_dir/nls" ] || fail "missing NLS data: $source_dir/nls"
+    mkdir -p "$destination/nls"
+    for data in "$source_dir"/nls/*"$DATA_SUFFIX"; do
+        [ -f "$data" ] || fail "no NLS data files in $source_dir/nls"
+        cp "$data" "$destination/nls/"
     done
 }
 
@@ -144,9 +148,10 @@ if [ "$check_reproducible" = 1 ]; then
             fail "$module.dll differs between two forced rebuilds in one pinned build tree"
         fi
     done
-    for data in $DATA_FILES; do
-        if ! cmp -s "$build_root/stage-a/$data" "$build_root/stage-b/$data"; then
-            fail "$data differs between two staged distributions"
+    for data in "$build_root"/stage-a/nls/*"$DATA_SUFFIX"; do
+        name=$(basename "$data")
+        if ! cmp -s "$data" "$build_root/stage-b/nls/$name"; then
+            fail "$name differs between two staged distributions"
         fi
     done
     echo "reproducible: two forced rebuilds in one pinned build tree produced identical modules"
@@ -154,8 +159,8 @@ fi
 
 stage "$out_dir"
 data_args=""
-for data in $DATA_FILES; do
-    data_args="$data_args --data $data"
+for data in "$out_dir"/nls/*"$DATA_SUFFIX"; do
+    data_args="$data_args --data nls/$(basename "$data")"
 done
 python3 "$root/tools/validate_wine_runtime.py" write \
     --distribution "$out_dir" \

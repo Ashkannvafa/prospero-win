@@ -43,7 +43,7 @@ INITIALIZATION_BUDGET = "1500"
 # -call dispatcher this gate does not publish yet, so the run ends with
 # returned-to-caller at address zero.
 PINNED_DISTRIBUTION = (
-    "3f07309d900358ba76b346ccad625aa62d123723c4273ddbce0847fbc6c22dbd")
+    "a70042324ceb268a714936501add18de2cd0a4a6f3fd16b7a758e7893c186bb5")
 PINNED_RUN = {
     "stop": "returned-to-caller",
     "stop_address": "0x00000000",
@@ -150,20 +150,19 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    # Moved deliberately in the commit that serves the locale questions, the
-    # NLS section pointer and the accumulator's byte forms: with residency off
-    # the run now walks through ntdll's and kernelbase's locale initialisation
-    # - 119 calls serviced - and stops on a 16-bit read past the end of the
-    # guest's own stack (0x0f012524, 0x2524 bytes above the 64 KiB stack), a
-    # wild pointer in the middle of the code-page tables rather than a service
-    # this run does not have. That is the next piece of work. The fault address
+    # Moved deliberately in the commit that stages the distribution's codepage
+    # tables: the run asked for c_437.nls, was refused it, and RtlInitCodePage
+    # Table then built its table from an unset stack slot - the 16-bit read
+    # past the end of the guest's own stack that the previous frontier pinned.
+    # With the file staged the table is real, and the run walks on to the next
+    # service it does not have, NtOpenKeyEx (i386 0x00b6). The fault address
     # with residency on is unchanged while the faulting block stays the same
     # (0x105c1aa7, 9 instructions, resident mask 0x43), which is the signature
     # the private report records for it.
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "memory-bounds", "fault": "0x0f012524",
-                      "retired": "542606", "blocks": "2185"},
+    "residency_off": {"stop": "unix-call-unimplemented", "retired": "543400",
+                      "blocks": "2226"},
 }
 
 
