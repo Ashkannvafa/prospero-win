@@ -31,8 +31,10 @@ NT_OFFSET = 0x40
 FILE_HEADER_BYTES = 20
 SECTION_HEADER_BYTES = 40
 DIRECTORY_ENTRIES = 16
+DIR_EXPORT = 0
 DIR_IMPORT = 1
 DIR_BASERELOC = 5
+DIR_TLS = 9
 
 SCN_CNT_CODE = 0x00000020
 SCN_CNT_INITIALIZED_DATA = 0x00000040
@@ -72,6 +74,32 @@ class Import:
 
 
 @dataclass
+class Export:
+    """One export: real code at `rva`, or a forwarder string.
+
+    A forwarder is encoded the way the PE format defines it - the function RVA
+    points *inside* the export directory, at a "OTHERDLL.Function" string - so
+    an importer that resolves it must follow the name rather than call it.
+    """
+    name: str
+    rva: int | None = None
+    forwarder: str | None = None
+
+
+@dataclass
+class Tls:
+    """A PE32 TLS directory.
+
+    `callbacks` are RVAs of functions the loader must call, terminated by a
+    zero entry in the image; `zero_fill` is the template's zero-fill length and
+    `index_rva` points at the loader-owned TLS index slot.
+    """
+    callbacks: tuple[int, ...] = ()
+    zero_fill: int = 0
+    index_rva: int | None = None
+
+
+@dataclass
 class Spec:
     name: str
     pe32plus: bool = True
@@ -83,6 +111,8 @@ class Spec:
     entry_point_offset: int = 0
     sections: list[Section] = field(default_factory=list)
     imports: list[Import] = field(default_factory=list)
+    exports: list[Export] = field(default_factory=list)
+    tls: Tls | None = None
     relocate_data_pointer: bool = True
 
 
@@ -160,6 +190,77 @@ def _build_import_blob(spec: Spec, base_rva: int) -> bytes:
     return bytes(descriptors.data + tail.data)
 
 
+def _build_export_blob(spec: Spec, base_rva: int) -> bytes:
+    """Export directory, address/name/ordinal tables and the strings.
+
+    A forwarder is what the format says it is: the address entry points at a
+    "OTHERDLL.Function" string inside the directory rather than at code, so an
+    importer that resolves it must follow the name.
+    """
+    count = len(spec.exports)
+    header_bytes = 40
+    address_offset = header_bytes
+    names_offset = address_offset + count * 4
+    ordinals_offset = names_offset + count * 4
+    tail_offset = ordinals_offset + count * 2
+    tail = _Blob()
+    forward_offsets: list[int] = []
+    name_offsets: dict[str, int] = {}
+
+    for entry in spec.exports:
+        if entry.forwarder is not None:
+            tail.pad_to(2)
+            forward_offsets.append(len(tail))
+            tail.append(entry.forwarder.encode("ascii") + b"\0")
+        elif entry.rva is not None:
+            forward_offsets.append(-1)
+        else:
+            raise ValueError(f"export {entry.name} has neither rva nor forwarder")
+        tail.pad_to(2)
+        name_offsets[entry.name] = len(tail)
+        tail.append(entry.name.encode("ascii") + b"\0")
+    tail.pad_to(2)
+    dll_name_offset = len(tail)
+    tail.append(spec.name.encode("ascii") + b"\0")
+
+    image = bytearray(header_bytes + tail_offset + len(tail))
+    ordered = sorted(range(count), key=lambda i: spec.exports[i].name)
+    for index, entry in enumerate(spec.exports):
+        value = (base_rva + tail_offset + forward_offsets[index]
+                 if entry.forwarder is not None else int(entry.rva or 0))
+        struct.pack_into("<I", image, address_offset + index * 4, value)
+    for position, index in enumerate(ordered):
+        entry = spec.exports[index]
+        struct.pack_into("<I", image, names_offset + position * 4,
+                         base_rva + tail_offset + name_offsets[entry.name])
+        struct.pack_into("<H", image, ordinals_offset + position * 2, index)
+    image[tail_offset:tail_offset + len(tail)] = bytes(tail.data)
+    struct.pack_into("<I", image, 12, base_rva + tail_offset + dll_name_offset)
+    struct.pack_into("<I", image, 16, 1)                    # ordinal base
+    struct.pack_into("<I", image, 20, count)                # functions
+    struct.pack_into("<I", image, 24, count)                # names
+    struct.pack_into("<I", image, 28, base_rva + address_offset)
+    struct.pack_into("<I", image, 32, base_rva + names_offset)
+    struct.pack_into("<I", image, 36, base_rva + ordinals_offset)
+    return bytes(image)
+
+
+def _build_tls_blob(spec: Spec, base_rva: int) -> bytes:
+    """The PE32 TLS directory plus its callback array, zero-terminated."""
+    assert spec.tls is not None
+    blob = _Blob()
+    blob.u32(0)                                  # StartAddressOfRawData
+    blob.u32(0)                                  # EndAddressOfRawData
+    blob.u32(spec.tls.index_rva or 0)            # AddressOfIndex
+    blob.u32(base_rva + 24)                      # AddressOfCallBacks
+    blob.u32(spec.tls.zero_fill)                 # SizeOfZeroFill
+    blob.u32(0)                                  # Characteristics
+    for callback in spec.tls.callbacks:
+        blob.u32(callback)
+    blob.u32(0)                                  # terminating entry
+    return bytes(blob.data)
+
+
 def _build_reloc_blob(targets: list[tuple[int, int]], alignment: int) -> bytes:
     blob = _Blob()
     index = 0
@@ -197,7 +298,8 @@ def build_pe(spec: Spec) -> bytes:
     optional_bytes = optional_fixed + 8 * DIRECTORY_ENTRIES
     sections = list(spec.sections)
     total_sections = len(sections) + len(
-        [part for part in (spec.imports, spec.relocate_data_pointer) if part]
+        [part for part in (spec.imports, spec.exports, spec.tls,
+                           spec.relocate_data_pointer) if part]
     )
     header_bytes = align_up(
         NT_OFFSET + 4 + FILE_HEADER_BYTES + optional_bytes +
@@ -243,6 +345,37 @@ def build_pe(spec: Spec) -> bytes:
         next_rva += align_up(len(blob), spec.section_alignment)
     else:
         import_rva = import_size = 0
+
+    if spec.exports:
+        blob = _build_export_blob(spec, next_rva)
+        placed.append({
+            "name": ".edata",
+            "characteristics": SCN_CNT_INITIALIZED_DATA | SCN_MEM_READ,
+            "rva": next_rva,
+            "virtual_size": len(blob),
+            "data": blob,
+        })
+        export_rva = next_rva
+        export_size = len(blob)
+        next_rva += align_up(len(blob), spec.section_alignment)
+    else:
+        export_rva = export_size = 0
+
+    if spec.tls is not None:
+        blob = _build_tls_blob(spec, next_rva)
+        placed.append({
+            "name": ".tls",
+            "characteristics": SCN_CNT_INITIALIZED_DATA | SCN_MEM_READ |
+                               SCN_MEM_WRITE,
+            "rva": next_rva,
+            "virtual_size": len(blob),
+            "data": blob,
+        })
+        tls_rva = next_rva
+        tls_size = len(blob)
+        next_rva += align_up(len(blob), spec.section_alignment)
+    else:
+        tls_rva = tls_size = 0
 
     if spec.relocate_data_pointer:
         kind = RELOC_DIR64 if spec.pe32plus else RELOC_HIGHLOW
@@ -316,6 +449,13 @@ def build_pe(spec: Spec) -> bytes:
         struct.pack_into("<I", image, directories + 8 * DIR_IMPORT, import_rva)
         struct.pack_into("<I", image, directories + 8 * DIR_IMPORT + 4,
                          import_size)
+    if export_size:
+        struct.pack_into("<I", image, directories + 8 * DIR_EXPORT, export_rva)
+        struct.pack_into("<I", image, directories + 8 * DIR_EXPORT + 4,
+                         export_size)
+    if tls_size:
+        struct.pack_into("<I", image, directories + 8 * DIR_TLS, tls_rva)
+        struct.pack_into("<I", image, directories + 8 * DIR_TLS + 4, tls_size)
     if reloc_size:
         struct.pack_into("<I", image, directories + 8 * DIR_BASERELOC,
                          reloc_rva)

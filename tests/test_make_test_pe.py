@@ -12,6 +12,7 @@ as a disagreement instead of certifying itself.
 from __future__ import annotations
 
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -152,6 +153,74 @@ class SampleChainTest(unittest.TestCase):
         self.assertEqual(first, second)
         # A reproducible artifact is a precondition for hashed evidence.
         self.assertEqual(sorted(first), ["binkw32.dll", "sample.exe"])
+
+    def test_forwarder_export_and_tls(self) -> None:
+        """The two fixture shapes tranche 2 needs, parsed back out of the bytes.
+
+        A forwarded export is a function entry that points *inside* the export
+        directory at an "other.dll.Target" string - that is what makes it a
+        forwarder rather than code - and the TLS directory's callback array must
+        hold the callback RVA followed by the terminating null entry. Both are
+        read here the way a loader would read them, and the C parser then has to
+        accept the same image.
+        """
+        spec = make_test_pe.Spec(
+            name="fixture.dll", pe32plus=False, dll=True,
+            sections=[make_test_pe.Section(".text", 0x60000020, b"\xc3\x90",
+                                           virtual_size=0x1000),
+                      make_test_pe.Section(".data", 0xc0000040, b"ABCD",
+                                           virtual_size=0x1000)],
+            exports=[make_test_pe.Export("Exported", rva=0x1000),
+                     make_test_pe.Export("Forwarded",
+                                         forwarder="other.dll.Target")],
+            tls=make_test_pe.Tls(callbacks=(0x1000,), zero_fill=4,
+                                 index_rva=0x2000))
+        image = make_test_pe.build_pe(spec)
+
+        nt = struct.unpack_from("<I", image, 0x3C)[0]
+        optional = nt + 4 + 20
+        optional_size = struct.unpack_from("<H", image, nt + 4 + 16)[0]
+        directories = optional + optional_size - 8 * make_test_pe.DIRECTORY_ENTRIES
+        sections = struct.unpack_from("<H", image, nt + 4 + 2)[0]
+        table = optional + optional_size
+
+        def rva_to_offset(rva: int) -> int:
+            for index in range(sections):
+                entry = table + index * 40
+                virtual_size, virtual_address = struct.unpack_from(
+                    "<II", image, entry + 8)
+                raw_size, raw_offset = struct.unpack_from("<II", image, entry + 16)
+                if virtual_address <= rva < virtual_address + max(virtual_size,
+                                                                   raw_size):
+                    return raw_offset + (rva - virtual_address)
+            raise AssertionError(f"rva {rva:#x} is in no section")
+
+        export_rva, export_size = struct.unpack_from("<II", image, directories)
+        tls_rva, tls_size = struct.unpack_from(
+            "<II", image, directories + 8 * make_test_pe.DIR_TLS)
+        self.assertNotEqual(export_rva, 0)
+        self.assertNotEqual(tls_rva, 0)
+
+        first, second = struct.unpack_from("<II", image,
+                                           rva_to_offset(export_rva + 40))
+        self.assertEqual(first, 0x1000)
+        self.assertTrue(export_rva <= second < export_rva + export_size,
+                        "the forwarded entry must point inside the directory")
+        forwarder = image[rva_to_offset(second):].split(b"\0", 1)[0]
+        self.assertEqual(forwarder, b"other.dll.Target")
+
+        index_rva, callbacks_rva = struct.unpack_from(
+            "<II", image, rva_to_offset(tls_rva) + 8)
+        self.assertEqual(index_rva, 0x2000)
+        callbacks = rva_to_offset(callbacks_rva)
+        self.assertEqual(struct.unpack_from("<I", image, callbacks)[0], 0x1000)
+        self.assertEqual(struct.unpack_from("<I", image, callbacks + 4)[0], 0)
+        self.assertGreaterEqual(tls_size, 24)
+
+        path = self.path / "fixture.dll"
+        path.write_bytes(image)
+        output = run_inspect(str(path), "--no-map")
+        self.assertEqual(field(output, "machine"), "i386")
 
     def test_encoder_rejects_bad_specs(self) -> None:
         with self.assertRaises(ValueError):
