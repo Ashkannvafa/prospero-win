@@ -2209,7 +2209,19 @@ analyze_and_emit:
              */
             emit_materialize_flags(&e,branch_condition_flags(cmov_condition));
             condition_value(&e,cmov_condition);
-            byte(&e,0x89);byte(&e,0xc2);          /* mov edx, eax: keep 0/1 */
+            /*
+             * Keep the 0/1 condition in R11D, which is scratch in every mode:
+             * the block's residency contract hands out only three host
+             * registers (PW_X86_MAX_HOST_REGS, ids 0..2 = R8, R9, R10), so R11
+             * never carries a resident guest value, and both the memory guard
+             * and the condition helper save and restore it. EDX cannot be
+             * used: the guard computes the address in EAX and uses EDX as its
+             * scratch, so a condition kept in EDX is overwritten before the
+             * move is selected - which is what made every CMOVcc with a memory
+             * source move unconditionally (the form matrix reported exactly
+             * the six conditions that are false with EFLAGS zero).
+             */
+            byte(&e,0x41);byte(&e,0x89);byte(&e,0xc3); /* mov r11d, eax */
             if(operand.mod==3) {
                 load_guest_reg_ecx(&e,&block->exit_contract,operand.rm);
             } else {
@@ -2218,7 +2230,7 @@ analyze_and_emit:
                 byte(&e,0x8b);byte(&e,0x08);      /* mov ecx, [rax] */
             }
             load_guest_reg(&e,&block->exit_contract,operand.reg);
-            byte(&e,0x85);byte(&e,0xd2);          /* test edx, edx */
+            byte(&e,0x45);byte(&e,0x85);byte(&e,0xdb); /* test r11d, r11d */
             /* Skip exactly the two-byte "mov eax, ecx" (89 c8) below; a
              * longer offset would land inside the following instruction. */
             byte(&e,0x74);byte(&e,0x02);

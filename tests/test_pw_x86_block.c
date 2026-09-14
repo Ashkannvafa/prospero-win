@@ -1468,6 +1468,39 @@ int main(int argc, char **argv)
         }
     }
     /*
+     * CMOVcc with a memory source: the condition has to survive the memory
+     * guard, which computes the address in EAX and uses EDX as its scratch
+     * register. When the condition was kept in EDX the guard overwrote it and
+     * every memory form moved unconditionally - the form matrix reported
+     * exactly the conditions that are false with EFLAGS zero. Both outcomes
+     * are pinned here, in all four engine modes.
+     */
+    {
+        const uint8_t cmove_mem[]={0x0f,0x44,0x03};   /* cmove eax, [ebx] */
+        const uint32_t window=0x03000800u;
+        const PwX86Memory saved_memory=state.memory[0];
+        const uint32_t saved_count=state.memory_count;
+
+        state.memory_count=1;
+        state.memory[0]=(PwX86Memory){state.stack_low,state.stack_high,
+                                      PW_X86_READ|PW_X86_WRITE};
+        *(uint32_t *)(uintptr_t)window=0xaabbccddu;
+        for(unsigned mode=0;mode<4;mode++) {
+            /* ZF set: the condition is true, so the source is selected. */
+            state.gpr[0]=0x11111111u;state.gpr[3]=window;
+            state.eflags=0x202u|0x40u;
+            assert(run_mode(cmove_mem,sizeof(cmove_mem),0x9700,mode&1u,mode>>1)==0);
+            assert(state.gpr[0]==0xaabbccddu);
+            /* ZF clear: the condition is false, so the destination stays. */
+            state.gpr[0]=0x11111111u;state.gpr[3]=window;
+            state.eflags=0x202u;
+            assert(run_mode(cmove_mem,sizeof(cmove_mem),0x9710,mode&1u,mode>>1)==0);
+            assert(state.gpr[0]==0x11111111u);
+        }
+        state.memory[0]=saved_memory;
+        state.memory_count=saved_count;
+    }
+    /*
      * The SSE lane, executed here through the translator as one block and in
      * tests/test_pw_x86_reference.S as native i386. Every register the
      * sequence reads is written first, and the bytes emitted below are the
