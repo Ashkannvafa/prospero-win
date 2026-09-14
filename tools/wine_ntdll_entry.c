@@ -15,6 +15,7 @@
 #include "../src/pw_file_posix.h"
 #include "../src/pw_vm_posix.h"
 #include "../src/pw_wine_gate.h"
+#include "../src/pw_wine_runner.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@
 #include <sys/utsname.h>
 
 static PwWineGateReport report;
+static PwWineRunner gate_runner;
 
 /*
  * The host side of unix_wine_dbg_write for this runner. Wine's CU side does
@@ -500,6 +502,8 @@ int main(int argc, char **argv)
         return 2;
     }
     memset(&config, 0, sizeof(config));
+    pw_wine_runner_init(&gate_runner);
+    config.runner = &gate_runner;
     config.provider = &provider;
     config.backend = &vm;
     {

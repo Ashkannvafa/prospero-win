@@ -22,9 +22,13 @@
 #include "../src/pw_guest_process.h"
 #include "../src/pw_vm_posix.h"
 #include "../src/pw_wine_gate.h"
+#include "../src/pw_wine_runner.h"
 
 #include <assert.h>
 #include <string.h>
+
+/* The run's own workspace; two of these are independent. */
+static PwWineRunner test_runner;
 
 enum {
     TEXT_RVA = 0x1000,
@@ -459,6 +463,8 @@ static CaseResult run_case(enum TestMode mode, int inject)
     span.size = size;
 
     memset(&config, 0, sizeof(config));
+    pw_wine_runner_init(&test_runner);
+    config.runner = &test_runner;
     config.provider = &provider;
     config.backend = &wrapped;
     config.root_module = "ntdll.dll";

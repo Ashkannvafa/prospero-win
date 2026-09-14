@@ -17,6 +17,7 @@
 #include "pw_wine_object.h"
 #include "pw_wine_query.h"
 #include "pw_wine_registry.h"
+#include "pw_wine_runner.h"
 #include "../include/prospero_win_vm.h"
 
 #include <string.h>
@@ -960,12 +961,8 @@ static int declare_guest_memory(PwX86State *state, const PwLoader *loader,
 
 int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 {
-    /* Large by design: the bind workspace holds one module's import table. */
-    static PwImportBindWorkspace workspace;
-    static PwLoader loader;
-    static PwExportResolver resolver;
-    static PwX86CacheEntry cache[PW_WINE_GATE_CACHE_ENTRIES];
 
+    PwWineRunner *runner;
     PwGuestVm guest_vm;
     PwX86Engine engine;
     PwImportBindReport bind;
@@ -993,6 +990,14 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         config->module_count == 0u ||
         config->module_count > PW_WINE_GATE_MAX_MODULES)
         return PW_ERR_PRECONDITION;
+    /*
+     * The run's workspace is the caller's object now: a run with none, or with
+     * one that was released, is refused rather than silently sharing state with
+     * another run in the same process.
+     */
+    if (!config->runner || !pw_wine_runner_ready(config->runner))
+        return PW_ERR_PRECONDITION;
+    runner = config->runner;
     memset(report, 0, sizeof(*report));
     memset(&root_span, 0, sizeof(root_span));
     memset(&process, 0, sizeof(process));
@@ -1017,11 +1022,11 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             return PW_ERR_NOT_FOUND;
     }
 
-    status = pw_loader_init(&loader, config->provider, pw_guest_vm_backend(&guest_vm));
+    status = pw_loader_init(&runner->loader, config->provider, pw_guest_vm_backend(&guest_vm));
     if (status != PW_OK)
         return status;
     have_loader = 1;
-    status = pw_loader_set_policy(&loader, &(PwModulePolicy){
+    status = pw_loader_set_policy(&runner->loader, &(PwModulePolicy){
         .context = NULL, .classify = pw_loader_wine_policy,
     });
     if (status != PW_OK)
@@ -1040,18 +1045,18 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                                                   &root_span);
         if (status != PW_OK)
             goto done;
-        status = pw_loader_load(&loader, root_span.bytes, root_span.size,
+        status = pw_loader_load(&runner->loader, root_span.bytes, root_span.size,
                                 root_canonical);
         if (status != PW_OK)
             goto done;
     }
 
     /* Bind every loaded module's imports through one resolver. */
-    status = pw_export_resolver_init(&resolver, &loader, 4u);
+    status = pw_export_resolver_init(&runner->resolver, &runner->loader, 4u);
     if (status != PW_OK)
         goto done;
-    for (uint32_t index = 0; index < loader.module_count; ++index) {
-        PwModule *module = &loader.modules[index];
+    for (uint32_t index = 0; index < runner->loader.module_count; ++index) {
+        PwModule *module = &runner->loader.modules[index];
         PwWineModuleRecord *record = record_for(report, module->name);
 
         if (record) {
@@ -1072,8 +1077,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         if (module->image.machine != PE_MACHINE_I386)
             continue;
         status = pw_import_bind32(&module->image, &module->mapped,
-                                  pw_export_import_resolver, &resolver,
-                                  &workspace, &bind);
+                                  pw_export_import_resolver, &runner->resolver,
+                                  &runner->workspace, &bind);
         if (status != PW_OK) {
             report->bind_failures++;
             goto done;
@@ -1089,8 +1094,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 
     /* TLS is a per-module loader contract; record what the real modules
      * declare instead of assuming every module has a directory. */
-    for (uint32_t index = 0; index < loader.module_count; ++index) {
-        const PwModule *module = &loader.modules[index];
+    for (uint32_t index = 0; index < runner->loader.module_count; ++index) {
+        const PwModule *module = &runner->loader.modules[index];
         PeTlsDirectory tls;
         PwWineModuleRecord *record = record_for(report, module->name);
 
@@ -1117,12 +1122,12 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                                           entry_machine);
         if (status != PW_OK)
             goto done;
-        entry_index = pw_loader_find(&loader, canonical);
+        entry_index = pw_loader_find(&runner->loader, canonical);
         if (entry_index < 0) {
             status = entry_index;
             goto done;
         }
-        entry_module = pw_loader_module(&loader, (uint32_t)entry_index);
+        entry_module = pw_loader_module(&runner->loader, (uint32_t)entry_index);
         status = pe_export_parse(&directory, &entry_module->image);
         if (status != PW_OK)
             goto done;
@@ -1166,7 +1171,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
      * mapped.
      */
     {
-        const PwModule *root_module_loaded = pw_loader_module(&loader, 0u);
+        const PwModule *root_module_loaded = pw_loader_module(&runner->loader, 0u);
         const PwGuestProcessConfig process_config = {
             .backend = config->backend,
             .stack_base = config->stack_base,
@@ -1215,7 +1220,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
          */
         if (config->unixlib_calls) {
             const PwModule *entry_module_now =
-                entry_index >= 0 ? pw_loader_module(&loader,
+                entry_index >= 0 ? pw_loader_module(&runner->loader,
                                                     (uint32_t)entry_index)
                                  : NULL;
             PeExportSymbol dispatcher = { 0 }, handle = { 0 };
@@ -1287,7 +1292,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     state.eip = report->entry_eip;
     state.fs_base = report->teb_base;
     state.fs_bytes = report->teb_bytes;
-    status = declare_guest_memory(&state, &loader, report->stack_base,
+    status = declare_guest_memory(&state, &runner->loader, report->stack_base,
                                   report->stack_bytes, &process.pages[1],
                                   &process.pages[2], &process.pages[3]);
     if (status != PW_OK)
@@ -1299,10 +1304,10 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         memcpy((void *)(uintptr_t)state.gpr[4], &token, 4u);
     }
 
-    status = pw_x86_engine_init(&engine, pw_guest_vm_backend(&guest_vm), cache,
+    status = pw_x86_engine_init(&engine, pw_guest_vm_backend(&guest_vm), runner->cache,
                                 PW_WINE_GATE_CACHE_ENTRIES,
                                 PW_WINE_GATE_ARENA_BYTES, 1u,
-                                gate_source_view, &loader);
+                                gate_source_view, &runner->loader);
     if (status != PW_OK)
         goto done;
     have_engine = 1;
@@ -1312,7 +1317,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     calls.vm = &guest_vm;
     calls.config = config;
     calls.report = report;
-    calls.root = pw_loader_module(&loader, 0u);
+    calls.root = pw_loader_module(&runner->loader, 0u);
     calls.heap_cursor = PW_WINE_GATE_HEAP_BASE;
     calls.limit = config->allocation_limit != 0u ? config->allocation_limit
                                                  : PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT;
@@ -1528,18 +1533,18 @@ done:
             /* Counted before the release: a complete release zeroes the
              * loader's inventory, so the pending count has to come from the
              * inventory the run actually held. */
-            const uint32_t owned = loader.module_count;
-            const int loader_status = pw_loader_release(&loader);
+            const uint32_t owned = runner->loader.module_count;
+            const int loader_status = pw_loader_release(&runner->loader);
 
             if (loader_status != PW_OK) {
                 if (cleanup_status == PW_OK)
                     cleanup_status = loader_status;
                 failures++;
             }
-            report->cleanup_modules = loader.released_modules;
+            report->cleanup_modules = runner->loader.released_modules;
             report->cleanup_modules_pending =
-                owned - loader.released_modules;
-            report->cleanup_mappings += loader.released_modules;
+                owned - runner->loader.released_modules;
+            report->cleanup_mappings += runner->loader.released_modules;
         }
         report->cleanup_failures = failures;
     }

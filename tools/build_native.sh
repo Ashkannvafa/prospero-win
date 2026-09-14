@@ -149,6 +149,7 @@ sources=(
     src/pw_nt_handle.c
     src/pw_unixlib.c
     src/pw_wine_unixlib.c
+    src/pw_wine_runner.c
     src/pw_wine_path.c
     src/pw_wine_handle.c
     src/pw_wine_file.c

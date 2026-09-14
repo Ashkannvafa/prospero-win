@@ -214,6 +214,15 @@ typedef struct PwWineModuleRecord {
 typedef struct PwWineGateConfig {
     const PwFileProvider *provider;
     const PwVmBackend *backend;
+    /*
+     * The run's own workspace (loader, import-bind workspace, export resolver
+     * and translation cache). It used to live in function-local statics inside
+     * pw_wine_gate_run, which made two runs in one process share mutable state;
+     * the caller owns it now, so a second runner is a second object and the
+     * gate has no hidden state. Required: a run with no runner, or with one
+     * that was released, is refused.
+     */
+    struct PwWineRunner *runner;
     const PwWineFileService *files;  /* NULL refuses every open */
     const PwWineRegistryService *registry;  /* NULL answers NOT_SUPPORTED */
     const PwWineObjectService *objects;     /* NULL answers NOT_SUPPORTED */
