@@ -24,10 +24,24 @@ static void set_unicode_string(uint8_t *page, uint32_t field, uint32_t offset,
 {
     const uint32_t base = (uint32_t)(uintptr_t)page;
     const uint16_t bytes = (uint16_t)(strlen(text) * 2u);
+    /*
+     * MaximumLength counts the terminating NUL's room, as it does for every
+     * caller of RtlInitUnicodeString (Length = chars * 2,
+     * MaximumLength = (chars + 1) * 2). Writing the two as the same number
+     * leaves the string with nowhere to put its terminator: a caller that
+     * copies MaximumLength bytes and NUL-terminates - which is what ntdll's
+     * own init_user_process_params does when it rebuilds the parameters it was
+     * handed - then writes one word into whatever follows this string. That is
+     * measured, not theoretical: with MaximumLength == Length here, ntdll's
+     * copy of DllPath came back with its first two characters replaced by a
+     * backslash and a NUL, because the current-directory string before it in
+     * the same allocation had neither.
+     */
+    const uint16_t maximum = (uint16_t)(bytes + 2u);
     const uint32_t buffer = base + offset;
 
     memcpy(page + field, &bytes, 2u);
-    memcpy(page + field + 2u, &bytes, 2u);
+    memcpy(page + field + 2u, &maximum, 2u);
     memcpy(page + field + 4u, &buffer, 4u);
 }
 

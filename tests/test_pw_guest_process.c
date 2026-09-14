@@ -193,6 +193,28 @@ int main(void)
     assert(strcmp(text, "C:\\windows\\system32\\ntdll.dll") == 0);
     read_wide(parameters, 0x40u, text, sizeof(text));
     assert(strcmp(text, "C:\\windows\\system32\\ntdll.dll") == 0);
+    /*
+     * Every string leaves room for its terminator: Windows and Wine both
+     * define MaximumLength as Length plus that room, and a string whose
+     * MaximumLength equals its Length has none. ntdll's own
+     * init_user_process_params copies MaximumLength bytes and terminates what
+     * it copied, so publishing the two as the same number lets that terminator
+     * land in the string that follows - measured, and the reason DllPath came
+     * back with two of its characters replaced.
+     */
+    {
+        /* CurrentDirectory.DosPath, DllPath, ImagePathName, CommandLine. */
+        static const uint32_t fields[] = { 0x24u, 0x30u, 0x38u, 0x40u };
+
+        for (uint32_t index = 0u; index < sizeof(fields) / sizeof(fields[0]);
+             ++index) {
+            uint16_t length = 0u, maximum = 0u;
+
+            memcpy(&length, parameters + fields[index], 2u);
+            memcpy(&maximum, parameters + fields[index] + 2u, 2u);
+            assert(maximum == length + 2u);
+        }
+    }
     memcpy(&environment, parameters + 0x48u, 4u);
     assert(environment >= PW_GUEST_PROCESS_PARAMETERS_BASE);
     assert(environment < PW_GUEST_PROCESS_PARAMETERS_BASE +
