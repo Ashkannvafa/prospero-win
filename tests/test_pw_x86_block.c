@@ -1101,7 +1101,8 @@ static void sse_and_scan_tests(void)
         state.memory_count=1;
         state.memory[0]=(PwX86Memory){state.stack_low,state.stack_high,
                                       PW_X86_READ|PW_X86_WRITE};
-        *(uint32_t *)(uintptr_t)window=0x00000004u;
+        *(uint32_t *)(uintptr_t)window=0x00000004u;      /* bit 2 of unit 0 */
+        *(uint32_t *)(uintptr_t)(window+4u)=0u;          /* bit 0 of unit 1 */
         for(unsigned mode=0;mode<4;mode++) {
             /* The matrix's own initial state: every GPR carries a distinct
              * pattern, including a guest ESP the block must not need. */
@@ -1115,6 +1116,48 @@ static void sse_and_scan_tests(void)
             state.eflags=0x202u;
             assert(run_mode(bt_mem,sizeof(bt_mem),0x9600,mode&1u,mode>>1)==0);
             assert((state.eflags&0x1u)==0u);
+        }
+        /*
+         * A bit offset of 32 on a dword operand addresses the *next* dword,
+         * which is what the ISA means by a bit string: the guard has to cover
+         * the unit the CPU really reads, not the base the ModRM names.
+         */
+        *(uint32_t *)(uintptr_t)window=0u;
+        *(uint32_t *)(uintptr_t)(window+4u)=0x00000001u;
+        for(unsigned mode=0;mode<4;mode++) {
+            for(unsigned reg=0;reg<8;reg++)
+                state.gpr[reg]=reg==3u?window:0x11111111u*(reg+1u);
+            state.gpr[0]=32u;                /* eax: bit 0 of the next dword */
+            state.eflags=0x202u;
+            assert(run_mode(bt_mem,sizeof(bt_mem),0x9620,mode&1u,mode>>1)==0);
+            assert((state.eflags&0x1u)!=0u);
+        }
+        /*
+         * And an offset far outside the declared region is a *refused* call,
+         * not a host fault: this is the bypass the SSE form matrix found, so
+         * it is the case that must stay pinned. 0x11111111 selects the unit
+         * at window + 0x02222220.
+         */
+        for(unsigned mode=0;mode<4;mode++) {
+            for(unsigned reg=0;reg<8;reg++)
+                state.gpr[reg]=reg==3u?window:0x11111111u*(reg+1u);
+            state.gpr[0]=0x11111111u;
+            state.eflags=0x202u;
+            assert(run_mode(bt_mem,sizeof(bt_mem),0x9640,mode&1u,mode>>1)==-1);
+            assert(state.gpr[3]==window);
+        }
+        /* The immediate form moves the unit too: "bt dword [ebx], 40" is bit
+         * 8 of the next dword, and the immediate is masked to the bit
+         * position inside that unit. */
+        {
+            const uint8_t bt_imm[]={0x0f,0xba,0x23,40};  /* bt [ebx], 40 */
+
+            *(uint32_t *)(uintptr_t)window=0u;
+            *(uint32_t *)(uintptr_t)(window+4u)=0x00000100u;
+            state.gpr[3]=window;
+            state.eflags=0x202u;
+            assert(run(bt_imm,sizeof(bt_imm),0x9660)==0);
+            assert((state.eflags&0x1u)!=0u);
         }
         state.memory[0]=saved_memory;
         state.memory_count=saved_count;

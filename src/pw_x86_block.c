@@ -2428,14 +2428,53 @@ analyze_and_emit:
                     store_guest_reg(&e,&block->exit_contract,operand.rm);
             } else {
                 effective_address(&e,&operand,&block->exit_contract);
-                memory_address_width(&e,bit_op==1?0:2,width);
-                if(!bit_imm)
+                /*
+                 * BT/BTS/BTR/BTC address a *bit string*: with a memory
+                 * operand the CPU does not touch [base] but the unit at
+                 * base + width*(offset DIV (width*8)), so an offset of 40
+                 * on a dword operand reads the next dword. The guard has to
+                 * validate the address the CPU will really use, not the base
+                 * the ModRM names - validating the base alone let a guest
+                 * offset of 0x11111111 reach 512 MiB away, which the SSE form
+                 * matrix found as a sigill in the host
+                 * (tests/test_pw_sse_matrix.py).
+                 */
+                const unsigned unit_bytes = width;
+                const unsigned unit_shift = width == 4u ? 5u : 4u;
+                const unsigned unit_mask = width == 4u ? 31u : 15u;
+
+                if(bit_imm) {
+                    /* The offset is a translation-time constant, so only the
+                     * unit it selects is reachable: at most 28 bytes past the
+                     * base for a dword operand. */
+                    const unsigned offset = unit_bytes *
+                        (source[cursor+length-1] >> unit_shift);
+                    if(offset) {
+                        byte(&e,0x83);byte(&e,0xc0);byte(&e,(uint8_t)offset);
+                    }
+                } else {
                     load_guest_reg_ecx(&e,&block->exit_contract,operand.reg);
+                    byte(&e,0x89);byte(&e,0xca);            /* mov edx, ecx */
+                    byte(&e,0xc1);byte(&e,0xea);
+                    byte(&e,(uint8_t)unit_shift);           /* shr edx, 5|4 */
+                    byte(&e,0xc1);byte(&e,0xe2);
+                    byte(&e,(uint8_t)(unit_bytes == 4u ? 2u : 1u));
+                    byte(&e,0x03);byte(&e,0xc2);            /* add eax, edx */
+                }
+                memory_address_width(&e,bit_op==1?0:2,width);
+                if(!bit_imm) {
+                    /* The guard may have used ECX for its own call; reload the
+                     * index and keep only the bit position inside the unit,
+                     * which is what the CPU would have masked for itself. */
+                    load_guest_reg_ecx(&e,&block->exit_contract,operand.reg);
+                    byte(&e,0x83);byte(&e,0xe1);byte(&e,(uint8_t)unit_mask);
+                }
                 if(word_operand)byte(&e,0x66);
                 byte(&e,0x0f);
                 if(bit_imm) {
                     byte(&e,0xba);byte(&e,(uint8_t)((bit_op+3u)<<3));
-                    byte(&e,source[cursor+length-1]);
+                    byte(&e,(uint8_t)(source[cursor+length-1] &
+                                      (uint8_t)unit_mask));
                 } else {
                     byte(&e,opcode);byte(&e,0x08);   /* mod 00: reg ECX, [RAX] */
                 }
