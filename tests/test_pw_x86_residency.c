@@ -522,6 +522,136 @@ static void test_matching_chain_preserves_inherited_dirty_value(void)
     assert(pw_x86_engine_destroy(&engine)==PW_OK);
 }
 
+/*
+ * 12. Base+index addressing with resident registers across a block boundary.
+ *
+ * This is the shape the loader's own rb-tree fixup runs - a load whose base is
+ * one guest register and whose index is another, with the value that feeds the
+ * index loaded earlier in the same block - and the block is entered from
+ * another block, so the entry contract is what decides where those registers
+ * live. It is the pattern the application-root run reaches when ntdll inserts
+ * the module it has just mapped.
+ *
+ * It passes, which is itself the finding: the shape is not what fails. The
+ * same is true of test 13, the fixup's own block byte for byte, entered
+ * canonically into a fresh engine. So the defect the application run hits is
+ * not in how that block is translated; it is in the contract it is entered
+ * with, which is where the next reproduction has to start.
+ */
+static void test_base_index_load_across_blocks(void)
+{
+    /*
+     * 0x1000: mov esi, 0x0300f000    ; the table, inside the mapped stack
+     *         mov ebx, 0x11
+     *         jmp 0x100f
+     * 0x100f: mov ecx, [esi + 4]     ; ecx = 0x11
+     *         xor eax, eax
+     *         cmp ecx, ebx           ; equal, so the index below is 0
+     *         setne al
+     *         mov edi, eax
+     *         mov eax, [esi + edi*4] ; eax = the table's first word
+     *         ret
+     */
+    uint8_t code[] = {
+        0xbe, 0x00, 0xf0, 0x00, 0x03,        /* mov esi, 0x0300f000 */
+        0xbb, 0x11, 0x00, 0x00, 0x00,        /* mov ebx, 0x11 */
+        0xe9, 0x00, 0x00, 0x00, 0x00,        /* jmp 0x100f */
+        0x8b, 0x4e, 0x04,                    /* mov ecx, [esi + 4] */
+        0x31, 0xc0,                          /* xor eax, eax */
+        0x39, 0xd9,                          /* cmp ecx, ebx */
+        0x0f, 0x95, 0xc0,                    /* setne al */
+        0x89, 0xc7,                          /* mov edi, eax */
+        0x8b, 0x04, 0xbe,                    /* mov eax, [esi + edi*4] */
+        0xc3                                 /* ret */
+    };
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    PwX86StepReport step;
+
+    state.gpr[4] = 0x0300ff00;
+    *(uint32_t *)(uintptr_t)state.gpr[4] = 0x99999999;   /* the return address */
+    *(uint32_t *)(uintptr_t)0x0300f000 = 0xaaaa0000;
+    *(uint32_t *)(uintptr_t)0x0300f004 = 0x11;
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1,
+                              test_source_view, &src) == PW_OK);
+    /* The configuration the loader's fixup reaches: no chaining. */
+    assert(pw_x86_engine_set_chaining(&engine, 0) == PW_OK);
+    /* One step runs one block: the block that leaves the registers hot, then
+     * the block whose load indexes with them. */
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.eip == 0x100f);
+    assert(state.gpr[3] == 0x11);        /* what the first block left behind */
+    assert(state.gpr[6] == 0x0300f000);
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 0xaaaa0000);
+    assert(state.gpr[1] == 0x11);
+    assert(state.gpr[6] == 0x0300f000);
+    assert(state.gpr[7] == 0);
+    assert(state.eip == 0x99999999);
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
+/*
+ * 13. The block ntdll's rb-insert fixup actually runs, byte for byte, entered
+ * canonically into a fresh engine. It executes correctly, so the translation of
+ * this block is not what the application run's fault is about. See test 12.
+ */
+static void test_rb_fixup_block_verbatim(void)
+{
+    /*
+     * Taken from the staged ntdll at RVA 0x30aa7 (RtlRbInsertNodeEx+0x117):
+     *   mov [ebp+0x14], edx
+     *   mov ecx, [esi+4]
+     *   xor eax, eax
+     *   cmp ebx, ecx
+     *   setne al
+     *   mov edi, eax
+     *   mov eax, [esi+edi*4]
+     *   test eax, eax
+     *   je +6
+     */
+    uint8_t code[] = {
+        0x89, 0x55, 0x14,
+        0x8b, 0x4e, 0x04,
+        0x31, 0xc0,
+        0x39, 0xcb,
+        0x0f, 0x95, 0xc0,
+        0x89, 0xc7,
+        0x8b, 0x04, 0xbe,
+        0x85, 0xc0,
+        0x74, 0x06,
+        0xc3
+    };
+    TestSource src = {0x1000, code, sizeof(code)};
+    PwVmBackend vm;
+    PwX86Engine engine;
+    PwX86CacheEntry entries[16];
+    PwX86State state = {.eip = 0x1000, .stack_low = 0x03000000, .stack_high = 0x03010000};
+    PwX86StepReport step;
+
+    state.gpr[5] = 0x0300ff00;          /* ebp */
+    state.gpr[6] = 0x0300f000;          /* esi: the "node" */
+    state.gpr[3] = 0x11;                /* ebx: the key */
+    state.gpr[2] = 0x12345678;          /* edx: the value stored */
+    *(uint32_t *)(uintptr_t)0x0300f004 = 0x11;
+    *(uint32_t *)(uintptr_t)0x0300f000 = 0xaaaa0000;
+
+    assert(pw_vm_posix_backend(&vm) == PW_OK);
+    assert(pw_x86_engine_init(&engine, &vm, entries, 16, 65536, 1,
+                              test_source_view, &src) == PW_OK);
+    assert(pw_x86_engine_set_chaining(&engine, 0) == PW_OK);
+    assert(pw_x86_engine_step(&engine, &state, &step) == PW_OK);
+    assert(state.gpr[0] == 0xaaaa0000);
+    assert(state.gpr[1] == 0x11);
+    assert(*(uint32_t *)(uintptr_t)0x0300ff14 == 0x12345678);
+    assert(pw_x86_engine_destroy(&engine) == PW_OK);
+}
+
 int main(void)
 {
     PwVmBackend vm;
@@ -541,8 +671,10 @@ int main(void)
     test_parity_residency_switch();
     test_setcc_helper_preserves_resident_stack();
     test_matching_chain_preserves_inherited_dirty_value();
+    test_base_index_load_across_blocks();
+    test_rb_fixup_block_verbatim();
 
     assert(vm.release(vm.context, &stack_region) == PW_OK);
-    printf("all 11 register residency tests passed successfully\n");
+    printf("all 13 register residency tests passed successfully\n");
     return 0;
 }
