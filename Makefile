@@ -110,6 +110,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_unix_call_table.py
 	python3 tests/test_nt_handler_ledger.py
 	python3 tests/test_reentrancy_contract.py
+	python3 tests/test_test_reachability.py
 	python3 tests/test_wine_gate_host.py
 	python3 tests/test_audit_wine_imports.py
 	python3 tests/test_win32_catalog.py

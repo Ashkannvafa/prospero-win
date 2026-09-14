@@ -12,6 +12,7 @@ tests/test_wine_ntdll_evidence.py.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,48 @@ MANIFEST = DISTRIBUTION / "wine-runtime-manifest.json"
 VALIDATOR = ROOT / "tools/validate_wine_ntdll_evidence.py"
 MODES = ("1,1,1", "0,0,0", "1,0,1", "0,1,0")
 INITIALIZATION_BUDGET = "1500"
+
+# The pinned checkpoint: the exact frontier and handler coverage of the run
+# this branch has reached, measured on one exact staged distribution.
+#
+# These numbers are evidence, not a contract of the dispatcher, so they are
+# *meant* to be edited - deliberately, in the same commit that moves them. A
+# failure here means one of three things and the message says which value moved:
+# the bridge advanced, the staged runtime changed identity, or something
+# regressed. The generic acceptance below still runs on its own terms; this
+# block is what makes "we got further" and "we quietly got less far" different
+# outcomes instead of both passing.
+#
+# The measured frontier after the last serviced call (NtQueryInformationProcess
+# for the process image) is the classified null jump the validator accepts:
+# the loader's own debug message calls __wine_unix_call_dispatcher, the unix
+# -call dispatcher this gate does not publish yet, so the run ends with
+# returned-to-caller at address zero.
+PINNED_DISTRIBUTION = (
+    "e88025bbc00a1195ebdfd76589ae0fdeab3265158ea7e8af40fd398c1ec0673d")
+PINNED_RUN = {
+    "stop": "returned-to-caller",
+    "stop_address": "0x00000000",
+    "retired": "32544",
+    "dispatches": "6869",
+    "blocks": "968",
+    "host_calls": "0",
+    "syscall": "0x00000019",
+}
+PINNED_CALLS = {
+    "serviced": "19", "handled": "19", "unimplemented": "0", "unknown": "0",
+    "rejected": "0", "refusals": "0", "allocations": "2", "releases": "1",
+    "regions": "2", "files": "1", "directories": "1", "registry": "1",
+    "objects": "1", "tokens": "1", "processes": "1",
+}
+PINNED_CLEANUP = {"modules": "2", "mappings": "7", "translations": "1",
+                  "status": "ok"}
+# Ordered handler coverage: the call ids in the order the run issued them, with
+# repeats, because the order is part of what makes this a record of a loader
+# run rather than a set of implemented functions.
+PINNED_SEQUENCE = (0x18, 0x18, 0x18, 0x33, 0x49, 0x1e, 0x12, 0x17, 0x17,
+                   0x0f, 0x36, 0x21, 0x1d, 0x12, 0x0f, 0x12, 0x12, 0x58,
+                   0x19)
 
 
 def run_gate(*arguments: str, expect_acceptance: bool = True) -> str:
@@ -49,6 +92,25 @@ def field(text: str, kind: str, name: str) -> str:
             if separator and key == name:
                 return value
     raise SystemExit(f"wine ntdll gate: {kind} record has no {name}")
+
+
+def call_records(text: str) -> list[dict[str, str]]:
+    """Every `host-wine-call-seq` record, ordered by its own index."""
+    records = []
+    for line in text.splitlines():
+        if "kind=host-wine-call-seq " not in line:
+            continue
+        records.append(dict(token.split("=", 1)
+                            for token in line.split() if "=" in token))
+    return sorted(records, key=lambda record: int(record["index"]))
+
+
+def compare(observed: dict[str, str], expected: dict[str, str], label: str,
+            problems: list[str]) -> None:
+    for name, value in expected.items():
+        if observed.get(name) != value:
+            problems.append(f"{label}.{name}: checkpoint says {value}, "
+                            f"this run measured {observed.get(name)}")
 
 
 def validate_transcript(text: str, expect_entry: str) -> str:
@@ -131,6 +193,41 @@ def main() -> int:
     print("wine ntdll gate: bridge serviced "
           f"{tallies[0]} calls and mapped {tallies[2]} guest region(s); "
           f"final stop {field(bridged, 'run', 'stop')}")
+
+    # The pinned checkpoint. The measurements describe one exact distribution,
+    # so a differently built runtime is not comparable and must be re-measured
+    # rather than silently compared.
+    staged = json.loads(MANIFEST.read_text(encoding="utf-8")).get(
+        "distribution_sha256")
+    if staged != PINNED_DISTRIBUTION:
+        raise SystemExit(
+            "wine ntdll gate: the pinned checkpoint in this test describes "
+            f"distribution {PINNED_DISTRIBUTION}, but the staged runtime is "
+            f"{staged}. Stage the pinned distribution, or re-measure the "
+            "checkpoint in the same commit as the change that moved it.")
+    problems: list[str] = []
+    compare({name: field(bridged, "run", name) for name in PINNED_RUN},
+            PINNED_RUN, "run", problems)
+    compare({name: field(bridged, "calls", name) for name in PINNED_CALLS},
+            PINNED_CALLS, "calls", problems)
+    compare({name: field(bridged, "cleanup", name) for name in PINNED_CLEANUP},
+            PINNED_CLEANUP, "cleanup", problems)
+    sequence = [int(record["id"], 16) for record in call_records(bridged)]
+    if sequence != list(PINNED_SEQUENCE):
+        problems.append(
+            "handler sequence: checkpoint says " +
+            " ".join(f"{value:#04x}" for value in PINNED_SEQUENCE) +
+            ", this run measured " +
+            " ".join(f"{value:#04x}" for value in sequence))
+    if problems:
+        raise SystemExit(
+            "wine ntdll gate: the pinned checkpoint moved, and moving it must "
+            "be a decision recorded in the same commit:\n  " +
+            "\n  ".join(problems))
+    print("wine ntdll gate: pinned checkpoint confirmed "
+          f"({len(sequence)} calls, {PINNED_RUN['retired']} retired "
+          f"instructions, stop {PINNED_RUN['stop']} at "
+          f"{PINNED_RUN['stop_address']})")
     return 0
 
 
