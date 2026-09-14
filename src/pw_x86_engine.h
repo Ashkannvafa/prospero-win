@@ -32,6 +32,15 @@ typedef struct PwX86Engine {
     uint64_t reg_loads, reg_stores;
     uint64_t reg_reconciliations, reg_spills;
     uint64_t flags_safepoint_commits;
+    /* The block the last fault happened in, and the contract it was entered
+     * with: a fault that names its block and its register residency is the
+     * difference between a guest bug and a translation bug. */
+    uint32_t fault_block_pc;
+    uint32_t fault_block_instructions;
+    uint8_t fault_block_resident_mask;
+    int8_t fault_block_map[8];
+    uint8_t fault_block_code[1024];
+    uint32_t fault_block_code_bytes;
     uint32_t quantum;
     unsigned chaining_enabled;
     unsigned residency_enabled;

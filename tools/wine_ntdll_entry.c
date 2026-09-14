@@ -626,8 +626,17 @@ int main(int argc, char **argv)
     if (report.stop == PW_WINE_STOP_MEMORY_BOUNDS) {
         uint32_t index;
 
-        printf("kind=host-wine-fault address=0x%08x width=%u write=%u recent=",
-               report.fault_address, report.fault_width, report.fault_write);
+        printf("kind=host-wine-fault address=0x%08x width=%u write=%u "
+               "block=0x%08x block_instructions=%u resident=%#x map=",
+               report.fault_address, report.fault_width, report.fault_write,
+               report.fault_block_pc, report.fault_block_instructions,
+               report.fault_block_resident_mask);
+        for (index = 0u; index < 8u; ++index)
+            printf("%d,", report.fault_block_map[index]);
+        printf(" code=");
+        for (index = 0u; index < report.fault_block_code_bytes; ++index)
+            printf("%02x", report.fault_block_code[index]);
+        printf(" recent=");
         for (index = 0u; index < report.recent_count; ++index)
             printf("%s0x%08x", index ? "," : "", report.recent_pcs[index]);
         printf("\n");

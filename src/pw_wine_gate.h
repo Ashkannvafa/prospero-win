@@ -328,6 +328,14 @@ typedef struct PwWineGateReport {
     uint32_t fault_address;         /* memory-bounds identity, when reported */
     uint32_t fault_width;
     uint32_t fault_write;
+    /* Which block faulted and how its registers were resident, so a fault the
+     * engine caused is told apart from one the guest did. */
+    uint32_t fault_block_pc;
+    uint32_t fault_block_instructions;
+    uint8_t fault_block_resident_mask;
+    int8_t fault_block_map[8];
+    uint8_t fault_block_code[1024];
+    uint32_t fault_block_code_bytes;
     uint32_t chaining;
     uint32_t residency;
     uint32_t lazy_flags;

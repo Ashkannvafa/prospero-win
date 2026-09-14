@@ -1715,6 +1715,14 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     report->fault_address = state.fault_address;
     report->fault_width = state.fault_width;
     report->fault_write = state.fault_write;
+    report->fault_block_pc = engine.fault_block_pc;
+    report->fault_block_instructions = engine.fault_block_instructions;
+    report->fault_block_resident_mask = engine.fault_block_resident_mask;
+    memcpy(report->fault_block_map, engine.fault_block_map,
+           sizeof(report->fault_block_map));
+    report->fault_block_code_bytes = engine.fault_block_code_bytes;
+    memcpy(report->fault_block_code, engine.fault_block_code,
+           sizeof(report->fault_block_code));
     /*
      * Independent identification of the call that reached the boundary. The
      * stub calls the dispatcher, so the guest return address on top of the
