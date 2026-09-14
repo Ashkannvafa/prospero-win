@@ -47,9 +47,12 @@ PINNED_DISTRIBUTION = (
 PINNED_RUN = {
     "stop": "returned-to-caller",
     "stop_address": "0x00000000",
-    "retired": "32544",
-    "dispatches": "6869",
-    "blocks": "968",
+    # Moved deliberately in the commit that publishes the current directory
+    # with its trailing separator: the loader walks a shorter path to the same
+    # stop, with the same call sequence and the same handler coverage below.
+    "retired": "32378",
+    "dispatches": "6828",
+    "blocks": "960",
     "host_calls": "0",
     "syscall": "0x00000019",
 }

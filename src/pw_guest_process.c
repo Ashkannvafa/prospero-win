@@ -72,7 +72,18 @@ static int populate_parameters(uint8_t *page, uint32_t page_bytes,
     memcpy(image_path + sizeof(system32) - 1u, root_module,
            strlen(root_module) + 1u);
 
-    current_offset = write_wide(page, &cursor, "C:\\windows");
+    /*
+     * The current directory is published the way Windows stores it: with the
+     * trailing separator. That is the form ntdll's RtlSetCurrentDirectory_U
+     * writes back into the parameters it was handed, and it is a whole
+     * character longer than the bare directory name - so publishing the bare
+     * name gives ntdll one character less room than it needs for the copy it
+     * makes, and its terminator lands in whatever follows this string in the
+     * allocation. Measured, not assumed: with "C:\windows" here, that
+     * terminator was written two bytes into DllPath, which is exactly the
+     * first word the loader's search path no longer had.
+     */
+    current_offset = write_wide(page, &cursor, "C:\\windows\\");
     dll_offset = write_wide(page, &cursor, "C:\\windows\\system32");
     image_offset = write_wide(page, &cursor, image_path);
     command_offset = write_wide(page, &cursor, image_path);
@@ -81,7 +92,7 @@ static int populate_parameters(uint8_t *page, uint32_t page_bytes,
     page[cursor + 1u] = 0u;
     cursor += 2u;
 
-    set_unicode_string(page, 0x24u, current_offset, "C:\\windows");
+    set_unicode_string(page, 0x24u, current_offset, "C:\\windows\\");
     set_unicode_string(page, 0x30u, dll_offset, "C:\\windows\\system32");
     set_unicode_string(page, 0x38u, image_offset, image_path);
     set_unicode_string(page, 0x40u, command_offset, image_path);

@@ -186,7 +186,9 @@ int main(void)
     memcpy(&value, parameters + 0x04u, 4u);
     assert(value == process.layout.parameters_length);
     read_wide(parameters, 0x24u, text, sizeof(text));
-    assert(strcmp(text, "C:\\windows") == 0);
+    /* The current directory carries its trailing separator, as Windows
+     * stores it and as ntdll writes it back. */
+    assert(strcmp(text, "C:\\windows\\") == 0);
     read_wide(parameters, 0x30u, text, sizeof(text));
     assert(strcmp(text, "C:\\windows\\system32") == 0);
     read_wide(parameters, 0x38u, text, sizeof(text));
