@@ -990,6 +990,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     /* The module that plays the process image: the boundary setup finds it and
      * the second-dispatcher publication needs it later, outside that block. */
     int entry_index = -1;
+    const char *stage = "start";
+    (void)stage;
 
     if (!config || !report || !config->provider || !config->backend ||
         config->module_count == 0u ||
@@ -1038,10 +1040,12 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         }
     }
 
+    stage = "loader-init";
     status = pw_loader_init(&runner->loader, config->provider, pw_guest_vm_backend(&guest_vm));
     if (status != PW_OK)
         return status;
     have_loader = 1;
+    stage = "policy";
     status = pw_loader_set_policy(&runner->loader, &(PwModulePolicy){
         .context = NULL, .classify = pw_loader_wine_policy,
     });
@@ -1051,6 +1055,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         const char *root = config->root_module ? config->root_module
                                                : "kernelbase.dll";
 
+    stage = "root-open";
         status = pw_module_name_canonical(root_canonical,
                                           sizeof(root_canonical), root);
         if (status != PW_OK)
@@ -1075,6 +1080,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
      * each one once; a module already pulled in as a dependency is left as it
      * is, which is what keeps the Wine-runtime control identical.
      */
+    stage = "system-modules";
     for (uint32_t index = 0u; index < config->module_count; ++index) {
         char system_canonical[PW_MODULE_NAME_MAX + 1];
         PwFileSpan span;
@@ -1104,6 +1110,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     }
 
     /* Bind every loaded module's imports through one resolver. */
+    stage = "resolver";
     status = pw_export_resolver_init(&runner->resolver, &runner->loader, 4u);
     if (status != PW_OK)
         goto done;
@@ -1128,6 +1135,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             continue;
         if (module->image.machine != PE_MACHINE_I386)
             continue;
+    stage = "bind";
         status = pw_import_bind32(&module->image, &module->mapped,
                                   pw_export_import_resolver, &runner->resolver,
                                   &runner->workspace, &bind);
@@ -1153,6 +1161,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 
         if (pe_tls_parse(&tls, &module->image) != PW_OK)
             goto done;
+        stage = "tls";
         if (tls.directory_rva != 0u) {
             report->tls_modules++;
             if (record)
@@ -1160,6 +1169,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         }
     }
 
+    stage = "boundary";
     /* The Unix-call boundary: exported dispatcher slot, then its thunk. */
     {
         const char *dispatcher = config->dispatcher_symbol
@@ -1233,6 +1243,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             .root_module = root_canonical,
         };
 
+    stage = "process";
         status = pw_guest_process_create(&process, &process_config);
         if (status != PW_OK)
             goto done;
@@ -1344,6 +1355,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     state.eip = report->entry_eip;
     state.fs_base = report->teb_base;
     state.fs_bytes = report->teb_bytes;
+    stage = "memory";
     status = declare_guest_memory(&state, &runner->loader, report->stack_base,
                                   report->stack_bytes, &process.pages[1],
                                   &process.pages[2], &process.pages[3]);
@@ -1356,6 +1368,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         memcpy((void *)(uintptr_t)state.gpr[4], &token, 4u);
     }
 
+    stage = "engine";
     status = pw_x86_engine_init(&engine, pw_guest_vm_backend(&guest_vm), runner->cache,
                                 PW_WINE_GATE_CACHE_ENTRIES,
                                 PW_WINE_GATE_ARENA_BYTES, 1u,
@@ -1395,6 +1408,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 
     report->first_eip = state.eip;
     report->stop = PW_WINE_STOP_STEP_BUDGET;
+    stage = "run";
     for (uint32_t step = 0; step < budget; ++step) {
         PwX86StepReport progress;
 
@@ -1518,6 +1532,11 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     report->host_calls = 0u;
 
 done:
+    /* Which stage refused, for the evidence and for the next bisect: the gate
+     * is a pipeline (fingerprint, loader, resolver, bind, TLS, boundary,
+     * process, engine, memory, run) and a failure has to say where it stopped
+     * instead of leaving the caller to guess. */
+    report->gate_stage = stage;
     report->status = status;
     {
         uint32_t failures = 0u;

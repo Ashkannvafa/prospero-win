@@ -137,6 +137,10 @@ def main() -> int:
         return 0
     output = run_gate()
     print(validate_transcript(output, "NtClose"))
+    # The run's evidence names the pipeline stage it reached: a failure has to
+    # say where it stopped, and a run that gets as far as executing guest code
+    # says so with its last stage.
+    assert "stage=" in output, "the run evidence does not name its stage"
 
     # Real ntdll initialization must reach its first Unix call, and the same
     # code must behave identically with chaining, register residency and lazy

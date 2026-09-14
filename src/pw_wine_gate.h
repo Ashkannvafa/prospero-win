@@ -379,6 +379,8 @@ typedef struct PwWineGateReport {
     uint32_t cleanup_call_regions_pending;
     uint32_t cleanup_translations_pending;
     uint32_t cleanup_failures;
+    /* The pipeline stage that was executing when the run stopped. */
+    const char *gate_stage;
     PwWineStop stop;
     int status;
 } PwWineGateReport;

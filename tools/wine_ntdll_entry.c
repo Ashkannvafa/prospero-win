@@ -661,7 +661,8 @@ int main(int argc, char **argv)
     /* A low reservation that ran out of candidates falls back to an address a
      * PE32 image cannot use; the evidence says so instead of leaving the
      * rejection unexplained. */
-    printf("kind=host-wine-low exhausted=%u\n", report.low_exhausted);
+    printf("kind=host-wine-low exhausted=%u stage=%s\n", report.low_exhausted,
+           report.gate_stage ? report.gate_stage : "unknown");
     if (config.unixlib_calls) {
         printf("kind=host-wine-unixlib boundary=0x%08x slot=0x%08x "
                "handle=0x%08x handle_slot=0x%08x serviced=%llu "
