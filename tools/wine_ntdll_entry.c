@@ -173,7 +173,30 @@ static const HostRegistryValue host_session_manager_values[] = {
     { "heapsegmentreserve", HOST_REG_DWORD, 0u },
 };
 
-static const HostRegistryKey host_registry_keys[] = {
+/*
+ * The profile is a *store*, not a fixed list: a process's own startup creates
+ * keys (its user hive root, its HKCU software tree) and opens them again, and a
+ * runtime that answers "no such key" to a key it was just asked to create
+ * leaves its caller retrying. The table below is what the distribution
+ * declares when it starts, plus everything the guest has created since; it
+ * lives for the length of the run, which is the honest scope until a
+ * file-backed hive exists (measured: the pinned runtime's locale startup asks
+ * for HKCU\Control Panel hundreds of times in a row and never gets it).
+ */
+#define HOST_REGISTRY_MAX_KEYS 128
+
+/* A copy of a path the guest created, owned by the store for the run. */
+static char *host_strdup(const char *text)
+{
+    const size_t bytes = strlen(text) + 1u;
+    char *copy = malloc(bytes);
+
+    if (copy)
+        memcpy(copy, text, bytes);
+    return copy;
+}
+
+static HostRegistryKey host_registry_keys[HOST_REGISTRY_MAX_KEYS] = {
     {
         "\\registry\\machine\\system\\currentcontrolset\\control\\session "
         "manager",
@@ -188,13 +211,13 @@ static const HostRegistryKey host_registry_keys[] = {
     { "\\registry\\user\\s-1-5-21-0-0-0-1000", NULL, 0u },
 };
 
+static unsigned host_registry_key_count = 2u;   /* the two declared keys */
+
 static PwWineRegistryStatus host_registry_open(void *context, const char *path,
                                                void **token)
 {
     (void)context;
-    for (unsigned index = 0;
-         index < sizeof(host_registry_keys) / sizeof(host_registry_keys[0]);
-         ++index) {
+    for (unsigned index = 0; index < host_registry_key_count; ++index) {
         if (strcmp(host_registry_keys[index].path, path) != 0)
             continue;
         *token = (void *)(uintptr_t)&host_registry_keys[index];
@@ -226,10 +249,11 @@ static PwWineRegistryStatus host_registry_query(void *context, void *token,
 }
 
 /*
- * NtCreateKey is create-or-open. This profile has no writable hive, so it can
- * open a key it declares and nothing else: a key it does not have answers
- * NOT_FOUND and *created stays 0, which is the honest answer until a registry
- * store exists.
+ * NtCreateKey is create-or-open, so a path the store already holds answers
+ * REG_OPENED_EXISTING_KEY and one it does not is added and answers
+ * REG_CREATED_NEW_KEY. The addition is bounded: a run that creates more keys
+ * than the store holds is answered NOT_FOUND, which is what a full hive would
+ * look like from the guest's side and is counted as a refusal by the gate.
  */
 static PwWineRegistryStatus host_registry_create(void *context,
                                                  const char *path,
@@ -239,9 +263,23 @@ static PwWineRegistryStatus host_registry_create(void *context,
     const PwWineRegistryStatus status =
         host_registry_open(context, path, token);
 
-    if (status == PW_WINE_REGISTRY_OK)
+    if (status == PW_WINE_REGISTRY_OK) {
         *created = 0u;
-    return status;
+        return status;
+    }
+    if (status != PW_WINE_REGISTRY_NOT_FOUND ||
+        host_registry_key_count >= HOST_REGISTRY_MAX_KEYS ||
+        strlen(path) > 2u * PW_WINE_GATE_MAX_PATH)
+        return status;
+    host_registry_keys[host_registry_key_count].path = host_strdup(path);
+    if (!host_registry_keys[host_registry_key_count].path)
+        return PW_WINE_REGISTRY_ERROR;
+    host_registry_keys[host_registry_key_count].values = NULL;
+    host_registry_keys[host_registry_key_count].value_count = 0u;
+    *token = (void *)(uintptr_t)&host_registry_keys[host_registry_key_count];
+    host_registry_key_count++;
+    *created = 1u;
+    return PW_WINE_REGISTRY_OK;
 }
 
 static void host_registry_close(void *context, void *token)

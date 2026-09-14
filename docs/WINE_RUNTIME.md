@@ -647,9 +647,14 @@ NtOpenKeyEx                   (0x00b6) the same open as NtOpenKey with the
                                        key, and this profile carries none
 NtQueryValueKey               (0x0017) KeyValuePartialInformation only
 NtQuerySystemInformation      (0x0036) SystemWineVersionInformation (1000) only
-NtCreateKey                   (0x001d) create-or-open against the same profile;
-                                       a key it does not have answers
-                                       STATUS_OBJECT_NAME_NOT_FOUND
+NtCreateKey                   (0x001d) create-or-open against the run's own
+                                       registry store: a path the store already
+                                       holds answers REG_OPENED_EXISTING_KEY and
+                                       one it does not is added and answers
+                                       REG_CREATED_NEW_KEY, because a runtime
+                                       that creates its user hive and is then
+                                       refused the keys it created never stops
+                                       asking for them
 NtQueryInformationToken       (0x0021) TokenUser for the current-token
                                        pseudo-handles only, answering with the
                                        SID the host declares

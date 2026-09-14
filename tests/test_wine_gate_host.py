@@ -150,22 +150,20 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    # Moved deliberately in the commit that gives the process the stack its
-    # image asks for: with the distribution's codepage tables staged and
-    # NtOpenKeyEx served, the run walked into the pinned runtime's own registry
-    # startup and then died pushing a frame at the bottom of the 64 KiB stack
-    # this unit used to publish. Windows and Wine size a process's stack from
-    # the image's SizeOfStackReserve (1 MiB when a linker emits none), so the
-    # stack is now that, the run no longer dies, and what stops it is the gate's
-    # own call budget inside a loop of refused HKCU key opens (the loop itself
-    # is the next piece of work). The fault address with residency on is
-    # unchanged while the faulting block stays the same (0x105c1aa7, 9
-    # instructions, resident mask 0x43), which is the signature the private
-    # report records for it.
+    # Moved deliberately in the commit that makes the registry profile a store
+    # rather than a fixed list: the runtime's startup creates its user hive and
+    # then opens the keys it created, and a profile that answers "no such key"
+    # to a key it was just asked to create leaves the caller recursing - the
+    # run spent its whole call budget on 200 opens of HKCU\Control Panel. With
+    # a writable store the loop is gone and the run stops at the next service
+    # it does not have, NtSetValueKey (i386 0x0060). The fault address with
+    # residency on is unchanged while the faulting block stays the same
+    # (0x105c1aa7, 9 instructions, resident mask 0x43), which is the signature
+    # the private report records for it.
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "step-budget", "retired": "773175",
-                      "blocks": "2283"},
+    "residency_off": {"stop": "unix-call-unimplemented", "retired": "558424",
+                      "blocks": "2374"},
 }
 
 
