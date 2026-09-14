@@ -36,6 +36,7 @@ int pw_wine_unixlib_read_frame(PwUnixCallAccess guest, void *context,
     }
     memcpy(&frame->return_pc, raw, 4u);
     memcpy(&frame->handle, raw + PW_WINE_UNIXLIB_HANDLE_OFFSET, 4u);
+    memcpy(&frame->handle_high, raw + PW_WINE_UNIXLIB_HANDLE_HIGH_OFFSET, 4u);
     memcpy(&frame->code, raw + PW_WINE_UNIXLIB_CODE_OFFSET, 4u);
     memcpy(&frame->args, raw + PW_WINE_UNIXLIB_ARGS_OFFSET, 4u);
     return PW_OK;

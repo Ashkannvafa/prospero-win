@@ -27,11 +27,30 @@
 #include "pw_unixlib.h"
 
 enum {
-    /* The stdcall frame the dispatcher reads: return PC, handle, code, args. */
-    PW_WINE_UNIXLIB_FRAME_BYTES = 16,
+    /*
+     * The frame the dispatcher reads, and the reason it is five slots and not
+     * four: `unixlib_handle_t` is `UINT64` (include/wine/unixlib.h:30), so the
+     * first argument occupies two dwords even in the i386 build. The pinned
+     * assembly is the authority - it reads `handle` from `[esp]`, `code` from
+     * `[esp+8]` and `args` from `[esp+12]`, skipping exactly the handle's high
+     * half (dlls/ntdll/unix/signal_i386.c:2798-2812) - and the exact PE call
+     * site loads the handle with two adjacent `mov` reads for the same reason.
+     *
+     *   [esp]     return PC
+     *   [esp+4]   handle low
+     *   [esp+8]   handle high
+     *   [esp+12]  code
+     *   [esp+16]  args
+     *
+     * The callee then cleans the four argument dwords plus the return PC,
+     * which is why the resume adds twenty bytes.
+     */
+    PW_WINE_UNIXLIB_FRAME_BYTES = 20,
+    PW_WINE_UNIXLIB_HANDLE_BYTES = 8,
     PW_WINE_UNIXLIB_HANDLE_OFFSET = 4,
-    PW_WINE_UNIXLIB_CODE_OFFSET = 8,
-    PW_WINE_UNIXLIB_ARGS_OFFSET = 12,
+    PW_WINE_UNIXLIB_HANDLE_HIGH_OFFSET = 8,
+    PW_WINE_UNIXLIB_CODE_OFFSET = 12,
+    PW_WINE_UNIXLIB_ARGS_OFFSET = 16,
     /* One debug write is bounded: the sink is a transcript, not a channel for
      * an unbounded guest buffer. */
     PW_WINE_UNIXLIB_MAX_DEBUG_BYTES = 4096,
@@ -60,7 +79,8 @@ typedef struct PwWineDebugSink {
 
 typedef struct PwWineUnixlibFrame {
     uint32_t return_pc;
-    uint32_t handle;
+    uint32_t handle;                /* the low half of the 64-bit handle */
+    uint32_t handle_high;
     uint32_t code;
     uint32_t args;
 } PwWineUnixlibFrame;

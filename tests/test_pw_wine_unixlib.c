@@ -3,12 +3,19 @@
  * The unix-call adapter on its own: the stdcall frame and the debug write.
  *
  * The frame is the contract the previous Wine bridge got wrong by guessing
- * `[esp+4]` as the argument base, so it is pinned here against a fake guest
- * window whose accessor refuses anything outside it: a frame that crosses the
- * end of the window, a params struct that does, a byte span that does, and a
- * length one byte over the bound are all refusals, and the failing slot is
- * named. The sink is a fake as well, so a refused write is distinguishable
- * from a delivered one without a host stream.
+ * `[esp+4]` as the argument base, and this unit got wrong once more by assuming
+ * a four-dword frame: `unixlib_handle_t` is `UINT64`, so the frame is five
+ * slots - return PC, handle low, handle high, code, args - which is exactly
+ * what the pinned assembly reads and what the real call site loads. The dump
+ * of the corrected run shows the first call as code 2 with a stack args
+ * pointer, where the shifted reading had shown code 0 and args 2.
+ *
+ * Everything is pinned here against a fake guest window whose accessor refuses
+ * anything outside it: a frame crossing the end of the window, a params struct
+ * that does, a byte span that does, a length one byte over the bound and a
+ * handle whose high half is not zero are all refusals, and the failing slot is
+ * named. The sink is a fake as well, so a refused write is distinguishable from
+ * a delivered one without a host stream.
  */
 #include "../src/pw_wine_unixlib.h"
 
@@ -61,9 +68,10 @@ static void frame_tests(void)
 
     memset(&guest, 0, sizeof(guest));
     guest.size = sizeof(guest.bytes);
-    /* A well-formed frame at esp = 0: return PC, handle, code, args. */
+    /* A well-formed frame at esp = 0: return PC, handle low, handle high,
+     * code, args. */
     {
-        const uint32_t values[4] = { 0x10401000u, 0x00000123u, 2u, 0x40u };
+        const uint32_t values[5] = { 0x10401000u, 0x00000123u, 0u, 2u, 0x40u };
 
         memcpy(guest.bytes, values, sizeof(values));
     }
@@ -71,8 +79,14 @@ static void frame_tests(void)
                                       &failed) == PW_OK);
     assert(frame.return_pc == 0x10401000u);
     assert(frame.handle == 0x00000123u);
+    assert(frame.handle_high == 0u);
     assert(frame.code == 2u);
     assert(frame.args == 0x40u);
+    /* The offsets are the documented ones, not the four-slot guess. */
+    assert(PW_WINE_UNIXLIB_FRAME_BYTES == 20);
+    assert(PW_WINE_UNIXLIB_HANDLE_BYTES == 8);
+    assert(PW_WINE_UNIXLIB_CODE_OFFSET == 12);
+    assert(PW_WINE_UNIXLIB_ARGS_OFFSET == 16);
     /* Null required arguments are refused, not dereferenced. */
     assert(pw_wine_unixlib_read_frame(NULL, &guest, 0u, &frame, &failed) ==
            PW_ERR_PRECONDITION);
@@ -85,6 +99,16 @@ static void frame_tests(void)
                                       guest.size - 8u, &frame, &failed) ==
            PW_ERR_MALFORMED);
     assert(failed == 1u);
+    /* Four slots fit where five do not: this is the off-by-one that produced
+     * the shifted reading, so the boundary itself is pinned. */
+    failed = 0u;
+    assert(pw_wine_unixlib_read_frame(fake_access, &guest,
+                                      guest.size - 16u, &frame, &failed) ==
+           PW_ERR_MALFORMED);
+    assert(failed == 1u);
+    assert(pw_wine_unixlib_read_frame(fake_access, &guest,
+                                      guest.size - 20u, &frame,
+                                      &failed) == PW_OK);
     /* The last complete frame inside the window is fine. */
     assert(pw_wine_unixlib_read_frame(fake_access, &guest,
                                       guest.size - PW_WINE_UNIXLIB_FRAME_BYTES,

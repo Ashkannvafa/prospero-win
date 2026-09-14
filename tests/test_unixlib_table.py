@@ -24,6 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "src/pw_unixlib.c"
 HEADER = ROOT / "src/pw_unixlib.h"
+# The frame constants live with the adapter, not with the code table.
+ADAPTER_HEADER = ROOT / "src/pw_wine_unixlib.h"
 COMMIT_RE = re.compile(r'PW_UNIXLIB_WINE_COMMIT "([0-9a-f]{40})"')
 ENTRY_RE = re.compile(
     r'\{\s*PW_UNIXLIB_CODE_[A-Z0-9_]+,\s*"([a-z0-9_]+)"\s*\}')
@@ -33,6 +35,10 @@ PARAMS_RE = re.compile(
     r"struct wine_dbg_write_params\s*\{(.*?)\};", re.S)
 LOADER_FUNCS_RE = re.compile(
     r"static const unixlib_entry_t unix_call_funcs\[\]\s*=\s*\{(.*?)\};", re.S)
+# The handle is a 64-bit value even in the i386 build, which is why the call
+# frame carries both halves; assuming a 32-bit handle shifted every later slot.
+HANDLE_TYPEDEF_RE = re.compile(
+    r"typedef\s+(UINT64|unsigned long long|UINT_PTR)\s+unixlib_handle_t\s*;")
 
 
 def wine_source() -> Path | None:
@@ -95,6 +101,16 @@ def main() -> int:
         raise SystemExit("unixlib header: PW_UNIXLIB_MAX_FUNCS is not 8")
     if not COMMIT_RE.search(header):
         raise SystemExit("unixlib header: the Wine commit pin is missing")
+    # The frame is five slots because the handle is 64-bit: the header must say
+    # so, and the pinned source must agree.
+    adapter = ADAPTER_HEADER.read_text(encoding="utf-8")
+    for token in ("PW_WINE_UNIXLIB_FRAME_BYTES = 20",
+                  "PW_WINE_UNIXLIB_HANDLE_BYTES = 8",
+                  "PW_WINE_UNIXLIB_HANDLE_HIGH_OFFSET = 8",
+                  "PW_WINE_UNIXLIB_CODE_OFFSET = 12",
+                  "PW_WINE_UNIXLIB_ARGS_OFFSET = 16"):
+        if token not in adapter:
+            raise SystemExit(f"unixlib adapter header: missing {token}")
     # The first handler's contract: the params struct is a guest pointer and a
     # length, in that order, at the offsets the header declares.
     for token in ("PW_UNIXLIB_DBG_WRITE_PARAMS_BYTES = 8",
@@ -124,6 +140,16 @@ def main() -> int:
     if "unsigned int" not in fields[1] or "*" not in fields[0]:
         raise SystemExit("wine_dbg_write_params field types changed: "
                          f"{fields}")
+    # The 64-bit handle, from the pinned header itself.
+    unixlib_h = (source / "include/wine/unixlib.h").read_text(encoding="utf-8")
+    match = HANDLE_TYPEDEF_RE.search(unixlib_h)
+    if not match:
+        raise SystemExit("unixlib_handle_t is not declared in the pinned "
+                         "header")
+    if match.group(1) != "UINT64":
+        raise SystemExit("unixlib_handle_t changed width: "
+                         f"{match.group(1)} - the frame is no longer five "
+                         "slots and the adapter must be re-derived")
     print("unixlib table: 8 entries match enum ntdll_unix_funcs, the "
           "unix_call_funcs[] order and the wine_dbg_write_params layout at "
           "the pinned Wine revision")

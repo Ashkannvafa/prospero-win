@@ -722,7 +722,7 @@ static PwWineStop service_unixlib_call(PwWineCallContext *calls,
         report->unixlib.last_status = PW_WINE_UNIXLIB_MALFORMED;
         return PW_WINE_STOP_UNIXLIB_REFUSED;
     }
-    if (frame.handle != report->unixlib_handle) {
+    if (frame.handle != report->unixlib_handle || frame.handle_high != 0u) {
         report->unixlib.unknown_handle++;
         report->unixlib.last_status = PW_WINE_UNIXLIB_UNKNOWN_HANDLE;
         return PW_WINE_STOP_UNIXLIB_REFUSED;
@@ -1263,9 +1263,16 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                                   4u);
             if (status != PW_OK)
                 goto done;
-            published = report->unixlib_handle;
-            status = module_write(entry_module_now, handle.rva, &published,
-                                  4u);
+            {
+                const uint32_t pair[2] = { report->unixlib_handle, 0u };
+
+                /* The handle is 64-bit in the pinned ABI, and the PE call site
+                 * loads both halves: publish the low half and a zero high
+                 * half, exactly as Wine's Unix loader writes the pointer it
+                 * uses. */
+                status = module_write(entry_module_now, handle.rva, pair,
+                                      (uint32_t)PW_WINE_UNIXLIB_HANDLE_BYTES);
+            }
             if (status != PW_OK)
                 goto done;
             status = guest_page_write(&process, boundary, trap, sizeof(trap));
