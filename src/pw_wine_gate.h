@@ -34,9 +34,13 @@ enum {
     PW_WINE_GATE_MAX_BOUNDARIES = 8,
     /* Real ntdll initialization runs far more dispatches than a title's
      * startup: this is the budget one gate run may spend before the step
-     * limit stops it, not a statement about what the guest needs. */
-    PW_WINE_GATE_DEFAULT_STEPS = 65536,
-    PW_WINE_GATE_MAX_STEPS = 1048576,
+     * limit stops it, not a statement about what the guest needs. Measured on
+     * the pinned runtime, the application-root run needs 97 812 dispatches to
+     * reach the next service it does not have (NtInitializeNlsFiles), three
+     * times what the previous bound allowed, so the bound is set clear of the
+     * measurement instead of at it. */
+    PW_WINE_GATE_DEFAULT_STEPS = 262144,
+    PW_WINE_GATE_MAX_STEPS = 4194304,
     PW_WINE_GATE_STACK_BYTES = 64u * 1024u,
     /* ntdll's loader path translates far more code than a title's startup:
      * the entry count and the code arena are the gate's own budgets, and
