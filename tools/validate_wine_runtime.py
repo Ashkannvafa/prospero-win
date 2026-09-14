@@ -62,17 +62,46 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def module_digest(modules: list[dict]) -> str:
-    """Aggregate identity over the module list, order-independent.
+def distribution_digest(modules: list[dict], data: list[dict]) -> str:
+    """Aggregate identity over the whole distribution, order-independent.
 
     The line format is part of the contract: a validator that recomputes it
-    from the manifest must agree with one that recomputes it from disk.
+    from the manifest must agree with one that recomputes it from disk. The
+    modules come first and the data files after them, each block sorted by
+    name, so adding a data file to a distribution changes its identity - which
+    is the point: the NLS data is part of what this runtime *is*, and a
+    distribution that carries it is not the distribution that did not.
     """
     lines = [
         f"{module['name']}\t{module['size']}\t{module['sha256']}\n"
         for module in sorted(modules, key=lambda entry: entry["name"])
     ]
+    lines += [
+        f"data\t{entry['name']}\t{entry['size']}\t{entry['sha256']}\n"
+        for entry in sorted(data, key=lambda entry: entry["name"])
+    ]
     return sha256_bytes("".join(lines).encode("utf-8"))
+
+
+def scan_data(distribution: Path, spec: str) -> dict:
+    """One data file of the distribution, named by its staged relative path."""
+    if "=" in spec:
+        name, _, relative = spec.partition("=")
+    else:
+        name = relative = spec
+    if not name or "/" not in relative and relative.startswith("/"):
+        raise Failure(f"data specification is not a relative path: {spec}")
+    path = (distribution / relative).resolve()
+    if distribution not in path.parents:
+        raise Failure(f"data file escapes the distribution: {spec}")
+    if not path.is_file():
+        raise Failure(f"missing data file: {relative}")
+    return {
+        "name": name,
+        "path": relative,
+        "size": path.stat().st_size,
+        "sha256": file_sha256(path),
+    }
 
 
 def pe_identity(path: Path) -> dict:
@@ -228,6 +257,7 @@ def command_write(arguments: argparse.Namespace) -> int:
             raise Failure(f"{module['name']} is not an i386 PE image")
         if module["pe_magic"] != PE_MAGIC_PE32:
             raise Failure(f"{module['name']} is not PE32")
+    data = [scan_data(distribution, spec) for spec in (arguments.data or [])]
     manifest = {
         "schema": SCHEMA,
         "wine": {
@@ -252,7 +282,8 @@ def command_write(arguments: argparse.Namespace) -> int:
             "tools": tool_versions(),
         },
         "modules": modules,
-        "distribution_sha256": module_digest(modules),
+        "data": data,
+        "distribution_sha256": distribution_digest(modules, data),
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -308,9 +339,25 @@ def command_check(arguments: argparse.Namespace) -> int:
                           f"{digest} != {module['sha256']}")
         if module["path"] != f"{library}/{module['name']}":
             raise Failure(f"{module['name']} path is not inside {library}/")
-    if module_digest(ordered) != manifest.get("distribution_sha256"):
-        raise Failure("distribution digest does not match the module list")
+    declared_data = manifest.get("data", [])
+    if not isinstance(declared_data, list):
+        raise Failure("the manifest's data list is not a list")
+    for entry in declared_data:
+        path = distribution_dir(distribution, entry["path"])
+        if not path.is_file():
+            raise Failure(f"data file is missing: {entry['path']}")
+        size = path.stat().st_size
+        if size != entry["size"]:
+            raise Failure(f"{entry['name']} size drift: {size} != {entry['size']}")
+        digest = file_sha256(path)
+        if digest != entry["sha256"]:
+            raise Failure(f"{entry['name']} hash drift: "
+                          f"{digest} != {entry['sha256']}")
+    if distribution_digest(ordered, declared_data) != manifest.get(
+            "distribution_sha256"):
+        raise Failure("distribution digest does not match the manifest's files")
     print(f"wine runtime manifest check passed: {len(ordered)} modules, "
+          f"{len(declared_data)} data file(s), "
           f"wine={wine.get('commit', '?')[:12]}, "
           f"digest={manifest['distribution_sha256']}")
     return 0
@@ -325,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--wine-commit", default="")
     write.add_argument("--wine-url", default="https://github.com/wine-mirror/wine.git")
     write.add_argument("--library", default="lib/i386-windows")
+    write.add_argument(
+        "--data", action="append", default=[],
+        help="a data file of the distribution, as [name=]relative/path; "
+             "recorded in the manifest and folded into the distribution hash")
     write.add_argument("--configure", default="")
     write.add_argument("--out", required=True)
     write.add_argument("--force", action="store_true")

@@ -34,6 +34,11 @@ enum {
     /* SECTION_IMAGE_INFORMATION, as an i386 guest lays it out. */
     PW_WINE_SECTION_IMAGE_BYTES = 48u,
     PW_WINE_SECTION_BASIC_BYTES = 12u,
+    /* The largest NLS data file this run will map into the guest. The pinned
+     * distribution's locale.nls is 776 KiB; the bound is what keeps a
+     * distribution that carries something else from asking this run for an
+     * unbounded mapping. */
+    PW_WINE_NLS_MAX_BYTES = 8u * 1024u * 1024u,
     /* ImageFlags: the image was relocated when it was mapped, and it lives
      * below 4 GiB. Nothing else applies to a native i386 PE. */
     PW_WINE_IMAGE_FLAG_DYNAMICALLY_RELOCATED = 0x04u,

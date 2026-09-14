@@ -68,6 +68,11 @@ static const PwWineDebugSink debug_sink = {
  */
 static char host_application_directory[512];
 static char host_runtime_directory[512];
+/* The distribution's NLS data (its nls/ directory). Wine looks there first and
+ * falls back to the Windows system directory (dlls/ntdll/unix/env.c:120
+ * read_nls_file and open_nls_data_file), so a name in the runtime namespace is
+ * tried in that order here too. */
+static char host_nls_directory[512];
 
 static PwWineFileStatus host_file_open(void *context, PwFileNamespace file_namespace,
                                        const char *name, uint64_t *size,
@@ -79,14 +84,21 @@ static PwWineFileStatus host_file_open(void *context, PwFileNamespace file_names
     long length;
 
     (void)context;
-    directory = file_namespace == PW_FILE_APPLICATION
-        ? host_application_directory : host_runtime_directory;
-    if (directory[0] == '\0')
-        return PW_WINE_FILE_NOT_FOUND;
-    if (snprintf(path, sizeof(path), "%s/%s", directory, name) >=
-        (int)sizeof(path))
-        return PW_WINE_FILE_ERROR;
-    file = fopen(path, "rb");
+    file = NULL;
+    if (file_namespace == PW_FILE_RUNTIME && host_nls_directory[0] != '\0' &&
+        snprintf(path, sizeof(path), "%s/%s", host_nls_directory, name) <
+            (int)sizeof(path))
+        file = fopen(path, "rb");
+    if (!file) {
+        directory = file_namespace == PW_FILE_APPLICATION
+            ? host_application_directory : host_runtime_directory;
+        if (directory[0] == '\0')
+            return PW_WINE_FILE_NOT_FOUND;
+        if (snprintf(path, sizeof(path), "%s/%s", directory, name) >=
+            (int)sizeof(path))
+            return PW_WINE_FILE_ERROR;
+        file = fopen(path, "rb");
+    }
     if (!file)
         return errno == EACCES ? PW_WINE_FILE_DENIED : PW_WINE_FILE_NOT_FOUND;
     if (fseek(file, 0, SEEK_END) != 0) {
@@ -505,6 +517,9 @@ int main(int argc, char **argv)
      * PW_FILE_APPLICATION only. */
     const char *application = argument_value(argc, argv, "--application",
                                              runtime);
+    /* The distribution's NLS data: the "installed" nls/ directory of the
+     * staged runtime, or empty to leave those names unanswered. */
+    const char *nls = argument_value(argc, argv, "--nls", "");
     const char *dlls = argument_value(argc, argv, "--modules",
                                       "ntdll.dll,kernelbase.dll");
     int status;
@@ -537,6 +552,17 @@ int main(int argc, char **argv)
                        "%s", runtime);
         (void)snprintf(host_application_directory,
                        sizeof(host_application_directory), "%s", application);
+        /*
+         * The NLS data of the staged distribution lives beside the modules it
+         * serves (nls/ next to lib/i386-windows/), which is where Wine keeps
+         * it; --nls overrides that for a distribution staged differently.
+         */
+        if (nls && nls[0] != '\0')
+            (void)snprintf(host_nls_directory, sizeof(host_nls_directory),
+                           "%s", nls);
+        else
+            (void)snprintf(host_nls_directory, sizeof(host_nls_directory),
+                           "%s/../../nls", runtime);
         config.files = &files;
     }
     config.root_module = root;
@@ -734,7 +760,8 @@ int main(int argc, char **argv)
                "objects=%u object_opens=%llu object_refusals=%llu "
                "last_object=%s processes=%llu image_characteristics=0x%04x "
                "vm_queries=%llu address_compares=%llu "
-               "address_compare_refusals=%llu\n",
+               "address_compare_refusals=%llu nls_maps=%llu "
+               "nls_refusals=%llu\n",
                report.calls_serviced,
                (unsigned long long)report.calls.handled,
                (unsigned long long)report.calls.unimplemented,
@@ -772,7 +799,9 @@ int main(int argc, char **argv)
                report.process_image_characteristics,
                (unsigned long long)report.virtual_queries,
                (unsigned long long)report.address_comparisons,
-               (unsigned long long)report.address_comparison_refusals);
+               (unsigned long long)report.address_comparison_refusals,
+               (unsigned long long)report.nls_maps,
+               (unsigned long long)report.nls_refusals);
         for (uint32_t index = 0; index < report.calls.records; ++index) {
             const PwUnixCallRecord *record = &report.calls.sequence[index];
 

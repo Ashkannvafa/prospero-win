@@ -452,17 +452,42 @@ int pw_wine_section_init_nls_files(PwWineCallContext *calls,
     const uint32_t pointer = frame->args[0];
     const uint32_t lcid_pointer = frame->args[1];
     const uint32_t size_pointer = frame->args[2];
+    PwX86State *state = context;
+    const PwVmBackend *backend = &calls->vm->base;
+    PwVmRegion region;
     uint32_t lcid = PW_WINE_NLS_SYSTEM_LCID;
+    uint64_t written_size = 0u;
+    uint32_t mapping = 0u;
     char name[PW_NT_HANDLE_PATH_MAX + 1];
     PwFileNamespace file_namespace = PW_FILE_RUNTIME;
     uint64_t size = 0u;
     void *token = NULL;
     int is_directory = 0;
+    uint32_t read_bytes = 0u;
     uint32_t refused_status = PW_NT_OBJECT_NAME_NOT_FOUND;
+    int opened = 0;
 
     if (pointer == 0u || lcid_pointer == 0u || size_pointer == 0u) {
         *argument_index = 1u;
         return PW_ERR_MALFORMED;
+    }
+    /*
+     * NtInitializeNlsFiles( void **ptr, LCID *lcid, LARGE_INTEGER *size ):
+     * the address of the mapped locale data, the system language id, and the
+     * mapping's size. Wine's own implementation writes the language id whether
+     * or not the mapping worked, because the id comes from the locale settings
+     * and not from the file (dlls/ntdll/unix/env.c:2247).
+     */
+    {
+        uint32_t probe = 0u;
+        uint64_t probe_size = 0u;
+
+        if (guest(context, pointer, &probe, 4u, 0) != PW_OK ||
+            guest(context, lcid_pointer, &probe, 4u, 0) != PW_OK ||
+            guest(context, size_pointer, &probe_size, 8u, 0) != PW_OK) {
+            *argument_index = 1u;
+            return PW_ERR_MALFORMED;
+        }
     }
     /*
      * The same translation every file call goes through, so "locale.nls" here
@@ -476,20 +501,109 @@ int pw_wine_section_init_nls_files(PwWineCallContext *calls,
         !is_directory &&
         calls->config->files->open(calls->config->files->context,
                                    file_namespace, name, &size,
-                                   &token) == PW_WINE_FILE_OK) {
+                                   &token) == PW_WINE_FILE_OK)
+        opened = 1;
+    if (!opened) {
+        /* What Wine answers when the distribution has no locale.nls: the
+         * failure of the open it fell back to. The language id is written
+         * anyway, as Wine writes it. */
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        calls->report->nls_refusals++;
+        if (guest(context, lcid_pointer, &lcid, 4u, 1) != PW_OK) {
+            *argument_index = 2u;
+            return PW_ERR_MALFORMED;
+        }
+        return PW_OK;
+    }
+    /*
+     * The mapping itself: as many pages as the file needs, committed, the
+     * file's own bytes read into them, and the whole thing declared readable
+     * and nothing else - which is what NtMapViewOfSection of a read-only
+     * SEC_COMMIT section gives a Windows process, and what Wine's map_section
+     * does for this call. The mapping belongs to the run like a view does, so
+     * cleanup gives it back.
+     */
+    if (size == 0u || size > PW_WINE_NLS_MAX_BYTES ||
+        calls->region_count >= PW_WINE_GATE_MAX_CALL_REGIONS ||
+        state->memory_count >= PW_X86_MEMORY_REGIONS ||
+        backend->reserve == NULL || backend->commit == NULL ||
+        backend->protect == NULL || backend->release == NULL) {
         calls->config->files->close(calls->config->files->context, token);
         *status = PW_NT_NOT_SUPPORTED;
         calls->report->nls_refusals++;
-    } else {
-        /* What Wine answers when the distribution has no locale.nls: the
-         * failure of the open it fell back to. */
-        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
-        calls->report->nls_refusals++;
+        return PW_OK;
     }
-    if (guest(context, lcid_pointer, &lcid, 4u, 1) != PW_OK) {
-        *argument_index = 2u;
+    /*
+     * The mapping has to land below 4 GiB, because the guest addresses it with
+     * a 32-bit pointer: the same window every other guest mapping in this run
+     * comes from, scanned for a free candidate rather than taken from the
+     * allocator's own address space. Measured: a plain reservation handed back
+     * an address above 4 GiB and the guest would have been given a pointer it
+     * cannot name.
+     */
+    memset(&region, 0, sizeof(region));
+    {
+        uint32_t candidate = PW_WINE_GATE_HEAP_BASE;
+        int reserved = PW_ERR_VM;
+
+        for (; (uint64_t)candidate + size <= PW_WINE_GATE_HEAP_LIMIT;
+             candidate += (uint32_t)backend->page_bytes) {
+            if (backend->reserve_at(backend->context, candidate, (size_t)size,
+                                    (uint32_t)backend->page_bytes,
+                                    &region) == PW_OK) {
+                reserved = PW_OK;
+                break;
+            }
+        }
+        if (reserved != PW_OK) {
+            calls->config->files->close(calls->config->files->context, token);
+            *status = PW_NT_NOT_SUPPORTED;
+            calls->report->nls_refusals++;
+            return PW_OK;
+        }
+    }
+    if ((uint64_t)(uintptr_t)region.exec_base + region.bytes >
+        0x100000000ull ||
+        backend->commit(backend->context, &region, 0u, region.bytes,
+                        PW_PROT_READ | PW_PROT_WRITE) != PW_OK) {
+        (void)backend->release(backend->context, &region);
+        calls->config->files->close(calls->config->files->context, token);
+        *status = PW_NT_NOT_SUPPORTED;
+        calls->report->nls_refusals++;
+        return PW_OK;
+    }
+    mapping = (uint32_t)(uintptr_t)region.exec_base;
+    if (calls->config->files->read(calls->config->files->context, token, 0u,
+                                   (void *)(uintptr_t)mapping, (uint32_t)size,
+                                   &read_bytes) != PW_WINE_FILE_OK ||
+        read_bytes != (uint32_t)size ||
+        backend->protect(backend->context, &region, 0u, region.bytes,
+                         PW_PROT_READ) != PW_OK) {
+        (void)backend->release(backend->context, &region);
+        calls->config->files->close(calls->config->files->context, token);
+        *status = PW_NT_INVALID_IMAGE_FORMAT;
+        calls->report->nls_refusals++;
+        return PW_OK;
+    }
+    calls->config->files->close(calls->config->files->context, token);
+    state->memory[state->memory_count++] = (PwX86Memory){
+        .low = mapping,
+        .high = (uint64_t)mapping + region.bytes,
+        .permissions = PW_X86_READ,
+    };
+    calls->regions[calls->region_count] = region;
+    calls->region_owned[calls->region_count] = 0u;
+    calls->region_count++;
+    calls->report->call_regions = calls->region_count;
+    calls->report->nls_maps++;
+    written_size = region.bytes;
+    if (guest(context, pointer, &mapping, 4u, 1) != PW_OK ||
+        guest(context, size_pointer, &written_size, 8u, 1) != PW_OK ||
+        guest(context, lcid_pointer, &lcid, 4u, 1) != PW_OK) {
+        *argument_index = 1u;
         return PW_ERR_MALFORMED;
     }
+    *status = PW_NT_SUCCESS;
     return PW_OK;
 }
 /*

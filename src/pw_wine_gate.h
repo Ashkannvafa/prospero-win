@@ -390,7 +390,9 @@ typedef struct PwWineGateReport {
     uint64_t section_view_refusals;
     uint64_t section_protects;      /* protections this run installed */
     uint64_t section_protect_refusals;
-    /* NtInitializeNlsFiles answers this run gave, and what they refused. */
+    /* NtInitializeNlsFiles: the mappings it handed out and the answers it
+     * refused. */
+    uint64_t nls_maps;
     uint64_t nls_refusals;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];

@@ -64,19 +64,23 @@ enum {
     NLS_SIZE_RVA = DATA_RVA + 0x428,        /* LARGE_INTEGER */
     NLS_STATUS_RVA = DATA_RVA + 0x430,
     NLS_LCID_COPY_RVA = DATA_RVA + 0x434,
+    NLS_HEAD_RVA = DATA_RVA + 0x438,        /* the file's first dword, as read */
     DIRECTORY_RVA = DATA_RVA + 0x280,       /* UNICODE_STRING of a directory */
     DIRECTORY_TEXT_RVA = DATA_RVA + 0x290,
     DIRECTORY_ATTRS_RVA = DATA_RVA + 0x2D0,
     DIRECTORY_HANDLE_RVA = DATA_RVA + 0x2F0,
-    THUNK_RVA = TEXT_RVA + 0x300,
-    STUB_OPEN_RVA = TEXT_RVA + 0x310,       /* NtOpenFile, 0x33 */
-    STUB_CREATE_RVA = TEXT_RVA + 0x320,     /* NtCreateSection, 0x4a */
-    STUB_QUERY_RVA = TEXT_RVA + 0x330,      /* NtQuerySection, 0x51 */
-    STUB_CLOSE_RVA = TEXT_RVA + 0x340,      /* NtClose, 0x0f */
-    STUB_ATTRS_RVA = TEXT_RVA + 0x350,      /* NtQueryAttributesFile: none */
-    STUB_MAP_RVA = TEXT_RVA + 0x360,        /* NtMapViewOfSection, 0x28 */
-    STUB_PROTECT_RVA = TEXT_RVA + 0x370,    /* NtProtectVirtualMemory, 0x50 */
-    STUB_NLS_RVA = TEXT_RVA + 0x380,        /* NtInitializeNlsFiles, 0xa4 */
+    /* The caller's own code runs up to here; the thunk table and the stubs
+     * live past it, so a caller that grew into them would be a fixture that no
+     * longer proves what it says. */
+    THUNK_RVA = TEXT_RVA + 0x400,
+    STUB_OPEN_RVA = TEXT_RVA + 0x410,       /* NtOpenFile, 0x33 */
+    STUB_CREATE_RVA = TEXT_RVA + 0x420,     /* NtCreateSection, 0x4a */
+    STUB_QUERY_RVA = TEXT_RVA + 0x430,      /* NtQuerySection, 0x51 */
+    STUB_CLOSE_RVA = TEXT_RVA + 0x440,      /* NtClose, 0x0f */
+    STUB_ATTRS_RVA = TEXT_RVA + 0x450,      /* NtQueryAttributesFile: none */
+    STUB_MAP_RVA = TEXT_RVA + 0x460,        /* NtMapViewOfSection, 0x28 */
+    STUB_PROTECT_RVA = TEXT_RVA + 0x470,    /* NtProtectVirtualMemory, 0x50 */
+    STUB_NLS_RVA = TEXT_RVA + 0x480,        /* NtInitializeNlsFiles, 0xa4 */
     CALLER_RVA = TEXT_RVA,
     /* The shapes and classes the guest asks with. */
     SECTION_IMAGE_INFORMATION = 1u,
@@ -99,7 +103,7 @@ enum {
 };
 
 static uint8_t image[64 * 1024];
-static uint8_t text[1024];
+static uint8_t text[2048];
 static uint32_t text_bytes;
 static uint8_t data[0x800];
 static PeFixtureReloc relocs[128];
@@ -450,9 +454,11 @@ static size_t build_module(void)
     /*
      * ntdll's NLS initialization: the runtime namespace is asked for its own
      * locale.nls the way Wine asks, and the file service here does carry it, so
-     * the answer is the one this bridge gives for a data section it cannot map
-     * yet - a real status, not a fabricated mapping. The language id comes back
-     * either way, and the guest reads it and carries it out below.
+     * the answer is the mapping itself: the address of the file's own bytes,
+     * the mapping's size and the system language id. The guest reads the first
+     * dword through the address it was given - which can only be the file's
+     * bytes if the mapping really landed in its own memory - and carries both
+     * that value and the language id out below.
      */
     emit_push_absolute(NLS_SIZE_RVA);
     emit_push_absolute(NLS_LCID_RVA);
@@ -461,14 +467,28 @@ static size_t build_module(void)
     emit_store_eax(NLS_STATUS_RVA);
     emit_load_eax(NLS_LCID_RVA);
     emit_store_eax(NLS_LCID_COPY_RVA);
+    emit_load_eax(NLS_PTR_RVA);
+    emit_byte(0x8b); emit_byte(0x00);             /* mov eax, [eax] */
+    emit_store_eax(NLS_HEAD_RVA);
+    emit_push_imm8(0x00);                         /* ReturnLength: not wanted */
     emit_load_eax(NLS_LCID_COPY_RVA);
     emit_push_eax();                              /* length argument */
-    emit_push_absolute(NLS_PTR_RVA);              /* information pointer */
+    emit_load_eax(NLS_PTR_RVA);
+    emit_push_eax();                              /* information pointer: the base */
     emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
     emit_load_eax(SECTION_HANDLE_RVA);
     emit_push_eax();
     emit_call(STUB_QUERY_RVA);
     emit_store_eax(NLS_STATUS_RVA + 4u);
+    emit_push_imm8(0x00);                         /* ReturnLength: not wanted */
+    emit_load_eax(NLS_HEAD_RVA);
+    emit_push_eax();                              /* length: the first dword */
+    emit_push_absolute(NLS_SIZE_RVA);             /* information pointer: the size */
+    emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
+    emit_load_eax(SECTION_HANDLE_RVA);
+    emit_push_eax();
+    emit_call(STUB_QUERY_RVA);
+    emit_store_eax(NLS_STATUS_RVA + 8u);
 
     /* The write that must now be refused: the page is read-only again. */
     emit_load_eax(PROTECT_BASE_RVA);
@@ -693,10 +713,9 @@ int main(void)
      * mapped once, with no refusal. */
     assert(report.section_creates == 1u);
     assert(report.section_queries == 4u);
-    /* The short buffer, the unknown class, the data section, the three
-     * unknown-class queries the guest uses to carry values out, and the NLS
-     * data this distribution carries but this bridge cannot map yet. */
-    assert(report.section_refusals == 7u);
+    /* The short buffer, the unknown class, the data section and the four
+     * unknown-class queries the guest uses to carry values out. */
+    assert(report.section_refusals == 8u);
     assert(report.section_views == 1u);
     assert(report.section_view_refusals == 0u);
     assert(report.calls.handled >= 10u);
@@ -764,17 +783,32 @@ int main(void)
     assert(record_with(&report, 17u)->args[3] != 0u);
     assert((record_with(&report, 17u)->args[3] & 0xfffu) == 0u);
     /*
-     * ntdll's NLS initialization. The distribution carries locale.nls, so the
-     * answer is a real refusal rather than a fabricated mapping, and the system
-     * language id comes back anyway - the guest reads it and the query below
-     * carries it out, so it can only be right if it landed in guest memory.
+     * ntdll's NLS initialization: the distribution carries locale.nls, so the
+     * call answers with the file mapped into this process - the address, the
+     * size and the system language id. The guest reads the file's first dword
+     * through the address it was given, and both that value and the language id
+     * travel into the refused queries below, so the mapping can only be right
+     * if it really landed in the guest's own memory with the file's bytes in
+     * it.
      */
     assert(record_with(&report, 18u)->id == 0x00a4u);
-    assert(record_with(&report, 18u)->status == PW_NT_NOT_SUPPORTED);
+    assert(record_with(&report, 18u)->status == PW_NT_SUCCESS);
     assert(record_with(&report, 19u)->id == 0x0051u);
     assert(record_with(&report, 19u)->status == PW_NT_INVALID_INFO_CLASS);
     assert(record_with(&report, 19u)->args[3] == 0x0409u);
-    assert(report.nls_refusals == 1u);
+    assert(record_with(&report, 19u)->args[2] != 0u);
+    assert(record_with(&report, 20u)->id == 0x0051u);
+    assert(record_with(&report, 20u)->args[2] ==
+           report.modules[0].base + NLS_SIZE_RVA);
+    {
+        uint32_t head = 0u;
+
+        memcpy(&head, image, 4u);
+        /* The size the gate wrote: one page, because the file is four bytes. */
+        assert(record_with(&report, 20u)->args[3] == head);
+    }
+    assert(report.nls_maps == 1u);
+    assert(report.nls_refusals == 0u);
     /*
      * And the run ends on the write that must be refused now: the page is
      * read-only again in the host mapping and in the dispatcher's view of it
@@ -795,7 +829,10 @@ int main(void)
     /* Three opens: the loader's, the section re-opening the file by name when
      * the view is mapped, and the NLS data the run asks the namespace for. */
     assert(file.opens == 3u);
-    assert(file.reads == 2u + expected.section_count);
+    /* The section's own reads (the headers plus every section with bytes on
+     * disk, twice: once to describe the image and once to place the view) and
+     * the one read that fills the NLS mapping with the file's bytes. */
+    assert(file.reads == 2u + expected.section_count + 1u);
     /* The section resolved its file through the service by the canonical name
      * the file handle carried, and the last thing the namespace was asked for
      * was the NLS data the run needs at this point of the boot. */

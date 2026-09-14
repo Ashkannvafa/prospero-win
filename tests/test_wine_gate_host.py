@@ -43,7 +43,7 @@ INITIALIZATION_BUDGET = "1500"
 # -call dispatcher this gate does not publish yet, so the run ends with
 # returned-to-caller at address zero.
 PINNED_DISTRIBUTION = (
-    "e88025bbc00a1195ebdfd76589ae0fdeab3265158ea7e8af40fd398c1ec0673d")
+    "3f07309d900358ba76b346ccad625aa62d123723c4273ddbce0847fbc6c22dbd")
 PINNED_RUN = {
     "stop": "returned-to-caller",
     "stop_address": "0x00000000",
@@ -150,20 +150,19 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    # Moved deliberately in the commit that serves the thread list and the code
-    # the loader jumps into afterwards: with residency off the run now walks
-    # past NtGetNextThread and NtQueryInformationThread, stores the TLS slot
-    # index, and executes inside the kernelbase image it mapped itself - so it
-    # ends in kernelbase's own start-up code reading a near-null address
-    # (0x10) after the NLS call, which is the next piece of work rather than a
-    # mapped-region refusal. The fault address with residency on is unchanged
-    # while the faulting block stays the same (0x105c1aa7, 9 instructions,
-    # resident mask 0x43), which is the signature the private report records
-    # for it.
+    # Moved deliberately in the commit that maps the distribution's NLS data:
+    # with residency off ntdll now receives the real locale.nls, parses it, and
+    # stops on the first instruction form this DBT does not implement - a
+    # `lock cmpxchg` to memory, the lock-prefixed read-modify-write the
+    # differential suite covers for the other forms. That is a named engine
+    # item rather than a refusal at a mapping. The fault address with residency
+    # on is unchanged while the faulting block stays the same (0x105c1aa7,
+    # 9 instructions, resident mask 0x43), which is the signature the private
+    # report records for it.
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "memory-bounds", "fault": "0x00000010",
-                      "retired": "518666", "blocks": "1963"},
+    "residency_off": {"stop": "unsupported-instruction",
+                      "retired": "483088", "blocks": "1688"},
 }
 
 

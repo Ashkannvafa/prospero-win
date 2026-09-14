@@ -134,7 +134,38 @@ class Case(unittest.TestCase):
                          ["kernel32.dll", "ntdll.dll"])
         self.assertEqual(document["wine"]["commit"], self.commit)
         self.assertEqual(document["distribution_sha256"],
-                         VALIDATOR.module_digest(document["modules"]))
+                         VALIDATOR.distribution_digest(document["modules"],
+                                                       document["data"]))
+
+    def test_stages_a_data_file_and_binds_it_to_the_digest(self) -> None:
+        """The NLS data is part of what the distribution is.
+
+        A data file is recorded with its own hash and size, and the
+        distribution digest covers it: a run that only listed the modules would
+        call two different distributions the same one.
+        """
+        data = self.distribution / "nls/locale.nls"
+        data.parent.mkdir(parents=True)
+        data.write_bytes(b"nls-data")
+        self.emit()
+        with_modules = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.emit("--data", "nls/locale.nls")
+        self.check()
+        document = json.loads(self.manifest.read_text(encoding="utf-8"))
+        self.assertEqual(document["data"], [{
+            "name": "nls/locale.nls",
+            "path": "nls/locale.nls",
+            "size": len(b"nls-data"),
+            "sha256": VALIDATOR.sha256_bytes(b"nls-data"),
+        }])
+        self.assertNotEqual(document["distribution_sha256"],
+                            with_modules["distribution_sha256"])
+        # A data file that changes underneath the manifest is drift: the size
+        # first, and the hash when the size is the same.
+        data.write_bytes(b"different")
+        self.expect_failure("size drift", self.check)
+        data.write_bytes(b"nls-xxxx")
+        self.expect_failure("hash drift", self.check)
 
     def test_refuses_to_overwrite(self) -> None:
         self.emit()

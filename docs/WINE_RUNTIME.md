@@ -19,7 +19,7 @@ bounded host gate, not a running Windows process.
 
 | Area | State |
 |---|---|
-| Runtime distribution | Three i386 PE modules (`ntdll`, `kernelbase`, `kernel32`) built reproducibly from the pinned revision; staged digest `e88025bbc00a1195ebdfd76589ae0fdeab3265158ea7e8af40fd398c1ec0673d` |
+| Runtime distribution | Three i386 PE modules (`ntdll`, `kernelbase`, `kernel32`) built reproducibly from the pinned revision plus the NLS data files the pinned runtime reads at startup (`locale.nls`, `sortdefault.nls`, `l_intl.nls` and the five normalization files), each recorded with its own hash and folded into the distribution digest `3f07309d900358ba76b346ccad625aa62d123723c4273ddbce0847fbc6c22dbd` |
 | Module graph | `kernelbase`'s 428 imports bind against `ntdll`'s exports with zero failures, by name, ordinal and forwarder |
 | PE32 TLS | Parsed, with a process/thread owner and deterministic callback plans; the staged modules declare no TLS directory |
 | ntdll under the DBT | Real `LdrInitializeThunk` executes through the IA-32 translator: 32 544 retired instructions, 6869 dispatches, 968 translated blocks, `host_calls=0`, complete cleanup (`modules=2 mappings=7 translations=1`) |
@@ -49,6 +49,7 @@ them, with a manifest, into an ignored directory:
     lib/i386-windows/ntdll.dll
     lib/i386-windows/kernelbase.dll
     lib/i386-windows/kernel32.dll
+    nls/locale.nls          and the other data files below
     wine-runtime-manifest.json
 ```
 
@@ -61,6 +62,20 @@ the staged runtime is deliberately not a complete Win32 surface.
 The modules are PE32/i386 images. The Unix-side modules (`*.so`) are *not*
 staged: they are not loadable objects on this target, and the whole point of
 the DBT is that guest PE code runs natively translated instead.
+
+The `nls/` files are the distribution's own NLS data - `locale.nls`,
+`sortdefault.nls`, `l_intl.nls`, `normidna.nls` and the four normalization
+data files (`dlls/ntdll/unix/env.c:93` names them). The pinned revision tracks
+them as source files, so staging them is a copy and not a second build, and
+the manifest records each one's size and hash and folds them into the
+distribution digest: a distribution that carries the data is not the
+distribution that does not, and the run needs them because the pinned
+runtime's own locale initialisation maps and parses `locale.nls`
+(`RtlGetLocaleFileMappingAddress`, `dlls/ntdll/locale.c:613`, and kernelbase's
+`init_locale`, `dlls/kernelbase/locale.c:438`). The host file service looks a
+runtime-namespace name up in that directory first and in the module directory
+second, which is the order Wine itself uses (`open_nls_data_file`,
+`dlls/ntdll/unix/env.c:120`).
 
 ## Reproducing the build
 
@@ -532,14 +547,17 @@ NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
                                        and Directory for a directory object)
 NtInitializeNlsFiles          (0x00a4) the runtime namespace's own
                                        locale.nls, asked for the way Wine asks:
-                                       when the distribution carries the file
-                                       the answer is STATUS_NOT_SUPPORTED,
-                                       because a file-backed data section is
-                                       not implemented yet, and when it does not
-                                       the answer is the failure of the open
-                                       Wine itself falls back to; the system
-                                       language id is written back either way,
-                                       as Wine writes it
+                                       the file's bytes are mapped into the
+                                       guest below 4 GiB, page-rounded and
+                                       declared readable and nothing else, and
+                                       the address, the mapping size and the
+                                       system language id are written back -
+                                       which is what Wine's own map_section
+                                       does for this call. A distribution that
+                                       does not carry the file answers with the
+                                       failure of the open Wine itself falls
+                                       back to; the language id is written
+                                       either way, as Wine writes it
 NtProtectVirtualMemory        (0x0050) a range this run mapped - an NT
                                        allocation or a section view - protected
                                        to PAGE_NOACCESS, READONLY, READWRITE,
