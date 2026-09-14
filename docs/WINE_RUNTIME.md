@@ -178,7 +178,7 @@ The bridge is assembled from units, each with its own contract:
 | `src/pw_wine_gate.c` | the run: mapping, binding, the DBT loop, the virtual-memory calls and the dispatch registry |
 | `src/pw_guest_vm.[ch]` | the low-address policy and the contract with the backend underneath |
 | `src/pw_guest_process.[ch]` | the stack, the TEB, the PEB and the process parameters |
-| `src/pw_nt_handle.[ch]`, `src/pw_wine_handle.[ch]` | the typed, generation-safe handle table, and what the run does around it |
+| `src/pw_nt_handle.[ch]`, `src/pw_wine_handle.[ch]` | the typed handle table with single-issue values, and what the run does around it |
 | `src/pw_wine_path.[ch]` | guest names turned into canonical strings for all three namespaces |
 | `src/pw_wine_file.[ch]` | files and the gate-owned directory object |
 | `src/pw_wine_registry.[ch]` | registry keys and values |

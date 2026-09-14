@@ -114,7 +114,7 @@
       ],
       "evidence": "No general Wine-compatible object/handle or WaitForMultipleObjects service is claimed.",
       "exit_criteria": [
-        "generation-handles",
+        "handle-values-never-reissue",
         "events",
         "mutexes",
         "semaphores",

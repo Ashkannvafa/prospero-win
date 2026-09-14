@@ -4,10 +4,10 @@
  *
  * A handle the guest holds is a value it can keep, copy, forge or reuse after
  * the object is gone, so three properties have to hold without the rest of the
- * gate: a value names a live slot of the generation it was issued for, a
- * released value never resolves again even though the slot has been reused,
- * and the table says what kind of object a live handle names so a file, a
- * directory and a key cannot be used as one another.
+ * gate: a value names a live slot, a released value never resolves again even
+ * though the slot has been reused many times, and the table says what kind of
+ * object a live handle names so a file, a directory and a key cannot be used
+ * as one another. The opacity is the point; secrecy is not claimed.
  */
 #include "../src/pw_nt_handle.h"
 
@@ -46,14 +46,12 @@ int main(void)
     assert(strcmp(found->path, "\\knowndlls") == 0);
     assert(pw_nt_handle_lookup(&table, 0u, &found, &kind) == PW_ERR_NOT_FOUND);
     assert(pw_nt_handle_lookup(&table, 0x0fu, &found, &kind) == PW_ERR_NOT_FOUND);
-    /* One past the last slot of the first generation is not a handle. */
-    assert(pw_nt_handle_lookup(&table,
-                               PW_NT_HANDLE_BASE +
-                                   PW_NT_HANDLE_MAX * PW_NT_HANDLE_GENERATIONS,
-                               &found, &kind) == PW_ERR_NOT_FOUND);
+    /* A value the table never issued is not a handle. */
+    assert(pw_nt_handle_lookup(&table, PW_NT_HANDLE_BASE + 0x1000u, &found,
+                               &kind) == PW_ERR_NOT_FOUND);
 
-    /* Releasing advances the geneneration: the old value is dead, and the
-     * slot's next occupant gets a different one. */
+    /* Releasing retires the value: the old one is dead, and the slot's next
+     * occupant gets a fresh one. */
     memset(&released, 0, sizeof(released));
     assert(pw_nt_handle_release(&table, first, &released, &kind) == PW_OK);
     assert(kind == PW_NT_HANDLE_OBJECT_DIRECTORY);
@@ -104,12 +102,54 @@ int main(void)
     assert(table.live == PW_NT_HANDLE_MAX - 1u);
     assert(pw_nt_handle_alloc(&table, PW_NT_HANDLE_SECTION, &object,
                               &first) == PW_OK);
-    /* The slot is the same one, one generation later. */
-    assert(first == values[3] + 1u);
+    /* The slot is reused, but the value is fresh - it is not the retired one
+     * and it is not a value any other live handle carries. */
+    assert(first != values[3]);
+    assert(first > values[3]);
     for (uint32_t index = 0u; index < (uint32_t)PW_NT_HANDLE_MAX; ++index)
         if (index != 3u)
             assert(first != values[index]);
     assert(pw_nt_handle_lookup(&table, values[3], &found, &kind) ==
            PW_ERR_NOT_FOUND);
+
+    /*
+     * The regression the final review asked for: reuse one slot many times
+     * over - well past the 16 cycles the old generation counter allowed - and
+     * prove every retired value stays dead. The first value must not resolve
+     * again even after the slot has been handed out 17 more times.
+     */
+    {
+        uint32_t current = first;
+        uint32_t retired[24];
+
+        for (unsigned cycle = 0u; cycle < 24u; ++cycle) {
+            uint32_t next = 0u;
+
+            retired[cycle] = current;
+            assert(pw_nt_handle_release(&table, current, &released, &kind) ==
+                   PW_OK);
+            assert(pw_nt_handle_lookup(&table, current, &found, &kind) ==
+                   PW_ERR_NOT_FOUND);
+            memset(&object, 0, sizeof(object));
+            object.token = (void *)(uintptr_t)(0x9000u + cycle);
+            assert(pw_nt_handle_alloc(&table, PW_NT_HANDLE_FILE, &object,
+                                      &next) == PW_OK);
+            for (unsigned earlier = 0u; earlier <= cycle; ++earlier)
+                assert(next != retired[earlier]);
+            for (unsigned earlier = 0u; earlier <= cycle; ++earlier)
+                assert(pw_nt_handle_lookup(&table, retired[earlier], &found,
+                                           &kind) == PW_ERR_NOT_FOUND);
+            current = next;
+        }
+        /* Every value the loop issued is still usable while it is live. */
+        assert(pw_nt_handle_lookup(&table, current, &found, &kind) == PW_OK);
+        assert(pw_nt_handle_release(&table, current, &released, &kind) ==
+               PW_OK);
+    }
+    for (uint32_t index = 0u; index < (uint32_t)PW_NT_HANDLE_MAX; ++index)
+        if (index != 3u && table.slots[index].used)
+            assert(pw_nt_handle_release(&table, table.slots[index].value,
+                                        &released, &kind) == PW_OK);
+    assert(table.live == 0u);
     return 0;
 }
