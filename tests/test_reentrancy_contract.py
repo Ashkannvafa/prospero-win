@@ -10,6 +10,12 @@ that way. This test is that contract: it scans every source on the gate's
 compilation path and fails when a mutable file-scope object appears, because
 the next one is exactly what would make two runs interfere.
 
+The list of sources is the Makefile's own `WINE_GATE`, not a copy of it: the
+service adapters were split out of the gate in one commit, and a hardcoded list
+would have gone on scanning the old file while the moved code was never
+checked. A gate source that is added to the build is covered here by
+construction.
+
 Read-only tables (`static const`), forward declarations and functions are of
 course fine; the check is about a mutable object with a name.
 """
@@ -21,40 +27,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Every source the gate binary is built from, minus the console/platform
-# adapters (which the host build does not compile) and minus the runner, whose
-# report buffer is process-level on purpose: it is a tool that runs once.
-GATE_SOURCES = [
-    "src/pw_wine_gate.c",
-    "src/pw_guest_vm.c",
-    "src/pw_guest_process.c",
-    "src/pw_nt_handle.c",
-    "src/pw_unix_call.c",
-    "src/pe_export.c",
-    "src/pe_image.c",
-    "src/pe_import.c",
-    "src/pe_layout.c",
-    "src/pe_reloc.c",
-    "src/pe_tls.c",
-    "src/pw_compat32.c",
-    "src/pw_export.c",
-    "src/pw_guest_call.c",
-    "src/pw_guest_fp.c",
-    "src/pw_import_bind.c",
-    "src/pw_loader.c",
-    "src/pw_map.c",
-    "src/pw_module_name.c",
-    "src/pw_result.c",
-    "src/pw_segment.c",
-    "src/pw_sha256.c",
-    "src/pw_tls.c",
-    "src/pw_vm.c",
-    "src/pw_vm_posix.c",
-    "src/pw_x86_block.c",
-    "src/pw_x86_cache.c",
-    "src/pw_x86_engine.c",
-    "src/pw_x87.c",
+# Shared headers on the same path. Nothing in them is an object today, and a
+# table added to one of them is exactly as much per-process state as one added
+# to a source file.
+SHARED_HEADERS = [
+    "src/pw_wine_context.h",
+    "src/pw_wine_gate.h",
+    "src/pw_nt_dispatch.h",
+    "src/pw_nt_handle.h",
 ]
+
+
+def gate_sources() -> list[str]:
+    """The Makefile's `WINE_GATE` variable, following continuations."""
+    lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("WINE_GATE :="):
+            continue
+        value: list[str] = []
+
+        while True:
+            value.append(lines[index].split(":=", 1)[-1].rstrip("\\"))
+            if not lines[index].rstrip().endswith("\\"):
+                break
+            index += 1
+        return [source for source in " ".join(value).split() if not source.startswith("$")]
+    raise SystemExit("the Makefile has no WINE_GATE variable to scan")
 
 # A file-scope definition: "static <something> <name>...;" with no parentheses
 # before the semicolon, so function declarations and definitions do not match.
@@ -67,7 +65,9 @@ STATIC_OBJECT = re.compile(
 
 def main() -> int:
     offenders: list[str] = []
-    for relative in GATE_SOURCES:
+    sources = gate_sources() + SHARED_HEADERS
+
+    for relative in sources:
         text = (ROOT / relative).read_text(encoding="utf-8")
         for match in STATIC_OBJECT.finditer(text):
             declaration = match.group(0).strip()
@@ -81,7 +81,7 @@ def main() -> int:
         raise SystemExit("mutable file-scope state on the gate path:\n  " +
                          "\n  ".join(offenders))
     print("reentrancy contract passed: no mutable file-scope state in "
-          f"{len(GATE_SOURCES)} gate-path sources")
+          f"{len(sources)} gate-path sources")
     return 0
 
 

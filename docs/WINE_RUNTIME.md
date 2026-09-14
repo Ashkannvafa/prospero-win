@@ -171,6 +171,26 @@ It does not implement the Unix call, does not create a PEB/TEB, does not run
 ntdll's process initialization and is not wired into title startup. A
 classified stop is evidence, not a compatibility claim.
 
+The bridge is assembled from units, each with its own contract:
+
+| Unit | Owns |
+|---|---|
+| `src/pw_wine_gate.c` | the run: mapping, binding, the DBT loop, the virtual-memory calls and the dispatch registry |
+| `src/pw_guest_vm.[ch]` | the low-address policy and the contract with the backend underneath |
+| `src/pw_guest_process.[ch]` | the stack, the TEB, the PEB and the process parameters |
+| `src/pw_nt_handle.[ch]`, `src/pw_wine_handle.[ch]` | the typed, generation-safe handle table, and what the run does around it |
+| `src/pw_wine_path.[ch]` | guest names turned into canonical strings for all three namespaces |
+| `src/pw_wine_file.[ch]` | files and the gate-owned directory object |
+| `src/pw_wine_registry.[ch]` | registry keys and values |
+| `src/pw_wine_object.[ch]` | the object namespace |
+| `src/pw_wine_query.[ch]` | the answers that come from host state: Wine version, token, process image |
+
+`pw_wine_gate_run()` orchestrates those units. None of them calls a host Wine
+function, the file, registry and object adapters reach the platform only
+through the service vtable the caller supplies, and the name translation and
+the virtual-memory service are pure enough to be tested without a mapping
+(`tests/test_pw_wine_path.c`, `tests/test_pw_guest_vm.c`).
+
 ### How far real ntdll execution currently gets
 
 Two entry points are measured, each with the engine's chaining, register
