@@ -57,14 +57,23 @@ enum {
     FSCTL_RESULT_RVA = DATA_RVA + 0x300,    /* four FSCTL statuses */
     ID_COPY_RVA = DATA_RVA + 0x310,         /* ObjectId the guest read back */
     FSCTL_LEN_RVA = DATA_RVA + 0x314,       /* Information it read back */
-    THUNK_RVA = TEXT_RVA + 0x200,
-    STUB_OPEN_RVA = TEXT_RVA + 0x210,
-    STUB_READ_RVA = TEXT_RVA + 0x220,
-    STUB_CLOSE_RVA = TEXT_RVA + 0x230,
-    STUB_VOLUME_RVA = TEXT_RVA + 0x240,     /* NtQueryVolumeInformationFile */
-    STUB_INFO_RVA = TEXT_RVA + 0x250,       /* NtQueryInformationFile */
-    STUB_ATTRS_RVA = TEXT_RVA + 0x260,      /* NtQueryAttributesFile: no handler */
-    STUB_FSCTL_RVA = TEXT_RVA + 0x270,      /* NtFsControlFile */
+    APPLICATION_TEXT_RVA = DATA_RVA + 0x320, /* "C:\test.dll", UTF-16 */
+    APPLICATION_RVA = DATA_RVA + 0x360,     /* its UNICODE_STRING header */
+    APPLICATION_ATTRIBUTES_RVA = DATA_RVA + 0x370,
+    APPLICATION_HANDLE_RVA = DATA_RVA + 0x390,
+    APPLICATION_IO_RVA = DATA_RVA + 0x394,
+    APPLICATION_RESULT_RVA = DATA_RVA + 0x398,
+    /* The caller's own code runs to roughly 0x200 bytes, so the thunk table
+     * starts clear of it: the block below is only reached if the caller's code
+     * collides with it, which is not something a fixture should hide. */
+    THUNK_RVA = TEXT_RVA + 0x300,
+    STUB_OPEN_RVA = TEXT_RVA + 0x310,
+    STUB_READ_RVA = TEXT_RVA + 0x320,
+    STUB_CLOSE_RVA = TEXT_RVA + 0x330,
+    STUB_VOLUME_RVA = TEXT_RVA + 0x340,     /* NtQueryVolumeInformationFile */
+    STUB_INFO_RVA = TEXT_RVA + 0x350,       /* NtQueryInformationFile */
+    STUB_ATTRS_RVA = TEXT_RVA + 0x360,      /* NtQueryAttributesFile: no handler */
+    STUB_FSCTL_RVA = TEXT_RVA + 0x370,      /* NtFsControlFile */
     CALLER_RVA = TEXT_RVA,
     FILE_BYTES = 16,
     FILE_OBJECTID_BYTES = 64u,
@@ -80,7 +89,7 @@ static uint8_t image[64 * 1024];
 static uint8_t text[1024];
 static uint32_t text_bytes;
 static uint8_t data[0x400];
-static PeFixtureReloc relocs[64];
+static PeFixtureReloc relocs[80];
 static uint32_t reloc_count;
 
 static void emit_byte(uint8_t value)
@@ -203,10 +212,18 @@ static size_t build_module(void)
                        "C:\\windows\\system32\\..\\..\\etc");
     put_unicode_string(DIRECTORY_RVA, DIRECTORY_TEXT_RVA,
                        "C:\\windows\\system32");
+    /*
+     * The same component name, asked for from the other root. The guest names
+     * it with a path of its own, so the namespace the service is handed has
+     * to come from the path the guest wrote and not from the service.
+     */
+    put_unicode_string(APPLICATION_RVA, APPLICATION_TEXT_RVA,
+                       "C:\\test.dll");
     {
         const uint32_t name_pointer = IMAGE_BASE + NAME_RVA;
         const uint32_t escape_pointer = IMAGE_BASE + ESCAPE_RVA;
         const uint32_t length = 24u;
+        const uint32_t application_pointer = IMAGE_BASE + APPLICATION_RVA;
 
         /* The data array holds one section, so RVA minus its base. */
         memcpy(data + (ATTRIBUTES_RVA - DATA_RVA), &length, 4u);
@@ -214,6 +231,9 @@ static size_t build_module(void)
         memcpy(data + (ESCAPE_ATTRIBUTES_RVA - DATA_RVA), &length, 4u);
         memcpy(data + (ESCAPE_ATTRIBUTES_RVA - DATA_RVA) + 8u,
                &escape_pointer, 4u);
+        memcpy(data + (APPLICATION_ATTRIBUTES_RVA - DATA_RVA), &length, 4u);
+        memcpy(data + (APPLICATION_ATTRIBUTES_RVA - DATA_RVA) + 8u,
+               &application_pointer, 4u);
         {
             const uint32_t directory_pointer = IMAGE_BASE + DIRECTORY_RVA;
 
@@ -390,6 +410,28 @@ static size_t build_module(void)
     emit_call(STUB_CLOSE_RVA);
     emit_store_eax(VOLUME_RESULT_RVA + 8u);
 
+    /*
+     * The application's own directory: the same component name the service
+     * already answered from the runtime's root, now named on a path the guest
+     * wrote as "C:\test.dll". What the service is asked for is a pair - the
+     * canonical name and the root it belongs to - so a run that lost the
+     * namespace would open the runtime's file here instead.
+     */
+    emit_push_imm8(0x00);                 /* OpenOptions */
+    emit_push_imm8(0x00);                 /* ShareAccess */
+    emit_push_absolute(APPLICATION_IO_RVA);
+    emit_push_absolute(APPLICATION_ATTRIBUTES_RVA);
+    emit_push_imm32(0x00100000u);         /* FILE_READ_DATA */
+    emit_push_absolute(APPLICATION_HANDLE_RVA);
+    emit_call(STUB_OPEN_RVA);
+    emit_store_eax(APPLICATION_RESULT_RVA);
+
+    emit_byte(0xa1);                      /* mov eax, [APPLICATION_HANDLE] */
+    emit_absolute(APPLICATION_HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_CLOSE_RVA);
+    emit_store_eax(APPLICATION_RESULT_RVA + 4u);
+
     emit_byte(0xa1);                      /* mov eax, [DEVICE_INFO_RVA] */
     emit_absolute(DEVICE_INFO_RVA);
     emit_byte(0x50);                      /* push DeviceType (second arg) */
@@ -422,6 +464,8 @@ static size_t build_module(void)
     emit_data_reloc(ESCAPE_ATTRIBUTES_RVA + 8u);
     emit_data_reloc(DIRECTORY_RVA + 4u);
     emit_data_reloc(DIRECTORY_ATTRIBUTES_RVA + 8u);
+    emit_data_reloc(APPLICATION_RVA + 4u);
+    emit_data_reloc(APPLICATION_ATTRIBUTES_RVA + 8u);
 
     memset(&spec, 0, sizeof(spec));
     spec.pe32plus = 0;
@@ -466,13 +510,18 @@ typedef struct FakeFile {
 static FakeFile *last_open;
 static uint32_t open_calls;
 static char last_name[PW_WINE_GATE_MAX_PATH + 1];
+/* The namespace each open named: the service never decides it for itself. */
+static PwFileNamespace open_namespaces[4];
 
-static PwWineFileStatus fake_open(void *context, const char *name,
-                                  uint64_t *size, void **token)
+static PwWineFileStatus fake_open(void *context, PwFileNamespace file_namespace,
+                                  const char *name, uint64_t *size,
+                                  void **token)
 {
     FakeFile *file = context;
 
     open_calls++;
+    if (open_calls <= sizeof(open_namespaces) / sizeof(open_namespaces[0]))
+        open_namespaces[open_calls - 1u] = file_namespace;
     memcpy(last_name, name, strlen(name) + 1u);
     if (strcmp(name, "test.dll") != 0)
         return PW_WINE_FILE_NOT_FOUND;
@@ -585,14 +634,16 @@ int main(void)
     (void)pw_wine_gate_run(&config, &report);
     assert(report.files_configured == 1u);
     /* open, read, four NtFsControlFile calls, close, refused open, directory
-     * open, directory query, directory volume query, directory close */
-    assert(report.calls_serviced == 12u);
-    assert(report.file_opens == 2u);         /* the DLL and the directory */
+     * open, directory query, directory volume query, directory close, then the
+     * application's own open and its close */
+    assert(report.calls_serviced == 14u);
+    /* the runtime DLL, the directory, and the application's file */
+    assert(report.file_opens == 3u);
     assert(report.file_directories == 1u);
     assert(report.file_reads == 1u);
     assert(report.file_bytes == FILE_BYTES);
-    /* Both handles were closed by the guest, so cleanup released none. */
-    assert(report.file_closes == 2u);
+    /* Every handle was closed by the guest, so cleanup released none. */
+    assert(report.file_closes == 3u);
     assert(report.file_handles == 0u);
     /* The escaping path, the FSCTL with a buffer that cannot hold the answer,
      * and the two FSCTL calls with control codes this bridge does not answer. */
@@ -602,9 +653,19 @@ int main(void)
      * platform service is never asked to open it at all: that is the
      * property under test, not merely that the open failed.
      */
-    assert(open_calls == 1u);
+    /*
+     * The two opens the service answered, and the root each one belongs to:
+     * "C:\windows\system32\test.dll" is the runtime distribution's file and
+     * "C:\test.dll" is the application's own, so the first is asked for in
+     * PW_FILE_RUNTIME and the second in PW_FILE_APPLICATION. A run that lost
+     * the namespace would ask the runtime's root twice, and one that fell back
+     * would ask the application's twice.
+     */
+    assert(open_calls == 2u);
     assert(strcmp(last_name, "test.dll") == 0);
-    assert(file.reads == 1u && file.closes == 1u);
+    assert(open_namespaces[0] == PW_FILE_RUNTIME);
+    assert(open_namespaces[1] == PW_FILE_APPLICATION);
+    assert(file.reads == 1u && file.closes == 2u);
     assert(report.calls.records >= 4u);
     assert(report.calls.sequence[0].id == 0x0033u);
     assert(report.calls.sequence[0].status == PW_NT_SUCCESS);
@@ -622,8 +683,8 @@ int main(void)
                 record->status == PW_NT_OBJECT_NAME_NOT_FOUND)
                 refused_opens++;
         }
-        /* One close for the DLL handle and one for the directory's. */
-        assert(closes == 2u);
+        /* One close each for the DLL, the directory and the application's. */
+        assert(closes == 3u);
         assert(refused_opens == 1u);
     }
     /*

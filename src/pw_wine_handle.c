@@ -63,7 +63,15 @@ int pw_wine_handle_release(PwWineCallContext *calls, uint32_t value)
     return PW_OK;
 }
 
-/* What a handle names, built once at the call site. */
+/*
+ * What a handle names, built once at the call site. The object is zeroed
+ * here, so a caller that knows more than the name - the file service, which
+ * knows which root the canonical name belongs to - sets that field after this
+ * call rather than before it, or it would be cleared again. Measured: setting
+ * it first left every file handle recorded as PW_FILE_RUNTIME, and the view
+ * mapping that re-opens the file by name then asked the runtime for an
+ * application module and the loader failed with STATUS_DLL_NOT_FOUND.
+ */
 int pw_wine_handle_object(void *token, uint64_t size, const char *path,
                           PwNtObject *out)
 {

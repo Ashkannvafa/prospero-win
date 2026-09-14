@@ -279,7 +279,15 @@ static void emit_query(uint32_t section_handle_rva, uint32_t class_id,
 static size_t build_module(void)
 {
     PeFixtureSpec spec;
-    static const char file_path[] = "C:\\windows\\system32\\test.dll";
+    /*
+     * The module's file is the application's own, named as a component of C:.
+     * That is the path whose namespace has to survive from the open to the
+     * mapping: the view is mapped from a section that re-opens the file by the
+     * pair (name, root), because the loader has closed its own file handle by
+     * then. A run that lost the root asked the runtime for an application
+     * module, and the loader ended with STATUS_DLL_NOT_FOUND.
+     */
+    static const char file_path[] = "C:\\test.dll";
     static const char directory[] = "C:\\windows\\system32";
 
     text_bytes = 0u;
@@ -522,6 +530,9 @@ static size_t build_module(void)
  * fixture's own image bytes as "test.dll" and nothing else. */
 typedef struct FakeFile {
     char last_name[64];                     /* what the service was asked for */
+    PwFileNamespace last_namespace;         /* and which root it belongs to */
+    uint32_t runtime_opens;                 /* opens that named the runtime root */
+    uint32_t application_opens;             /* opens that named the app root */
     uint32_t library_seen;                  /* the run asked for its own DLL */
     uint32_t opens;
     uint32_t reads;
@@ -530,12 +541,18 @@ typedef struct FakeFile {
     uint8_t bytes[64 * 1024];
 } FakeFile;
 
-static PwWineFileStatus fake_open(void *context, const char *name,
-                                  uint64_t *size, void **token)
+static PwWineFileStatus fake_open(void *context, PwFileNamespace file_namespace,
+                                  const char *name, uint64_t *size,
+                                  void **token)
 {
     FakeFile *file = context;
 
     file->opens++;
+    file->last_namespace = file_namespace;
+    if (file_namespace == PW_FILE_RUNTIME)
+        file->runtime_opens++;
+    else if (file_namespace == PW_FILE_APPLICATION)
+        file->application_opens++;
     memcpy(file->last_name, name, strlen(name) + 1u);
     if (strcmp(name, "locale.nls") == 0) {
         /* The distribution carries the NLS data, which is the case this bridge
@@ -544,7 +561,12 @@ static PwWineFileStatus fake_open(void *context, const char *name,
         *token = file;
         return PW_WINE_FILE_OK;
     }
-    if (strcmp(name, "test.dll") != 0)
+    /* The module is the application's own file and it is only there: a service
+     * asked for it in the runtime's root deliberately answers that it does not
+     * have it, which is what this distribution does with a name it does not
+     * carry. */
+    if (strcmp(name, "test.dll") != 0 ||
+        file_namespace != PW_FILE_APPLICATION)
         return PW_WINE_FILE_NOT_FOUND;
     file->library_seen = 1u;
     *size = file->size;
@@ -779,6 +801,18 @@ int main(void)
      * was the NLS data the run needs at this point of the boot. */
     assert(file.library_seen == 1u);
     assert(strcmp(file.last_name, "locale.nls") == 0);
+    /*
+     * Where each open came from: the module's own file is the application's
+     * (its path names a component of C:), and the section re-opens that same
+     * file by name when it maps the view - so two of the three opens are the
+     * application's and one, the NLS data, is the runtime's. A run that lost
+     * the root with the loader's file handle would ask the runtime for
+     * test.dll, the service would answer that it does not have it, and the
+     * mapping would fail before any of this.
+     */
+    assert(file.application_opens == 2u);
+    assert(file.runtime_opens == 1u);
+    assert(file.last_namespace == PW_FILE_RUNTIME);
     /* The DLL file and the gate-owned Windows directory. */
     assert(report.file_opens == 2u);
     return 0;

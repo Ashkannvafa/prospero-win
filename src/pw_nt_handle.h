@@ -51,6 +51,9 @@ typedef struct PwNtObject {
     uint64_t size;                  /* file: bytes */
     uint64_t offset;                /* file: read position */
     char path[PW_NT_HANDLE_PATH_MAX + 1];   /* key/object: canonical path */
+    /* file: which root the name belongs to, so a later re-open asks for the
+     * same file rather than one that happens to share its name. */
+    uint8_t file_namespace;
 } PwNtObject;
 
 typedef struct PwNtHandleTable {

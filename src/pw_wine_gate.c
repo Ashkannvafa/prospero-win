@@ -1467,6 +1467,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                 ? (uint32_t)root_module_loaded->mapped.actual_base : 0u,
             .dispatcher_thunk = report->boundary_thunk_va,
             .root_module = root_canonical,
+            .root_application = config->root_application,
         };
 
     stage = "process";

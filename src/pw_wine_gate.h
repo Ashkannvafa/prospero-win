@@ -84,9 +84,13 @@ typedef enum PwWineFileStatus {
 
 typedef struct PwWineFileService {
     void *context;
-    /* name is a canonical lower-case file name inside the runtime root. */
-    PwWineFileStatus (*open)(void *context, const char *name, uint64_t *size,
-                             void **token);
+    /* name is a canonical lower-case file name; the namespace says which root
+     * it belongs to, because the same name can exist in both and the loader's
+     * own rule keeps them apart: the process's own image and the modules next
+     * to it come from the application directory, system modules from the
+     * runtime distribution. */
+    PwWineFileStatus (*open)(void *context, PwFileNamespace file_namespace,
+                             const char *name, uint64_t *size, void **token);
     PwWineFileStatus (*read)(void *context, void *token, uint64_t offset,
                              void *bytes, uint32_t size,
                              uint32_t *read_bytes);

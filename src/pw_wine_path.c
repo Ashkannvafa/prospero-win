@@ -188,12 +188,15 @@ int pw_wine_path_prefix(const char *text, const char *prefix, size_t *used)
 }
 
 /*
- * Translates a guest DOS/NT path into a canonical file name inside the
- * runtime distribution, or fails. Only the two prefixes a Wine loader uses
- * are accepted, the remainder must be a single path component, and the result
- * is lower-cased, so ".." or an absolute host path cannot reach the service.
+ * Translates a guest DOS/NT path into a canonical file name inside one of the
+ * two roots a Wine loader names - the runtime distribution under C:\windows
+ * and the application's own directory under the root of C: - or fails. The
+ * root the name belongs to is reported to the caller, the remainder must be a
+ * single path component, and the result is lower-cased, so ".." or an absolute
+ * host path cannot reach the service.
  */
 int pw_wine_path_runtime(const char *path, char *out, size_t out_bytes,
+                                  PwFileNamespace *file_namespace,
                                   int *is_directory, uint32_t *status)
 {
     const char *rest = path;
@@ -207,10 +210,24 @@ int pw_wine_path_runtime(const char *path, char *out, size_t out_bytes,
         *status = PW_NT_OBJECT_NAME_NOT_FOUND;
         return PW_ERR_MALFORMED;
     }
+    if (!file_namespace)
+        return PW_ERR_PRECONDITION;
+    *file_namespace = PW_FILE_RUNTIME;
     if (pw_wine_path_prefix(rest, "\\??\\", &used))
         rest += used;
-    if (pw_wine_path_prefix(rest, "C:\\windows\\system32", &used) ||
-        pw_wine_path_prefix(rest, "C:\\windows", &used)) {
+    /*
+     * The two roots a Windows loader names. A path under the Windows directory
+     * is the runtime distribution's, and a single component directly under the
+     * root of C: is the application's - the directory the process's own image
+     * and the modules next to it live in. Neither root falls back into the
+     * other: the namespace a name belongs to is decided by the name, so the
+     * service that finally opens it never has to guess. A prefix only names a
+     * directory when a separator or the end of the string follows it, so
+     * "C:\windowsfoo" is a component of the root, exactly as Windows reads it.
+     */
+    if ((pw_wine_path_prefix(rest, "C:\\windows\\system32", &used) ||
+         pw_wine_path_prefix(rest, "C:\\windows", &used)) &&
+        (rest[used] == '\\' || rest[used] == '\0')) {
         rest += used;
         /* The directory itself: a single trailing separator, no component. */
         if (*rest == '\\' && rest[1] == '\0') {
@@ -224,6 +241,16 @@ int pw_wine_path_runtime(const char *path, char *out, size_t out_bytes,
         } else {
             rest += 1u;
         }
+    } else if (pw_wine_path_prefix(rest, "C:\\", &used)) {
+        /*
+         * A single component directly under the root of C: is the
+         * application's own: the process image and the modules next to it. The
+         * bare root is that directory itself.
+         */
+        rest += used;
+        *file_namespace = PW_FILE_APPLICATION;
+        if (*rest == '\0')
+            directory = 1;
     } else {
         *status = PW_NT_OBJECT_NAME_NOT_FOUND;
         return PW_ERR_NOT_FOUND;

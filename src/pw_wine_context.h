@@ -35,6 +35,9 @@
  */
 typedef struct PwWineSection {
     char name[PW_NT_HANDLE_PATH_MAX + 1];
+    /* Which root the name belongs to, so re-opening it later asks the same
+     * service for the same file the section was created from. */
+    PwFileNamespace file_namespace;
     uint64_t file_size;
     uint64_t image_base;
     uint32_t protection;

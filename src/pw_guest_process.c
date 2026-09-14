@@ -53,9 +53,39 @@ static void set_unicode_string(uint8_t *page, uint32_t field, uint32_t offset,
  * dereference a null Buffer.
  */
 static int populate_parameters(uint8_t *page, uint32_t page_bytes,
-                               const char *root_module, uint32_t *length_out)
+                               const char *root_module, uint8_t root_application,
+                               uint32_t *length_out)
 {
+    /*
+     * The two names a Windows process carries for itself. The image is the
+     * process's own file, and it is named in the root it was actually opened
+     * from: an application's own image is a component of C:, a system module
+     * is a component of the Windows directory. The current directory is the
+     * directory that image lives in, which is where a process started from it
+     * would run.
+     */
+    static const char application[] = "C:\\";
     static const char system32[] = "C:\\windows\\system32\\";
+    /*
+     * The DLL search path, in the order Wine itself builds it
+     * (dlls/ntdll/loader.c:2574 get_dll_load_path): the directory of the
+     * process's own image first, then the system directories. Wine's own
+     * system_path is "C:\\windows\\system32;C:\\windows\\system;C:\\windows";
+     * this gate serves the two directories it owns and refuses the third by
+     * the same path rule it applies to every other name, so the list names the
+     * directories a Windows loader would search and the loader still reaches
+     * the application's own modules through the first entry. Measured: with
+     * the system directory alone here, the loader found kernelbase.dll and then
+     * terminated the process because it could not find the application's own
+     * b.dll.
+     */
+    static const char application_dll_path[] =
+        "C:\\;C:\\windows\\system32;C:\\windows\\system;C:\\windows";
+    static const char system_dll_path[] =
+        "C:\\windows\\system32;C:\\windows\\system;C:\\windows";
+    const char *directory = root_application ? application : system32;
+    const char *dll_path = root_application ? application_dll_path
+                                            : system_dll_path;
     uint32_t cursor = 0x100u;
     char image_path[128];
     uint32_t current_offset;
@@ -66,25 +96,24 @@ static int populate_parameters(uint8_t *page, uint32_t page_bytes,
 
     if (!page || page_bytes < 4096u || !root_module)
         return PW_ERR_PRECONDITION;
-    if (strlen(root_module) + sizeof(system32) > sizeof(image_path))
+    if (strlen(root_module) + strlen(directory) + 1u > sizeof(image_path))
         return PW_ERR_LIMIT;
-    memcpy(image_path, system32, sizeof(system32) - 1u);
-    memcpy(image_path + sizeof(system32) - 1u, root_module,
+    memcpy(image_path, directory, strlen(directory));
+    memcpy(image_path + strlen(directory), root_module,
            strlen(root_module) + 1u);
 
     /*
-     * The current directory is published the way Windows stores it: with the
-     * trailing separator. That is the form ntdll's RtlSetCurrentDirectory_U
-     * writes back into the parameters it was handed, and it is a whole
-     * character longer than the bare directory name - so publishing the bare
-     * name gives ntdll one character less room than it needs for the copy it
-     * makes, and its terminator lands in whatever follows this string in the
-     * allocation. Measured, not assumed: with "C:\windows" here, that
-     * terminator was written two bytes into DllPath, which is exactly the
-     * first word the loader's search path no longer had.
+     * Every string here is published the way Windows stores it, with room for
+     * the terminator counted in MaximumLength (see set_unicode_string): ntdll
+     * copies MaximumLength bytes and terminates what it copied, so a
+     * MaximumLength equal to Length writes one word into the string that
+     * follows in the same allocation.
+     *
+     * The current directory is the image's own directory, which is also the
+     * first entry of the search path above.
      */
-    current_offset = write_wide(page, &cursor, "C:\\windows\\");
-    dll_offset = write_wide(page, &cursor, "C:\\windows\\system32");
+    current_offset = write_wide(page, &cursor, directory);
+    dll_offset = write_wide(page, &cursor, dll_path);
     image_offset = write_wide(page, &cursor, image_path);
     command_offset = write_wide(page, &cursor, image_path);
     environment_offset = write_wide(page, &cursor, "SystemRoot=C:\\windows");
@@ -92,8 +121,8 @@ static int populate_parameters(uint8_t *page, uint32_t page_bytes,
     page[cursor + 1u] = 0u;
     cursor += 2u;
 
-    set_unicode_string(page, 0x24u, current_offset, "C:\\windows\\");
-    set_unicode_string(page, 0x30u, dll_offset, "C:\\windows\\system32");
+    set_unicode_string(page, 0x24u, current_offset, directory);
+    set_unicode_string(page, 0x30u, dll_offset, dll_path);
     set_unicode_string(page, 0x38u, image_offset, image_path);
     set_unicode_string(page, 0x40u, command_offset, image_path);
     {
@@ -216,6 +245,7 @@ int pw_guest_process_create(PwGuestProcess *process,
     if (populate_parameters(process->pages[3].write_base,
                             process->layout.parameters_bytes,
                             config->root_module,
+                            config->root_application,
                             &process->layout.parameters_length) != PW_OK)
         goto failed;
 

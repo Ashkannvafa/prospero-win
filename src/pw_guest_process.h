@@ -50,6 +50,10 @@ typedef struct PwGuestProcessConfig {
      * stubs declared with -syscall=<id> call through it; 0 leaves it zero. */
     uint32_t dispatcher_thunk;
     const char *root_module;        /* canonical name, for the image paths */
+    /* Which root the root module came from: 1 when the process's own image is
+     * an application file and its directory is the application's, 0 when the
+     * root is a system module under the Windows directory. */
+    uint8_t root_application;
 } PwGuestProcessConfig;
 
 typedef struct PwGuestProcess {

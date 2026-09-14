@@ -459,6 +459,22 @@ strings (`C:\windows`, `C:\windows\system32`, the root module's path and
 environment - no registry, no NLS data, no drive-letter table - but the fields
 the loader asks for are present and self-consistent.
 
+Every one of those strings is published with room for its terminator
+(`MaximumLength = Length + 2`, as `RtlInitUnicodeString` defines it), because
+ntdll's own `init_user_process_params` copies `MaximumLength` bytes and
+terminates what it copied: publishing the two as the same number lets that
+terminator land in the string that follows in the same allocation.
+
+The names themselves belong to the root the process's own image came from. A
+root opened from `PW_FILE_APPLICATION` publishes `C:\<module>` as its image
+path, `C:\` as its current directory and `C:\;` first in its search path; a
+root opened from `PW_FILE_RUNTIME` publishes `C:\windows\system32\<module>`
+and starts its search path in that directory. The rest of the list is the one
+Wine builds for itself (`dlls/ntdll/loader.c:2574`, `get_dll_load_path`) -
+`C:\windows\system32;C:\windows\system;C:\windows` - so the loader searches the
+directories a Windows loader searches, and this gate answers the two it owns
+and refuses the third by the same path rule it applies to every other name.
+
 That closed the architectural gap: the run jumped from 8582 to 11 707 retired
 instructions, and three more forms the compiler emits as padding or prefixing
 were needed along the way:
@@ -607,8 +623,16 @@ NtTerminateProcess            (0x002c) the current process only; the run stops
 
 Rules the gate enforces before the platform is ever asked:
 
-- only `C:\windows\system32\<name>` and `C:\windows\<name>` are accepted,
-  with an optional `\??\` prefix;
+- a name belongs to exactly one of two roots, and the path decides which:
+  `C:\windows\system32\<name>` and `C:\windows\<name>` are the **runtime**
+  distribution's, and `<one component>` directly under `C:\` (with the bare
+  root naming that directory itself) is the **application's** own. Both accept
+  an optional `\??\` prefix, and the prefix only counts when a separator or the
+  end of the string follows it, so `C:\windowsfoo` is a component of the root
+  and not the Windows directory, exactly as Windows reads it. Neither root
+  falls back into the other: the name decides the root, and the service is
+  handed the pair, so an application module can never be answered with a
+  runtime file that happens to share its name or the other way round;
 - the remainder must be a single path component, lower-cased, so `..`, a
   separator, a drive letter or an absolute host path cannot reach the service;
 - every guest pointer (the OBJECT_ATTRIBUTES, the UNICODE_STRING, its buffer,
@@ -621,6 +645,9 @@ Everything else is answered with a real NTSTATUS - a name outside the runtime
 namespace gives `STATUS_OBJECT_NAME_NOT_FOUND`, a value error gives
 `STATUS_INVALID_PARAMETER`, an unsupported information class gives
 `STATUS_INVALID_INFO_CLASS` - because that is the contract the guest expects.
+An open file handle keeps both halves of its identity, the canonical name and
+the root it was opened from, because the loader closes its own handle before
+the image view is mapped and the section re-opens the file by that pair.
 Handles are released at cleanup, and the counters (`opens`, `reads`, `bytes`,
 `closes`, `directories`, `refusals`, `last`) are part of the evidence.
 `opens` counts every `NtOpenFile` the gate answered with a handle - file or

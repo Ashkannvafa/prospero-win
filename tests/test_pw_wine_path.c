@@ -149,50 +149,77 @@ static void test_runtime(void)
     char out[192];
     uint32_t status = 0u;
     int directory = -1;
+    PwFileNamespace space = 0;
     static const struct {
         const char *path;
         int result;
         uint32_t refused_with;
         const char *canonical;
         int is_directory;
+        PwFileNamespace space;
     } cases[] = {
+        /* The Windows directory is the runtime distribution's. */
         { "\\??\\C:\\windows\\system32\\kernel32.dll", PW_OK, 0u,
-          "kernel32.dll", 0 },
-        { "C:\\WINDOWS\\KernelBase.DLL", PW_OK, 0u, "kernelbase.dll", 0 },
-        { "C:\\windows", PW_OK, 0u, "", 1 },
-        { "C:\\windows\\system32\\", PW_OK, 0u, "", 1 },
+          "kernel32.dll", 0, PW_FILE_RUNTIME },
+        { "C:\\WINDOWS\\KernelBase.DLL", PW_OK, 0u, "kernelbase.dll", 0,
+          PW_FILE_RUNTIME },
+        { "C:\\windows", PW_OK, 0u, "", 1, PW_FILE_RUNTIME },
+        { "C:\\windows\\system32\\", PW_OK, 0u, "", 1, PW_FILE_RUNTIME },
+        /*
+         * The root of C: is the application's own directory: the process image
+         * and the modules next to it are named there and nowhere else.
+         */
+        { "C:\\app.exe", PW_OK, 0u, "app.exe", 0, PW_FILE_APPLICATION },
+        { "\\??\\C:\\b.dll", PW_OK, 0u, "b.dll", 0, PW_FILE_APPLICATION },
+        { "C:\\", PW_OK, 0u, "", 1, PW_FILE_APPLICATION },
+        /* A name that only starts like the Windows directory is the
+         * application's, which is what Windows would do with it too. */
+        { "C:\\windowsfoo", PW_OK, 0u, "windowsfoo", 0, PW_FILE_APPLICATION },
         /* Two components, another drive and a drive-relative path. */
         { "C:\\windows\\system32\\sub\\file.dll", PW_ERR_MALFORMED,
-          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0 },
+          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0, 0 },
+        { "C:\\sub\\file.dll", PW_ERR_MALFORMED,
+          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0, 0 },
         { "\\??\\D:\\windows\\x", PW_ERR_NOT_FOUND,
-          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0 },
+          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0, 0 },
         { "\\windows\\x", PW_ERR_NOT_FOUND, PW_NT_OBJECT_NAME_NOT_FOUND,
-          NULL, 0 },
+          NULL, 0, 0 },
         /* Traversal, an alternate data stream and a prefix that only looks
          * like the Windows directory. */
         { "C:\\windows\\..", PW_ERR_MALFORMED, PW_NT_OBJECT_NAME_NOT_FOUND,
-          NULL, 0 },
+          NULL, 0, 0 },
+        { "C:\\..", PW_ERR_MALFORMED, PW_NT_OBJECT_NAME_NOT_FOUND,
+          NULL, 0, 0 },
         { "C:\\windows\\system32\\a.dll:stream", PW_ERR_MALFORMED,
-          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0 },
-        { "C:\\windowsfoo", PW_ERR_NOT_FOUND, PW_NT_OBJECT_NAME_NOT_FOUND,
-          NULL, 0 },
+          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0, 0 },
         { "C:\\windows\\system32\\a/b.dll", PW_ERR_MALFORMED,
-          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0 },
+          PW_NT_OBJECT_NAME_NOT_FOUND, NULL, 0, 0 },
     };
 
     for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index) {
         memset(out, 0, sizeof(out));
+        space = 0;
         const int result = pw_wine_path_runtime(cases[index].path, out,
-                                                sizeof(out), &directory,
-                                                &status);
+                                                sizeof(out), &space,
+                                                &directory, &status);
 
         assert(result == cases[index].result);
         if (result == PW_OK) {
             assert(strcmp(out, cases[index].canonical) == 0);
             assert(directory == cases[index].is_directory);
+            assert(space == cases[index].space);
         } else {
             assert(status == cases[index].refused_with);
         }
+    }
+    /* A component that does not fit is a refusal, not a truncated name. */
+    {
+        char small[8];
+
+        assert(pw_wine_path_runtime("C:\\averylongcomponent", small,
+                                    sizeof(small), &space, &directory,
+                                    &status) == PW_ERR_MALFORMED);
+        assert(status == PW_NT_OBJECT_NAME_NOT_FOUND);
     }
 }
 
@@ -327,6 +354,7 @@ static void test_boundaries(void)
     uint32_t status = 0u;
     size_t used = 0u;
     int directory = 0;
+    PwFileNamespace space = 0;
 
     memset(&guest, 0, sizeof(guest));
     guest.size = sizeof(guest.bytes);
@@ -346,7 +374,7 @@ static void test_boundaries(void)
            PW_ERR_PRECONDITION);
     assert(pw_wine_path_value("a", out, sizeof(out), NULL) ==
            PW_ERR_PRECONDITION);
-    assert(pw_wine_path_runtime(NULL, out, sizeof(out), &directory,
+    assert(pw_wine_path_runtime(NULL, out, sizeof(out), &space, &directory,
                                 &status) == PW_ERR_PRECONDITION);
     assert(pw_wine_path_object(NULL, out, sizeof(out), &status) ==
            PW_ERR_PRECONDITION);
@@ -365,7 +393,7 @@ static void test_boundaries(void)
     assert(pw_wine_path_registry("\\Registry\\Machine", out, 0u, &status) ==
            PW_ERR_MALFORMED);
     assert(pw_wine_path_value("", out, 0u, &status) == PW_ERR_MALFORMED);
-    assert(pw_wine_path_runtime("C:\\windows", out, 0u, &directory,
+    assert(pw_wine_path_runtime("C:\\windows", out, 0u, &space, &directory,
                                 &status) == PW_ERR_MALFORMED);
     assert(pw_wine_path_object("\\KnownDlls", out, 0u, &status) ==
            PW_ERR_NOT_FOUND);
@@ -424,12 +452,12 @@ static void test_boundaries(void)
         char exact[8];
 
         memcpy(path, "C:\\windows\\abcdefg", 19);
-        assert(pw_wine_path_runtime(path, exact, sizeof(exact), &directory,
-                                    &status) == PW_OK);
+        assert(pw_wine_path_runtime(path, exact, sizeof(exact), &space,
+                                    &directory, &status) == PW_OK);
         assert(strcmp(exact, "abcdefg") == 0 && directory == 0);
         path[18] = 'h';                       /* one byte longer than `exact` */
         path[19] = '\0';
-        assert(pw_wine_path_runtime(path, exact, sizeof(exact), &directory,
+        assert(pw_wine_path_runtime(path, exact, sizeof(exact), &space, &directory,
                                     &status) == PW_ERR_MALFORMED);
     }
 }

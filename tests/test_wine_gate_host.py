@@ -47,12 +47,15 @@ PINNED_DISTRIBUTION = (
 PINNED_RUN = {
     "stop": "returned-to-caller",
     "stop_address": "0x00000000",
-    # Moved deliberately in the commit that publishes the current directory
-    # with its trailing separator: the loader walks a shorter path to the same
-    # stop, with the same call sequence and the same handler coverage below.
-    "retired": "32378",
-    "dispatches": "6828",
-    "blocks": "960",
+    # Moved deliberately in the commit that names the process's own image, its
+    # current directory and its DLL search path in the root that image came
+    # from: this control's root is a system module, so its parameters name the
+    # Windows directory and the search path starts there. The loader reaches
+    # the same stop through the same 19 calls and the same handler coverage
+    # below, with the length of the search accounted for here.
+    "retired": "33118",
+    "dispatches": "7065",
+    "blocks": "961",
     "host_calls": "0",
     "syscall": "0x00000019",
 }
@@ -147,10 +150,20 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    "residency_on": {"stop": "memory-bounds", "fault": "0x61906000",
-                     "retired": "56239", "blocks": "1219"},
-    "residency_off": {"stop": "process-terminated", "retired": "495440",
-                      "blocks": "1780"},
+    # Moved deliberately in the commit that lets the loader resolve the
+    # application's own modules: the image and the search path name the
+    # application's directory, the file service serves that directory in its
+    # own namespace, and the run no longer terminates with STATUS_DLL_NOT_FOUND
+    # over b.dll. Residency off now stops at the next service the loader wants,
+    # NtAreMappedFilesTheSame (i386 syscall 0x72, the call ntdll's
+    # find_existing_module makes against a base address and the new image); the
+    # fault address with residency on moved with the host layout while the
+    # faulting block stayed the same (0x105c1aa7, 9 instructions, resident mask
+    # 0x43), which is the signature the private report records for it.
+    "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
+                     "retired": "56825", "blocks": "1223"},
+    "residency_off": {"stop": "unix-call-unimplemented", "retired": "490542",
+                      "blocks": "1747"},
 }
 
 

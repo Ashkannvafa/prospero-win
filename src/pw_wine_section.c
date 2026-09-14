@@ -136,6 +136,7 @@ int pw_wine_section_create(PwWineCallContext *calls,
      */
     section = &calls->sections[calls->section_count];
     memset(section, 0, sizeof(*section));
+    section->file_namespace = file->file_namespace;
     memcpy(section->headers, headers, read_bytes);
     if (pe_image_parse_headers(&section->image, section->headers,
                                read_bytes) != PW_OK) {
@@ -434,6 +435,7 @@ int pw_wine_section_init_nls_files(PwWineCallContext *calls,
     const uint32_t size_pointer = frame->args[2];
     uint32_t lcid = PW_WINE_NLS_SYSTEM_LCID;
     char name[PW_NT_HANDLE_PATH_MAX + 1];
+    PwFileNamespace file_namespace = PW_FILE_RUNTIME;
     uint64_t size = 0u;
     void *token = NULL;
     int is_directory = 0;
@@ -448,12 +450,13 @@ int pw_wine_section_init_nls_files(PwWineCallContext *calls,
      * is the distribution's own file and never a host path the guest named.
      */
     if (pw_wine_path_runtime("\\??\\C:\\windows\\system32\\locale.nls", name,
-                             sizeof(name), &is_directory,
+                             sizeof(name), &file_namespace, &is_directory,
                              &refused_status) != PW_OK)
         name[0] = '\0';
     if (name[0] != '\0' && calls->config->files != NULL &&
         !is_directory &&
-        calls->config->files->open(calls->config->files->context, name, &size,
+        calls->config->files->open(calls->config->files->context,
+                                   file_namespace, name, &size,
                                    &token) == PW_WINE_FILE_OK) {
         calls->config->files->close(calls->config->files->context, token);
         *status = PW_NT_NOT_SUPPORTED;
@@ -745,7 +748,8 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
      * headers describe, and the whole view goes back.
      */
     if (calls->config->files->open(calls->config->files->context,
-                                   section->name, &span_size,
+                                   section->file_namespace, section->name,
+                                   &span_size,
                                    &span_handle) != PW_WINE_FILE_OK) {
         (void)backend->release(backend->context, &region);
         *status = PW_NT_OBJECT_NAME_NOT_FOUND;

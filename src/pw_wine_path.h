@@ -17,6 +17,7 @@
 #define PROSPERO_WIN_PW_WINE_PATH_H
 
 #include "pw_unix_call.h"
+#include "../include/prospero_win_file.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -52,6 +53,7 @@ int pw_wine_path_value(const char *name, char *out, size_t out_bytes,
  * lower-case component, or the directory itself when *is_directory is set.
  */
 int pw_wine_path_runtime(const char *path, char *out, size_t out_bytes,
+                                  PwFileNamespace *file_namespace,
                          int *is_directory, uint32_t *status);
 
 /* An NT object-namespace path: absolute, or relative to the given root. */

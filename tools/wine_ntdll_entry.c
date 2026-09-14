@@ -61,14 +61,29 @@ static const PwWineDebugSink debug_sink = {
  * distribution; this only opens, reads and closes it, and it never sees a
  * guest pointer.
  */
-static PwWineFileStatus host_file_open(void *context, const char *name,
-                                       uint64_t *size, void **token)
+/*
+ * Where the file service looks: one directory per namespace, because the same
+ * name can exist in both and the gate has already said which root the guest's
+ * path named. Nothing falls back from one to the other.
+ */
+static char host_application_directory[512];
+static char host_runtime_directory[512];
+
+static PwWineFileStatus host_file_open(void *context, PwFileNamespace file_namespace,
+                                       const char *name, uint64_t *size,
+                                       void **token)
 {
-    char path[512];
+    char path[1024];
+    const char *directory;
     FILE *file;
     long length;
 
-    if (snprintf(path, sizeof(path), "%s/%s", (const char *)context, name) >=
+    (void)context;
+    directory = file_namespace == PW_FILE_APPLICATION
+        ? host_application_directory : host_runtime_directory;
+    if (directory[0] == '\0')
+        return PW_WINE_FILE_NOT_FOUND;
+    if (snprintf(path, sizeof(path), "%s/%s", directory, name) >=
         (int)sizeof(path))
         return PW_WINE_FILE_ERROR;
     file = fopen(path, "rb");
@@ -517,10 +532,11 @@ int main(int argc, char **argv)
     config.backend = &vm;
     {
         static PwWineFileService files = host_files;
-        static char runtime_path[512];
 
-        memcpy(runtime_path, runtime, strlen(runtime) + 1u);
-        files.context = runtime_path;
+        (void)snprintf(host_runtime_directory, sizeof(host_runtime_directory),
+                       "%s", runtime);
+        (void)snprintf(host_application_directory,
+                       sizeof(host_application_directory), "%s", application);
         config.files = &files;
     }
     config.root_module = root;

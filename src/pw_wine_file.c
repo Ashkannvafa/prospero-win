@@ -81,6 +81,7 @@ int pw_wine_file_open(PwWineCallContext *calls,
     uint32_t name_pointer = 0u;
     char wide[2u * PW_WINE_GATE_MAX_PATH];
     char name[PW_WINE_GATE_MAX_PATH + 1];
+    PwFileNamespace file_namespace = PW_FILE_RUNTIME;
     int directory = 0;
     uint64_t size = 0u;
     void *token = NULL;
@@ -105,8 +106,8 @@ int pw_wine_file_open(PwWineCallContext *calls,
         *argument_index = 3u;
         return PW_ERR_MALFORMED;
     }
-    if (pw_wine_path_runtime(wide, name, sizeof(name), &directory, status) !=
-        PW_OK) {
+    if (pw_wine_path_runtime(wide, name, sizeof(name), &file_namespace,
+                             &directory, status) != PW_OK) {
         const size_t length = strlen(wide);
 
         if (length <= PW_WINE_GATE_MAX_PATH)
@@ -127,8 +128,8 @@ int pw_wine_file_open(PwWineCallContext *calls,
         calls->report->file_refusals++;
         return PW_OK;
     }
-    switch (calls->config->files->open(calls->config->files->context, name,
-                                       &size, &token)) {
+    switch (calls->config->files->open(calls->config->files->context,
+                                       file_namespace, name, &size, &token)) {
     case PW_WINE_FILE_OK:
         break;
     case PW_WINE_FILE_NOT_FOUND:
@@ -150,13 +151,17 @@ int pw_wine_file_open(PwWineCallContext *calls,
      * The handle carries the canonical name the service resolved, because that
      * is the file's identity this run can guarantee: one name inside the
      * namespace the service owns names one file, and a handle keeps the name
-     * it was opened as for as long as it lives.
+     * and the root it was opened as for as long as it lives - the view mapping
+     * re-opens the file by that pair, since the loader's own handle is closed
+     * by then. The root is set after the object is built because building it
+     * zeroes the object.
      */
     if (pw_wine_handle_object(token, size, name, &handle_object) != PW_OK) {
         calls->config->files->close(calls->config->files->context, token);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
     }
+    handle_object.file_namespace = (uint8_t)file_namespace;
     if (pw_wine_handle_alloc(calls, &handle_object,
                           PW_NT_HANDLE_FILE, &handle) != PW_OK) {
         calls->config->files->close(calls->config->files->context, token);

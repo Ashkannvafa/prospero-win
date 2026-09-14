@@ -132,6 +132,39 @@ int main(void)
     config.dispatcher_thunk = 0x10412344u;
     config.root_module = "ntdll.dll";
 
+    /*
+     * A process whose root module is the application's own image: the image is
+     * a component of C: and the search path starts in that directory, which is
+     * the only way the loader reaches the modules an application ships next to
+     * itself. Measured: with the system directory alone in this position, the
+     * run loaded kernelbase.dll and then terminated the process with
+     * STATUS_DLL_NOT_FOUND, naming the application's own b.dll as the module it
+     * could not find. The parameters page is handed to the guest, which frees
+     * it itself, so this scenario gives it back here before mapping the next
+     * process.
+     */
+    {
+        PwGuestProcessConfig app_config = config;
+        uint8_t *app_parameters;
+
+        app_config.root_application = 1u;
+        assert(pw_guest_process_create(&process, &app_config) == PW_OK);
+        app_parameters = process.pages[3].write_base;
+        read_wide(app_parameters, 0x24u, text, sizeof(text));
+        assert(strcmp(text, "C:\\") == 0);
+        read_wide(app_parameters, 0x30u, text, sizeof(text));
+        assert(strcmp(text,
+                      "C:\\;C:\\windows\\system32;C:\\windows\\system;C:\\windows")
+               == 0);
+        read_wide(app_parameters, 0x38u, text, sizeof(text));
+        assert(strcmp(text, "C:\\ntdll.dll") == 0);
+        read_wide(app_parameters, 0x40u, text, sizeof(text));
+        assert(strcmp(text, "C:\\ntdll.dll") == 0);
+        assert(pw_guest_process_release(&process, &backend) == PW_OK);
+        assert(backend.release(backend.context, &process.pages[3]) == PW_OK);
+        assert(process.mapped == 0u);
+    }
+
     /* The layout: four pages at the documented bases. */
     assert(pw_guest_process_create(&process, &config) == PW_OK);
     assert(process.mapped == PW_GUEST_PROCESS_PAGES);
@@ -186,11 +219,20 @@ int main(void)
     memcpy(&value, parameters + 0x04u, 4u);
     assert(value == process.layout.parameters_length);
     read_wide(parameters, 0x24u, text, sizeof(text));
-    /* The current directory carries its trailing separator, as Windows
-     * stores it and as ntdll writes it back. */
-    assert(strcmp(text, "C:\\windows\\") == 0);
+    /*
+     * The process's own names, for a root that came from the system namespace:
+     * the image is the module's full path under the Windows directory, the
+     * current directory is the one that image lives in, and the search path
+     * starts with that directory and then names the system directories Wine
+     * itself searches (dlls/ntdll/loader.c:2574 get_dll_load_path). A path the
+     * gate does not serve - C:\windows\system here - is named anyway, because
+     * that is what a Windows loader would search; the file service refuses it
+     * by the same rule it applies to every other name.
+     */
+    assert(strcmp(text, "C:\\windows\\system32\\") == 0);
     read_wide(parameters, 0x30u, text, sizeof(text));
-    assert(strcmp(text, "C:\\windows\\system32") == 0);
+    assert(strcmp(text, "C:\\windows\\system32;C:\\windows\\system;C:\\windows")
+           == 0);
     read_wide(parameters, 0x38u, text, sizeof(text));
     assert(strcmp(text, "C:\\windows\\system32\\ntdll.dll") == 0);
     read_wide(parameters, 0x40u, text, sizeof(text));
