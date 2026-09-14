@@ -480,6 +480,85 @@ def build_pe(spec: Spec) -> bytes:
     return bytes(image)
 
 
+# The tranche-2 application fixture. Fixed image bases keep the trace slots and
+# the callback code computable at build time; every module is PE32/i386 and
+# below 4 GiB, which is what the guest mapper needs.
+APP_IMAGE_BASE = 0x10000000
+A_IMAGE_BASE = 0x10100000
+B_IMAGE_BASE = 0x10200000
+TRACE_RVA = 0x2040                       # four dwords in the EXE's data
+TEXT_RVA = 0x1000
+TEXT_CHARACTERISTICS = 0x60000020        # code, execute, read
+DATA_CHARACTERISTICS = 0xC0000040        # initialized data, read, write
+
+
+def _record(slot_address: int, value: int) -> bytes:
+    """`mov dword ptr [slot_address], value`: what a callback records."""
+    return struct.pack("<BBII", 0xC7, 0x05, slot_address, value)
+
+
+def _callback(slot_address: int, value: int) -> bytes:
+    return _record(slot_address, value) + b"\xc3"      # then return
+
+
+def application_diamond() -> dict[str, bytes]:
+    """The generated application: an EXE, two DLLs, a diamond and TLS order.
+
+    Graph: app.exe imports a.dll by *name* and b.dll by *ordinal*; a.dll
+    forwards one of its exports to b.dll; both DLLs import kernel32.dll by
+    name, so the load graph is a diamond. Each DLL has an entry point (DllMain)
+    and a TLS callback, and each of those records a distinct value into one of
+    four trace dwords in the EXE, so a run that calls them in the wrong order -
+    or not at all - leaves a different trace than the one the fixture expects.
+    """
+    trace = APP_IMAGE_BASE + TRACE_RVA
+    slots = [trace + index * 4 for index in range(4)]
+    # DllMain at offset 0 and the TLS callback at 0x10, per DLL.
+
+    text_a = _callback(slots[0], 0xA1).ljust(0x10, b"\x90") + \
+        _callback(slots[1], 0xA2)
+    text_b = _callback(slots[2], 0xB1).ljust(0x10, b"\x90") + \
+        _callback(slots[3], 0xB2)
+
+    app = build_pe(Spec(
+        name="app.exe", pe32plus=False, image_base=APP_IMAGE_BASE,
+        entry_point_offset=0,
+        sections=[
+            Section(".text", TEXT_CHARACTERISTICS, b"\xb8\x01\x00\x00\x00\xc3"),
+            Section(".data", DATA_CHARACTERISTICS, b"\x00" * 16,
+                    virtual_size=0x1000),
+        ],
+        imports=[Import("a.dll", names=("Provide",)),
+                 Import("b.dll", ordinals=(1,))],
+    ))
+    first = build_pe(Spec(
+        name="a.dll", pe32plus=False, dll=True, image_base=A_IMAGE_BASE,
+        entry_point_offset=0,
+        sections=[
+            Section(".text", TEXT_CHARACTERISTICS, text_a),
+            Section(".data", DATA_CHARACTERISTICS, b"\x00" * 4,
+                    virtual_size=0x1000),
+        ],
+        exports=[Export("Provide", rva=TEXT_RVA),
+                 Export("Forwarded", forwarder="b.dll.Provided")],
+        imports=[Import("kernel32.dll", names=("GetLastError",))],
+        tls=Tls(callbacks=(A_IMAGE_BASE + TEXT_RVA + 0x10,)),
+    ))
+    second = build_pe(Spec(
+        name="b.dll", pe32plus=False, dll=True, image_base=B_IMAGE_BASE,
+        entry_point_offset=0,
+        sections=[
+            Section(".text", TEXT_CHARACTERISTICS, text_b),
+            Section(".data", DATA_CHARACTERISTICS, b"\x00" * 4,
+                    virtual_size=0x1000),
+        ],
+        exports=[Export("Provided", rva=TEXT_RVA)],
+        imports=[Import("kernel32.dll", names=("GetLastError",))],
+        tls=Tls(callbacks=(B_IMAGE_BASE + TEXT_RVA + 0x10,)),
+    ))
+    return {"app.exe": app, "a.dll": first, "b.dll": second}
+
+
 def sample_chain(pe32plus: bool = True) -> dict[str, bytes]:
     """A root executable, a third-party DLL it needs, and one host import.
 

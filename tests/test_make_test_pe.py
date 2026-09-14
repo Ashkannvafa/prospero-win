@@ -154,6 +154,59 @@ class SampleChainTest(unittest.TestCase):
         # A reproducible artifact is a precondition for hashed evidence.
         self.assertEqual(sorted(first), ["binkw32.dll", "sample.exe"])
 
+    def test_application_diamond(self) -> None:
+        """The tranche-2 fixture: a real application graph, pinned shape by shape.
+
+        The EXE imports by name and by ordinal, one DLL forwards an export to
+        the other, both DLLs have a DllMain and a TLS callback, and every one of
+        those records a distinct value into the EXE's trace slots - so the
+        fixture carries the ordering the loader must reproduce. The C parser
+        accepts all three images.
+        """
+        images = make_test_pe.application_diamond()
+        self.assertEqual(sorted(images), ["a.dll", "app.exe", "b.dll"])
+        trace = make_test_pe.APP_IMAGE_BASE + make_test_pe.TRACE_RVA
+
+        # Every module is PE32/i386 with a base the guest can address.
+        for name, image in images.items():
+            nt = struct.unpack_from("<I", image, 0x3C)[0]
+            self.assertEqual(struct.unpack_from("<H", image, nt + 4)[0], 0x014C,
+                             name)
+            base = struct.unpack_from("<I", image, nt + 4 + 20 + 0x1C)[0]
+            self.assertLess(base, 1 << 32, name)
+
+        # The EXE's entry point, imports by name and by ordinal.
+        app = images["app.exe"]
+        nt = struct.unpack_from("<I", app, 0x3C)[0]
+        optional = nt + 4 + 20
+        entry = struct.unpack_from("<I", app, optional + 0x10)[0]
+        text_rva = struct.unpack_from("<I", app, optional + struct.unpack_from(
+            "<H", app, nt + 4 + 16)[0] + 12)[0]
+        entry_offset = entry - text_rva + struct.unpack_from(
+            "<I", app, optional + struct.unpack_from(
+                "<H", app, nt + 4 + 16)[0] + 20)[0]
+        self.assertEqual(bytes(app[entry_offset:entry_offset + 6]),
+                         b"\xb8\x01\x00\x00\x00\xc3")
+        self.assertIn(b"a.dll\0", app)
+        self.assertIn(b"b.dll\0", app)
+
+        # The callbacks record into the EXE's four trace dwords, in the order
+        # the loader is expected to run them.
+        def records(image: bytes, slots: tuple[int, ...],
+                    values: tuple[int, ...]) -> None:
+            for slot, value in zip(slots, values):
+                self.assertIn(struct.pack("<BBII", 0xC7, 0x05, slot, value),
+                              image)
+
+        records(images["a.dll"], (trace, trace + 4), (0xA1, 0xA2))
+        records(images["b.dll"], (trace + 8, trace + 12), (0xB1, 0xB2))
+        self.assertIn(b"b.dll.Provided\0", images["a.dll"])
+        for name, image in images.items():
+            path = self.path / name
+            path.write_bytes(image)
+            self.assertEqual(field(run_inspect(str(path), "--no-map"),
+                                  "machine"), "i386")
+
     def test_forwarder_export_and_tls(self) -> None:
         """The two fixture shapes tranche 2 needs, parsed back out of the bytes.
 
