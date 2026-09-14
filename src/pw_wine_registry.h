@@ -29,6 +29,12 @@ int pw_wine_registry_create(struct PwWineCallContext *calls,
                             PwUnixCallAccess guest, void *context,
                             uint32_t *status, uint32_t *argument_index);
 
+/* NtSetValueKey (0x0060): store one value on a key the run has open. */
+int pw_wine_registry_set_value(struct PwWineCallContext *calls,
+                               const PwUnixCallFrame *frame,
+                               PwUnixCallAccess guest, void *context,
+                               uint32_t *status, uint32_t *argument_index);
+
 /* NtQueryValueKey (0x0017), KeyValuePartialInformation only. */
 int pw_wine_registry_query_value(struct PwWineCallContext *calls,
                                  const PwUnixCallFrame *frame,

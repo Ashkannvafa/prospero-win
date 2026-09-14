@@ -134,11 +134,23 @@ int pw_wine_registry_open(PwWineCallContext *calls,
         *argument_index = 1u;
         return PW_ERR_MALFORMED;
     }
-    if (pw_wine_registry_resolve(calls, attributes_pointer, guest, context,
-                             canonical, sizeof(canonical), status,
-                             argument_index) != PW_OK ||
-        *status != PW_NT_SUCCESS)
-        return PW_OK;
+    /*
+     * A resolve that *rejects* the call - an argument the run cannot read, or a
+     * name it cannot decode - is not an NTSTATUS: it is the gate refusing to
+     * service the call at all, and it has to surface as that, with the argument
+     * that failed. Swallowing it here reported an unreadable OBJECT_ATTRIBUTES
+     * as "the service is not implemented", which named the wrong problem.
+     */
+    {
+        const int resolved = pw_wine_registry_resolve(
+            calls, attributes_pointer, guest, context, canonical,
+            sizeof(canonical), status, argument_index);
+
+        if (resolved != PW_OK)
+            return resolved;
+        if (*status != PW_NT_SUCCESS)
+            return PW_OK;
+    }
     if (!calls->config->registry ||
         calls->config->registry->open(calls->config->registry->context,
                                       canonical, &token) !=
@@ -206,11 +218,23 @@ int pw_wine_registry_create(PwWineCallContext *calls,
         *argument_index = 1u;
         return PW_ERR_MALFORMED;
     }
-    if (pw_wine_registry_resolve(calls, attributes_pointer, guest, context,
-                             canonical, sizeof(canonical), status,
-                             argument_index) != PW_OK ||
-        *status != PW_NT_SUCCESS)
-        return PW_OK;
+    /*
+     * A resolve that *rejects* the call - an argument the run cannot read, or a
+     * name it cannot decode - is not an NTSTATUS: it is the gate refusing to
+     * service the call at all, and it has to surface as that, with the argument
+     * that failed. Swallowing it here reported an unreadable OBJECT_ATTRIBUTES
+     * as "the service is not implemented", which named the wrong problem.
+     */
+    {
+        const int resolved = pw_wine_registry_resolve(
+            calls, attributes_pointer, guest, context, canonical,
+            sizeof(canonical), status, argument_index);
+
+        if (resolved != PW_OK)
+            return resolved;
+        if (*status != PW_NT_SUCCESS)
+            return PW_OK;
+    }
     if (!calls->config->registry || !calls->config->registry->create) {
         *status = PW_NT_NOT_SUPPORTED;
         return PW_OK;
@@ -267,6 +291,86 @@ int pw_wine_registry_create(PwWineCallContext *calls,
  * Wine itself returns), and the value bytes only ever come from the host
  * service, never from the gate.
  */
+/*
+ * NtSetValueKey( KeyHandle, ValueName, TitleIndex, Type, Data, DataSize ): the
+ * guest writing a value on a key it has open. The key is one the gate handed
+ * out, the value name goes through the same translation a query's does, and the
+ * data is read through the validated accessor into the gate's own buffer before
+ * the service is asked to store it - so a guest pointer the run cannot read is
+ * refused before anything is stored, and the service never sees a guest
+ * address. A service without a writable store answers NOT_SUPPORTED, which is
+ * what a key on a read-only hive would say.
+ */
+int pw_wine_registry_set_value(PwWineCallContext *calls,
+                               const PwUnixCallFrame *frame,
+                               PwUnixCallAccess guest, void *context,
+                               uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t handle = frame->args[0];
+    const uint32_t name_pointer = frame->args[1];
+    const uint32_t type = frame->args[3];
+    const uint32_t data_pointer = frame->args[4];
+    const uint32_t data_size = frame->args[5];
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
+    char name[PW_WINE_GATE_MAX_PATH + 1];
+    char canonical[PW_WINE_GATE_MAX_PATH + 1];
+    uint8_t bytes[PW_WINE_GATE_MAX_VALUE];
+
+    if (pw_wine_handle_lookup(calls, handle, &object, &kind) != PW_OK ||
+        kind != PW_NT_HANDLE_KEY) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (name_pointer == 0u) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (pw_wine_path_value_name(guest, context, name_pointer, name,
+                              sizeof(name)) != PW_OK) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (pw_wine_path_value(name, canonical, sizeof(canonical), status) !=
+        PW_OK) {
+        calls->report->key_refusals++;
+        return PW_OK;
+    }
+    if (data_size > PW_WINE_GATE_MAX_VALUE ||
+        (data_size != 0u && data_pointer == 0u)) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->key_refusals++;
+        return PW_OK;
+    }
+    /* The whole value is proved readable before anything is stored. */
+    if (data_size != 0u &&
+        guest(context, data_pointer, bytes, data_size, 0) != PW_OK) {
+        *argument_index = 5u;
+        return PW_ERR_MALFORMED;
+    }
+    if (!calls->config->registry ||
+        !calls->config->registry->set_value) {
+        *status = PW_NT_NOT_SUPPORTED;
+        calls->report->key_refusals++;
+        return PW_OK;
+    }
+    if (calls->config->registry->set_value(calls->config->registry->context,
+                                           object->token, canonical, type,
+                                           bytes, data_size) !=
+        PW_WINE_REGISTRY_OK) {
+        *status = PW_NT_NOT_SUPPORTED;
+        calls->report->key_refusals++;
+        return PW_OK;
+    }
+    calls->report->key_sets++;
+    calls->report->last_value[0] = '\0';
+    if (strlen(canonical) <= PW_WINE_GATE_MAX_PATH)
+        memcpy(calls->report->last_value, canonical,
+               strlen(canonical) + 1u);
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
 int pw_wine_registry_query_value(PwWineCallContext *calls,
                                    const PwUnixCallFrame *frame,
                                    PwUnixCallAccess guest, void *context,

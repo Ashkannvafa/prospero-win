@@ -76,6 +76,14 @@ enum {
     SID_VALUE_RVA = DATA_RVA + 0x7B0,       /* the SID subauthority read back */
     DISPOSITION_RVA = DATA_RVA + 0x7C0,
     CREATE_STATUS_RVA = DATA_RVA + 0x7D0,
+    /* The value the guest writes and reads back, after every other slot: the
+     * layout is hand-written, and a slot placed where another one lives is
+     * exactly the mistake the asserts below exist to catch. */
+    WRITTEN_RVA = DATA_RVA + 0x7D8,          /* a value name the guest writes */
+    WRITTEN_TEXT_RVA = DATA_RVA + 0x7E0,
+    WRITTEN_DATA_RVA = DATA_RVA + 0x7F0,     /* the bytes it writes */
+    WRITTEN_STATUS_RVA = DATA_RVA + 0x7F4,   /* the set's statuses */
+    WRITTEN_READ_RVA = DATA_RVA + 0x7FC,
     THUNK_RVA = TEXT_RVA + 0x800,
     STUB_SYSINFO_RVA = TEXT_RVA + 0x810,
     STUB_OPENKEY_RVA = TEXT_RVA + 0x820,
@@ -83,7 +91,8 @@ enum {
     STUB_CLOSE_RVA = TEXT_RVA + 0x840,
     STUB_TOKEN_RVA = TEXT_RVA + 0x850,
     STUB_CREATE_RVA = TEXT_RVA + 0x860,
-    STUB_STOP_RVA = TEXT_RVA + 0x870,
+    STUB_SETVALUE_RVA = TEXT_RVA + 0x870,   /* NtSetValueKey, 0x60 */
+    STUB_STOP_RVA = TEXT_RVA + 0x880,       /* the unhandled call, after it */
     CALLER_RVA = TEXT_RVA,
     KEY_VALUE_PARTIAL_INFORMATION = 2u,
 };
@@ -300,6 +309,9 @@ static void emit_query_value(uint32_t handle_rva, uint32_t name_rva,
     emit_store_eax(status_rva);
 }
 
+/* The four bytes the guest writes under its own value name. */
+static const uint8_t written_bytes[4] = { 0x11u, 0x22u, 0x33u, 0x44u };
+
 static size_t build_module(void)
 {
     PeFixtureSpec spec;
@@ -316,6 +328,9 @@ static size_t build_module(void)
     put_unicode_string(MACHINE_RVA, MACHINE_TEXT_RVA, "\\Registry\\Machine");
     put_unicode_string(WINE_RVA, WINE_TEXT_RVA, "Software\\Wine");
     put_unicode_string(VERSION_VALUE_RVA, VERSION_VALUE_TEXT_RVA, "Version");
+    put_unicode_string(WRITTEN_RVA, WRITTEN_TEXT_RVA, "Written");
+    memcpy(data + (WRITTEN_DATA_RVA - DATA_RVA), written_bytes,
+           sizeof(written_bytes));
     put_unicode_string(DEVICE_RVA, DEVICE_TEXT_RVA,
                        "\\Device\\HarddiskVolume0\\X");
     put_unicode_string(TRAVERSAL_RVA, TRAVERSAL_TEXT_RVA,
@@ -428,6 +443,39 @@ static size_t build_module(void)
     emit_call(STUB_CREATE_RVA);
     emit_store_eax(CREATE_STATUS_RVA);
 
+    /*
+     * NtSetValueKey and the query that reads the value back: the guest writes
+     * four bytes under a name the profile does not declare, and asks for that
+     * name again. The bytes it reads out of its own buffer then travel into a
+     * refused call, so the transcript carries what the guest actually saw -
+     * the round trip can only be right if the value the service stored is the
+     * one the gate handed back.
+     */
+    emit_push_imm32(4u);                     /* DataSize */
+    emit_push_absolute(WRITTEN_DATA_RVA);    /* Data */
+    emit_push_imm8(0x01);                    /* Type: REG_SZ */
+    emit_push_imm8(0x00);                    /* TitleIndex */
+    emit_push_absolute(WRITTEN_RVA);         /* ValueName */
+    emit_load_eax(USER_HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_SETVALUE_RVA);
+    emit_store_eax(WRITTEN_STATUS_RVA);
+    emit_query_value(USER_HANDLE_RVA, WRITTEN_RVA, 32u,
+                     KEY_VALUE_PARTIAL_INFORMATION, WRITTEN_STATUS_RVA + 4u);
+    emit_load_eax(VALUE_BUFFER_RVA + 12u);   /* the value's first dword */
+    emit_store_eax(WRITTEN_READ_RVA);
+    /* The value the guest read back, as the handle of a query refused before
+     * it looks at one: the transcript then carries it. */
+    emit_push_absolute(VALUE_RET_RVA);
+    emit_push_imm32(32u);
+    emit_push_absolute(VALUE_BUFFER_RVA);
+    emit_push_imm8((uint8_t)KEY_VALUE_PARTIAL_INFORMATION);
+    emit_push_absolute(GLOBALFLAG_RVA);
+    emit_load_eax(WRITTEN_READ_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_QUERYVALUE_RVA);
+    emit_store_eax(WRITTEN_STATUS_RVA + 8u);
+
     /* Every key handle the run opened is closed again. */
     emit_load_eax(SESSION_HANDLE_RVA);
     emit_byte(0x50);
@@ -467,7 +515,8 @@ static size_t build_module(void)
     emit_stub(STUB_QUERYVALUE_RVA, 0x0017u, 24u);/* NtQueryValueKey */
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);      /* NtClose */
     emit_stub(STUB_TOKEN_RVA, 0x0021u, 20u);     /* NtQueryInformationToken */
-    emit_stub(STUB_CREATE_RVA, 0x001du, 28u);    /* NtCreateKey */
+    emit_stub(STUB_CREATE_RVA, 0x001du, 28u);
+    emit_stub(STUB_SETVALUE_RVA, 0x0060u, 24u);    /* NtCreateKey */
     /* A call this bridge has no handler for: the run must stop and name it
      * exactly. Update it when the handler lands. */
     emit_stub(STUB_STOP_RVA, PW_TEST_UNHANDLED_CALL_ID, PW_TEST_UNHANDLED_CALL_ARGS);
@@ -491,6 +540,7 @@ static size_t build_module(void)
     emit_data_reloc(TRAVERSAL_ATTRS_RVA + 8u);
     emit_data_reloc(USER_RVA + 4u);
     emit_data_reloc(USER_ATTRS_RVA + 8u);
+    emit_data_reloc(WRITTEN_RVA + 4u);
 
     memset(&spec, 0, sizeof(spec));
     spec.pe32plus = 0;
@@ -593,6 +643,34 @@ static PwWineRegistryStatus fake_registry_open(void *context, const char *path,
     return PW_WINE_REGISTRY_NOT_FOUND;
 }
 
+/*
+ * What the guest has written, so a query for that name reads it back. A single
+ * slot is enough for this test: the point is that the value the gate *handed*
+ * the service comes back out of a query, not that the store is clever.
+ */
+static char fake_written_name[64];
+static uint8_t fake_written_bytes[64];
+static uint32_t fake_written_size;
+static uint32_t fake_written_type;
+static unsigned fake_sets;
+
+static PwWineRegistryStatus fake_registry_set(void *context, void *token,
+                                              const char *value, uint32_t type,
+                                              const void *bytes, uint32_t size)
+{
+    (void)context;
+    if (!token || size > sizeof(fake_written_bytes) ||
+        strlen(value) >= sizeof(fake_written_name))
+        return PW_WINE_REGISTRY_ERROR;
+    memcpy(fake_written_name, value, strlen(value) + 1u);
+    if (size)
+        memcpy(fake_written_bytes, bytes, size);
+    fake_written_size = size;
+    fake_written_type = type;
+    fake_sets++;
+    return PW_WINE_REGISTRY_OK;
+}
+
 static PwWineRegistryStatus fake_registry_query(void *context, void *token,
                                                 const char *value,
                                                 uint32_t *type,
@@ -604,6 +682,12 @@ static PwWineRegistryStatus fake_registry_query(void *context, void *token,
     (void)context;
     if (!key)
         return PW_WINE_REGISTRY_ERROR;
+    if (fake_sets && strcmp(fake_written_name, value) == 0) {
+        *type = fake_written_type;
+        *bytes = fake_written_bytes;
+        *size = fake_written_size;
+        return PW_WINE_REGISTRY_OK;
+    }
     for (uint32_t index = 0; index < key->value_count; ++index) {
         if (strcmp(key->values[index].name, value) != 0)
             continue;
@@ -685,7 +769,7 @@ int main(void)
     const PwWineRegistryService registry = {
         .context = NULL, .open = fake_registry_open,
         .query = fake_registry_query, .create = fake_registry_create,
-        .close = fake_registry_close,
+        .set_value = fake_registry_set, .close = fake_registry_close,
     };
     PwWineGateConfig config;
     PwWineGateReport report;
@@ -722,11 +806,11 @@ int main(void)
     assert(report.registry_configured == 1u);
     assert(report.stop == PW_WINE_STOP_UNIX_CALL_UNIMPLEMENTED);
     assert(report.observed_syscall_id == PW_TEST_UNHANDLED_CALL_ID);
-    assert(report.calls.records == 23u);
-    assert(report.calls.handled == 22u);
+    assert(report.calls.records == 26u);
+    assert(report.calls.handled == 25u);
     assert(report.calls.unimplemented == 1u);
     assert(report.calls.rejected == 0u && report.calls.unknown == 0u);
-    assert(report.calls_serviced == 22u);
+    assert(report.calls_serviced == 25u);
 
     /* The Wine version: the guest asked for the one class ntdll initializes
      * from, and the gate answered with the host's block. */
@@ -766,8 +850,8 @@ int main(void)
                   "\\registry\\user\\s-1-5-21-1-2-3-12074") == 0);
 
     /* The values: one found, one absent, one that does not fit, twice. */
-    assert(report.key_queries == 5u);
-    assert(report.key_values == 4u);
+    assert(report.key_queries == 6u);
+    assert(report.key_values == 5u);
     assert(report.key_refusals == 5u);
     assert(report.calls.sequence[6].id == 0x0017u);
     assert(report.calls.sequence[6].status == PW_NT_SUCCESS);
@@ -789,6 +873,24 @@ int main(void)
     assert(report.key_creates == 1u);
     assert(report.calls.sequence[17].id == 0x001du);
     assert(report.calls.sequence[17].status == PW_NT_SUCCESS);
+    /*
+     * NtSetValueKey stored the guest's value and the query after it read the
+     * same bytes back: the guest's own buffer holds what the service was
+     * handed, so the round trip can only be right if the gate moved the bytes
+     * out of the guest, through the service, and back.
+     */
+    assert(report.key_sets == 1u);
+    assert(report.calls.sequence[18].id == 0x0060u);
+    assert(report.calls.sequence[18].status == PW_NT_SUCCESS);
+    assert(strcmp(report.last_value, "written") == 0);
+    assert(report.calls.sequence[19].id == 0x0017u);
+    assert(report.calls.sequence[19].status == PW_NT_SUCCESS);
+    /* The four bytes the guest read back out of its own buffer travel as the
+     * handle of a query that is refused before it looks at one, so the
+     * transcript carries the value the round trip really produced. */
+    assert(report.calls.sequence[20].id == 0x0017u);
+    assert(report.calls.sequence[20].status == PW_NT_INVALID_HANDLE);
+    assert(report.calls.sequence[20].args[0] == 0x44332211u);
     /* The create asked the service about the user hive root as well. */
     assert(fake_opens == 4u);
     assert(strcmp(fake_paths[3],
@@ -804,9 +906,9 @@ int main(void)
      * memory: the SID's last subauthority as the host declared it (12074), and
      * the disposition the create reported (REG_OPENED_EXISTING_KEY).
      */
-    assert(report.calls.sequence[22].id == PW_TEST_UNHANDLED_CALL_ID);
-    assert(report.calls.sequence[22].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
-    assert(report.calls.sequence[22].args[0] == 12074u);
-    assert(report.calls.sequence[22].args[1] == 2u);
+    assert(report.calls.sequence[25].id == PW_TEST_UNHANDLED_CALL_ID);
+    assert(report.calls.sequence[25].outcome == PW_UNIX_CALL_UNIMPLEMENTED);
+    assert(report.calls.sequence[25].args[0] == 12074u);
+    assert(report.calls.sequence[25].args[1] == 2u);
     return 0;
 }

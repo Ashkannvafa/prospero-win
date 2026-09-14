@@ -645,6 +645,15 @@ NtOpenKeyEx                   (0x00b6) the same open as NtOpenKey with the
                                        Wine only warns about: REG_OPTION_OPEN_LINK
                                        asks for a link object rather than the
                                        key, and this profile carries none
+NtSetValueKey                 (0x0060) one value on a key the run has open:
+                                       the name goes through the same
+                                       translation a query's does, the data is
+                                       read through the validated accessor into
+                                       the gate's own buffer before the service
+                                       is asked to store it, and a service
+                                       without a writable store answers
+                                       STATUS_NOT_SUPPORTED rather than
+                                       pretending the value is there
 NtQueryValueKey               (0x0017) KeyValuePartialInformation only
 NtQuerySystemInformation      (0x0036) SystemWineVersionInformation (1000) only
 NtCreateKey                   (0x001d) create-or-open against the run's own

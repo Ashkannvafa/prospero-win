@@ -136,6 +136,15 @@ typedef struct PwWineRegistryService {
     PwWineRegistryStatus (*query)(void *context, void *token,
                                   const char *value, uint32_t *type,
                                   const void **bytes, uint32_t *size);
+    /* NtSetValueKey: store one value on the key the token names, replacing the
+     * value of that name if the key already has one. The name is canonical and
+     * lower-case ("" is the key's default value) and the bytes are the value's
+     * own data, already validated and bounded by the gate; a service that
+     * cannot store it answers DENIED or ERROR rather than pretending the value
+     * is there. */
+    PwWineRegistryStatus (*set_value)(void *context, void *token,
+                                      const char *value, uint32_t type,
+                                      const void *bytes, uint32_t size);
     void (*close)(void *context, void *token);
 } PwWineRegistryService;
 
@@ -402,6 +411,8 @@ typedef struct PwWineGateReport {
     uint64_t key_creates;
     uint64_t key_queries;
     uint64_t key_values;            /* queries answered with a value */
+    uint64_t key_sets;              /* values NtSetValueKey stored */
+    char last_value[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t key_refusals;
     uint32_t registry_configured;
     char last_key[PW_WINE_GATE_MAX_PATH + 1];

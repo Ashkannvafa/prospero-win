@@ -226,6 +226,26 @@ static PwWineRegistryStatus host_registry_open(void *context, const char *path,
     return PW_WINE_REGISTRY_NOT_FOUND;
 }
 
+/*
+ * The values the guest has written, which a later query on the same key reads
+ * back. NT replaces the value of that name, so a second write to the same name
+ * overwrites the first; the pool is bounded and a store that is full answers
+ * the failure of the write rather than dropping it.
+ */
+#define HOST_REGISTRY_MAX_STORED_VALUES 64
+#define HOST_REGISTRY_MAX_VALUE_BYTES PW_WINE_GATE_MAX_VALUE
+
+typedef struct HostStoredValue {
+    HostRegistryKey *key;
+    char name[128];
+    uint32_t type;
+    uint32_t size;
+    uint32_t used;
+    uint8_t bytes[HOST_REGISTRY_MAX_VALUE_BYTES];
+} HostStoredValue;
+
+static HostStoredValue host_stored_values[HOST_REGISTRY_MAX_STORED_VALUES];
+
 static PwWineRegistryStatus host_registry_query(void *context, void *token,
                                                 const char *value,
                                                 uint32_t *type,
@@ -245,7 +265,66 @@ static PwWineRegistryStatus host_registry_query(void *context, void *token,
         *size = sizeof(uint32_t);
         return PW_WINE_REGISTRY_OK;
     }
+    for (uint32_t index = 0; index < HOST_REGISTRY_MAX_STORED_VALUES;
+         ++index) {
+        if (!host_stored_values[index].used ||
+            host_stored_values[index].key != key ||
+            strcmp(host_stored_values[index].name, value) != 0)
+            continue;
+        *type = host_stored_values[index].type;
+        *bytes = host_stored_values[index].bytes;
+        *size = host_stored_values[index].size;
+        return PW_WINE_REGISTRY_OK;
+    }
     return PW_WINE_REGISTRY_NOT_FOUND;
+}
+
+/*
+ * NtSetValueKey: store the value the gate read out of the guest's own buffer.
+ * A name the key already carries is replaced, which is what NT does; a store
+ * with no room left for a new name answers ERROR so the guest is told the write
+ * did not happen.
+ */
+static PwWineRegistryStatus host_registry_set_value(void *context, void *token,
+                                                    const char *value,
+                                                    uint32_t type,
+                                                    const void *bytes,
+                                                    uint32_t size)
+{
+    HostRegistryKey *key = token;
+    HostStoredValue *free_slot = NULL;
+
+    (void)context;
+    if (!key || size > HOST_REGISTRY_MAX_VALUE_BYTES ||
+        strlen(value) >= sizeof(host_stored_values[0].name))
+        return PW_WINE_REGISTRY_ERROR;
+    for (uint32_t index = 0; index < HOST_REGISTRY_MAX_STORED_VALUES;
+         ++index) {
+        HostStoredValue *stored = &host_stored_values[index];
+
+        if (!stored->used) {
+            if (!free_slot)
+                free_slot = stored;
+            continue;
+        }
+        if (stored->key == key && strcmp(stored->name, value) == 0) {
+            stored->type = type;
+            stored->size = size;
+            if (size)
+                memcpy(stored->bytes, bytes, size);
+            return PW_WINE_REGISTRY_OK;
+        }
+    }
+    if (!free_slot)
+        return PW_WINE_REGISTRY_ERROR;
+    free_slot->key = key;
+    memcpy(free_slot->name, value, strlen(value) + 1u);
+    free_slot->type = type;
+    free_slot->size = size;
+    if (size)
+        memcpy(free_slot->bytes, bytes, size);
+    free_slot->used = 1u;
+    return PW_WINE_REGISTRY_OK;
 }
 
 /*
@@ -290,7 +369,8 @@ static void host_registry_close(void *context, void *token)
 
 static const PwWineRegistryService host_registry = {
     .context = NULL, .open = host_registry_open, .query = host_registry_query,
-    .create = host_registry_create, .close = host_registry_close,
+    .create = host_registry_create, .set_value = host_registry_set_value,
+    .close = host_registry_close,
 };
 
 /*

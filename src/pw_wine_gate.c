@@ -1013,6 +1013,8 @@ static const PwNtHandler dispatch_table[] = {
       pw_wine_registry_create },
     { 0x0017u, { 2u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
       pw_wine_registry_query_value },
+    { 0x0060u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
+      pw_wine_registry_set_value },
     { 0x0021u, { 1u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
       pw_wine_query_token },
     { 0x0058u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_objects.c",

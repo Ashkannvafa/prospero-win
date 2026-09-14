@@ -150,20 +150,22 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    # Moved deliberately in the commit that makes the registry profile a store
-    # rather than a fixed list: the runtime's startup creates its user hive and
-    # then opens the keys it created, and a profile that answers "no such key"
-    # to a key it was just asked to create leaves the caller recursing - the
-    # run spent its whole call budget on 200 opens of HKCU\Control Panel. With
-    # a writable store the loop is gone and the run stops at the next service
-    # it does not have, NtSetValueKey (i386 0x0060). The fault address with
+    # Moved deliberately in the commit that serves NtSetValueKey and stops
+    # reporting a refused argument as an unimplemented service: with a writable
+    # value store the runtime writes the values it created keys for, and the
+    # next thing it does is create a key *named* by kernelbase's own locale
+    # cache sentinel - the emoji subkey dlls/kernelbase/locale.c:54 calls
+    # world_subkey. This gate's registry names are ASCII, so that call is
+    # refused, and the run now stops as a *rejected* call naming the argument
+    # (its OBJECT_ATTRIBUTES) instead of claiming the service does not exist.
+    # Non-ASCII names are the next piece of work. The fault address with
     # residency on is unchanged while the faulting block stays the same
     # (0x105c1aa7, 9 instructions, resident mask 0x43), which is the signature
     # the private report records for it.
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "unix-call-unimplemented", "retired": "558424",
-                      "blocks": "2374"},
+    "residency_off": {"stop": "unix-call-rejected", "retired": "570878",
+                      "blocks": "2507"},
 }
 
 

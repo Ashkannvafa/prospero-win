@@ -316,7 +316,10 @@ static void test_guest_strings(void)
     assert(out[0] == '\0');
     assert(pw_wine_path_read_unicode(fake_access, &guest, 0u, out,
                                      sizeof(out)) == PW_ERR_MALFORMED);
-    /* A non-ASCII unit is refused rather than folded into a host name. */
+    /* A non-ASCII unit is refused rather than folded into a host name: the
+     * runtime's own locale cache asks for a subkey named with an emoji
+     * sequence (dlls/kernelbase/locale.c:54 world_subkey), which is the case
+     * the gate cannot represent yet and reports as a refused call. */
     put_string(&guest, 2u, 16u, "");
     {
         const uint16_t unit = 0x00e9u;
