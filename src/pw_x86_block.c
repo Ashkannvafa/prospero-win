@@ -2328,10 +2328,27 @@ analyze_and_emit:
                     byte(&e,0x66);byte(&e,0x0f);byte(&e,0x7e);byte(&e,0x00);
                 }
             } else if(sse_kind==PW_SSE_MOVQ_STORE) {
-                load_guest_xmm(&e,reg);
-                effective_address(&e,&operand,&block->exit_contract);
-                memory_address_width(&e,2,8u);
-                byte(&e,0x66);byte(&e,0x0f);byte(&e,0xd6);byte(&e,0x00);
+                if(operand.mod==3) {
+                    /*
+                     * "66 0f d6" with a register operand is the register form
+                     * of the same opcode: the low 64 bits move into the *r/m*
+                     * register and its upper half is zeroed. Emitting it as a
+                     * store, as this path used to, wrote eight bytes to the
+                     * address the r/m register happened to hold - memory
+                     * corruption that the form matrix found as a translated
+                     * window full of another register's value.
+                     */
+                    load_guest_xmm(&e,operand.rm);          /* destination */
+                    load_guest_xmm1(&e,reg);                /* source */
+                    byte(&e,0x66);byte(&e,0x0f);byte(&e,0xd6);
+                    byte(&e,0xc8);                          /* movq xmm0, xmm1 */
+                    store_guest_xmm(&e,operand.rm);
+                } else {
+                    load_guest_xmm(&e,reg);
+                    effective_address(&e,&operand,&block->exit_contract);
+                    memory_address_width(&e,2,8u);
+                    byte(&e,0x66);byte(&e,0x0f);byte(&e,0xd6);byte(&e,0x00);
+                }
             } else if(sse_kind==PW_SSE_XMM_RM) {
                 load_guest_xmm(&e,reg);
                 if(operand.mod==3) {

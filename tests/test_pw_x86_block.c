@@ -47,6 +47,220 @@ static int run_mode(const uint8_t *source, size_t bytes, uint32_t pc,
     pw_x86_commit_canonical_flags(&state);
     return status;
 }
+
+/*
+ * The form matrix the early review asked for: every accepted 0f opcode - which
+ * is more than SSE, since the same space carries BT/BTS/BTR/BTC, CMOVcc and
+ * BSF/BSR - in its register and its memory form, executed here through the
+ * translator and, by tests/test_pw_sse_matrix.py, as native i386 assembled
+ * from the same bytes with the same initial state.
+ *
+ * The oracle cannot be the instruction the candidate emits, because that is
+ * what the translator executes. It is the same instruction assembled by a
+ * different toolchain from the same bytes, run on the same CPU but with the
+ * operands set up by an independent program; the whole state after the
+ * instruction is compared byte for byte, so a wrong operand, direction, width,
+ * condition or destination is visible even when the opcode is accepted.
+ *
+ * Three defects came out of this matrix: PMOVMSKB accepting a memory operand
+ * the ISA does not have (a host sigill), the bit-test family validating the
+ * base address while the CPU reads the bit-string unit, and CMOVcc with a
+ * memory source moving unconditionally because the memory guard overwrote the
+ * condition where it had been kept.
+ *
+ * The accepted set is discovered by asking the translator rather than by
+ * repeating the decoder's tables here, so an opcode added to the decoder joins
+ * the matrix and one that stops being accepted leaves it.
+ */
+enum {
+    /* Fixed guest address of the comparison window, inside the page this
+     * harness reserves for the guest stack. The native oracle maps the same
+     * address, so EBX and every dereference are identical on both sides. */
+    MATRIX_WINDOW = 0x03000800,
+    MATRIX_WINDOW_BYTES = 64,
+    MATRIX_XMM_BYTES = 128,
+    MATRIX_GPR_BYTES = 32,
+    /* GPRs, XMMs and the window. */
+    MATRIX_STATE_BYTES = MATRIX_GPR_BYTES + MATRIX_XMM_BYTES +
+                         MATRIX_WINDOW_BYTES,
+    MATRIX_MAX_FORMS = 512,
+};
+
+static void matrix_init(uint8_t gprs[MATRIX_GPR_BYTES],
+                        uint8_t xmm[MATRIX_XMM_BYTES],
+                        uint8_t window[MATRIX_WINDOW_BYTES])
+{
+    for (unsigned index = 0; index < 8u; ++index) {
+        /* Distinct patterns, so a swapped source and destination cannot look
+         * right by symmetry. EBX is the window base; ESP is skipped by the
+         * comparison because the native oracle runs on the process stack. */
+        const uint32_t value = index == 3u ? MATRIX_WINDOW
+                                           : 0x11111111u * (index + 1u);
+
+        memcpy(&gprs[index * 4u], &value, 4u);
+    }
+    for (unsigned index = 0; index < MATRIX_XMM_BYTES; ++index)
+        xmm[index] = (uint8_t)(0x10u + index);
+    for (unsigned index = 0; index < MATRIX_WINDOW_BYTES; ++index)
+        window[index] = (uint8_t)(0x80u + index);
+}
+
+/*
+ * A form starts from the same state every time, and the only state it may see
+ * is the initial state plus what its own instruction did. That means resetting
+ * the whole context, not just the fields this file happens to set: an earlier
+ * version kept process-level state between forms and produced a crash that
+ * looked like a form's fault until the real cause - the bit-string guard
+ * bypass - was found.
+ */
+static void matrix_load(const uint8_t *gprs, const uint8_t *xmm,
+                        const uint8_t *window)
+{
+    const uint32_t stack_low = state.stack_low, stack_high = state.stack_high;
+
+    memset(&state, 0, sizeof(state));
+    state.stack_low = stack_low;
+    state.stack_high = stack_high;
+    state.gpr[4] = stack_high;
+    memcpy(state.gpr, gprs, MATRIX_GPR_BYTES);
+    memcpy(state.fp.xmm, xmm, MATRIX_XMM_BYTES);
+    memcpy((void *)(uintptr_t)MATRIX_WINDOW, window, MATRIX_WINDOW_BYTES);
+    state.memory_count = 1u;
+    state.memory[0] = (PwX86Memory){ stack_low, stack_high,
+                                     PW_X86_READ | PW_X86_WRITE };
+}
+
+static void matrix_read(uint8_t *out)
+{
+    memcpy(out, state.gpr, MATRIX_GPR_BYTES);
+    memcpy(out + MATRIX_GPR_BYTES, state.fp.xmm, MATRIX_XMM_BYTES);
+    memcpy(out + MATRIX_GPR_BYTES + MATRIX_XMM_BYTES,
+           (void *)(uintptr_t)MATRIX_WINDOW, MATRIX_WINDOW_BYTES);
+}
+
+/*
+ * The instruction bytes for one form: [prefix] 0f <opcode> <modrm> [imm].
+ * form[3] is the length the *translator* consumed, not an assumption about the
+ * encoding: some 0f opcodes (BSWAP among them) carry their operand in the
+ * opcode byte and consume no ModRM, so the matrix records what the translator
+ * measured and hands exactly those bytes to the native oracle.
+ */
+static unsigned matrix_source(const uint8_t form[4], uint8_t *source)
+{
+    const unsigned base = form[0] == 0u ? 0u : 1u;
+
+    if (base)
+        source[0] = form[0];
+    source[base] = 0x0fu;
+    source[base + 1u] = form[1];
+    source[base + 2u] = form[2];
+    source[base + 3u] = 0x03u;          /* imm8: a valid lane for all three */
+    return form[3];
+}
+
+static unsigned matrix_forms(uint8_t forms[MATRIX_MAX_FORMS][4])
+{
+    static const uint8_t prefixes[4] = { 0x66u, 0xf3u, 0xf2u, 0x00u };
+    uint8_t scratch[4096];
+    unsigned count = 0u;
+
+    for (unsigned prefix = 0; prefix < 4u; ++prefix)
+        for (unsigned opcode = 0; opcode < 256u; ++opcode)
+            for (unsigned memory = 0; memory < 2u; ++memory) {
+                PwX86Block block;
+                uint8_t form[4] = { prefixes[prefix], (uint8_t)opcode,
+                                    memory ? 0x03u : 0xd3u, 0u };
+                uint8_t source[5];
+                const unsigned base = prefixes[prefix] ? 1u : 0u;
+                unsigned length = base + 3u;    /* prefix 0f op modrm */
+                int status;
+
+                form[3] = (uint8_t)length;
+                status = pw_x86_translate(source,
+                                          matrix_source(form, source), 0x2000,
+                                          scratch, sizeof(scratch), &block);
+                if (status == PW_ERR_TRUNCATED) {
+                    ++length;                   /* one immediate byte */
+                    form[3] = (uint8_t)length;
+                    status = pw_x86_translate(source,
+                                              matrix_source(form, source),
+                                              0x2000, scratch,
+                                              sizeof(scratch), &block);
+                }
+                if (status != PW_OK)
+                    continue;
+                /* Trust the measured length: BSWAP and friends consume no
+                 * ModRM, and the oracle must see exactly these bytes. */
+                form[3] = (uint8_t)block.source_bytes;
+                assert(count < MATRIX_MAX_FORMS);
+                memcpy(forms[count++], form, sizeof(form));
+            }
+    return count;
+}
+
+static int sse_matrix(void)
+{
+    static uint8_t forms[MATRIX_MAX_FORMS][4];
+    uint8_t gprs[MATRIX_GPR_BYTES], xmm[MATRIX_XMM_BYTES];
+    uint8_t window[MATRIX_WINDOW_BYTES];
+    uint8_t reference[MATRIX_STATE_BYTES];
+    const unsigned count = matrix_forms(forms);
+
+    assert(count > 0u);
+    matrix_init(gprs, xmm, window);
+    /* The generator replays this header, so the oracle starts from the
+     * harness's own state rather than from a second copy that could drift. */
+    assert(fwrite(gprs, 1u, sizeof(gprs), stdout) == sizeof(gprs));
+    assert(fwrite(xmm, 1u, sizeof(xmm), stdout) == sizeof(xmm));
+    assert(fwrite(window, 1u, sizeof(window), stdout) == sizeof(window));
+    for (unsigned index = 0; index < count; ++index) {
+        uint8_t source[5];
+        uint8_t after[MATRIX_STATE_BYTES];
+        uint8_t descriptor[5];
+        const unsigned length = matrix_source(forms[index], source);
+        int executed = 1;
+
+        /* All four residency/lazy-flag combinations must agree: a mode
+         * difference is a defect class this matrix is expected to catch. */
+        for (unsigned mode = 0; mode < 4u; ++mode) {
+            uint8_t probe_code[4096];
+            PwX86Block probe;
+
+            /* A form the default modes accept may still be refused under one
+             * of the four combinations, and the harness must record that
+             * rather than assert inside run_mode(). */
+            if (pw_x86_translate_ext(source, length, 0x2000, probe_code,
+                                     sizeof(probe_code), &probe, mode & 1u,
+                                     mode >> 1) != PW_OK) {
+                executed = 0;
+                break;
+            }
+            matrix_load(gprs, xmm, window);
+            if (run_mode(source, length, 0x2000, mode & 1u, mode >> 1) !=
+                PW_OK) {
+                /* The guard refused this operand: a form whose operands the
+                 * initial state sends outside the declared region has no
+                 * state to compare, and the native oracle must not run it
+                 * either. Refusals are records too, so the set is visible. */
+                executed = 0;
+                break;
+            }
+            matrix_read(after);
+            if (mode == 0u)
+                memcpy(reference, after, sizeof(after));
+            else
+                assert(memcmp(reference, after, sizeof(after)) == 0);
+        }
+        memcpy(descriptor, forms[index], sizeof(forms[index]));
+        descriptor[4] = (uint8_t)executed;
+        assert(fwrite(descriptor, 1u, sizeof(descriptor), stdout) ==
+               sizeof(descriptor));
+        if (executed)
+            assert(fwrite(reference, 1u, sizeof(reference), stdout) ==
+                   sizeof(reference));
+    }
+    return 0;
+}
 static void addressing_tests(void)
 {
     memset(state.gpr,0,sizeof(state.gpr));
@@ -1163,6 +1377,41 @@ static void sse_and_scan_tests(void)
         state.memory_count=saved_count;
     }
     /*
+     * "66 0f d6" with a register operand moves the low 64 bits into the r/m
+     * register and zeroes its upper half; it is not a store. Emitting it as a
+     * store wrote the window's address as data - the form matrix caught it as a
+     * translated window holding another register's value.
+     */
+    {
+        const uint8_t movq_reg_store[]={0x66,0x0f,0xd6,0xd3}; /* movq xmm3,xmm2 */
+        const uint32_t window=0x03000800u;
+        const PwX86Memory saved_memory=state.memory[0];
+        const uint32_t saved_count=state.memory_count;
+        uint32_t window_before[4];
+
+        memcpy(window_before,(void *)(uintptr_t)window,sizeof(window_before));
+        state.memory_count=1;
+        state.memory[0]=(PwX86Memory){state.stack_low,state.stack_high,
+                                      PW_X86_READ|PW_X86_WRITE};
+        memset(state.fp.xmm,0,sizeof(state.fp.xmm));
+        for(unsigned unit=0;unit<16;unit++) {
+            state.fp.xmm[2][unit]=(uint8_t)(0x20u+unit);
+            state.fp.xmm[3][unit]=(uint8_t)(0x30u+unit);
+        }
+        state.gpr[3]=window;
+        assert(run(movq_reg_store,sizeof(movq_reg_store),0x9800)==0);
+        for(unsigned unit=0;unit<8;unit++)
+            assert(state.fp.xmm[3][unit]==(uint8_t)(0x20u+unit));
+        for(unsigned unit=8;unit<16;unit++)
+            assert(state.fp.xmm[3][unit]==0u);          /* upper half zeroed */
+        for(unsigned unit=0;unit<16;unit++)
+            assert(state.fp.xmm[2][unit]==(uint8_t)(0x20u+unit));
+        assert(memcmp(window_before,(void *)(uintptr_t)window,
+                      sizeof(window_before))==0);       /* no store happened */
+        state.memory[0]=saved_memory;
+        state.memory_count=saved_count;
+    }
+    /*
      * PMOVMSKB's r/m operand is always an XMM register - the ISA has no memory
      * form - so a ModRM that names memory has to be refused rather than
      * re-emitted. The SSE form matrix (tests/test_pw_sse_matrix.py) found the
@@ -1368,6 +1617,11 @@ int main(int argc, char **argv)
     assert(backend.commit(NULL,&stack,0,stack.bytes,PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
     state.stack_low=0x03000000; state.stack_high=0x03001000;
     state.gpr[4]=state.stack_high;
+    /* The form matrix is a mode of its own: it prints the initial state and
+     * the state after every accepted form for the native oracle in
+     * tests/test_pw_sse_matrix.py to compare against, then returns. */
+    if (argc==2 && strcmp(argv[1],"--sse-matrix")==0)
+        return sse_matrix();
     string_tests();
     muldiv_tests();
     /* Independent reference in test_pw_x86_reference.S executes these

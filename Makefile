@@ -115,6 +115,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_validate_pe_map_evidence.py
 	python3 tests/test_validate_runtime_evidence.py
 	python3 tests/test_x86_differential.py
+	python3 tests/test_pw_sse_matrix.py
 	python3 tests/test_trace_x86_entry.py
 	python3 tests/test_inventory_imports.py
 	python3 tests/test_wine_runtime_manifest.py
