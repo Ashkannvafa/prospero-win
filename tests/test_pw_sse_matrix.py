@@ -16,8 +16,16 @@ memory operand the ISA does not have (a host sigill) and the bit-test family
 validating the base address while the CPU reads the bit-string unit
 ``base + width*(offset DIV (width*8))``.
 
-Only ESP is skipped in the comparison: the native program runs on the process
-stack and the harness on the guest stack, and none of these forms touches ESP.
+What the comparison covers, exactly: the two runners have different stacks by
+construction (the native program runs on one it restores per form, the harness
+on the guest stack), so the ESP word is not compared for any form. That means
+the one accepted form that *writes* ESP, `bswap esp` (`0f cc`), has its ESP
+effect excluded rather than checked, and it is listed explicitly below so a
+second one cannot appear unnoticed; every other effect of that form, and every
+effect of every other form, is compared byte for byte. Defined EFLAGS effects
+(the bit-test, BSF/BSR and CMOVcc families) are not part of this state, so they
+keep their own tests in tests/test_pw_x86_block.c - this oracle is a data-state
+oracle and does not claim to be an instruction-effects oracle.
 """
 
 from __future__ import annotations
@@ -39,6 +47,9 @@ DESCRIPTOR_BYTES = 5
 ESP_OFFSET = 16
 ESP_END = ESP_OFFSET + 4
 WINDOW_ADDRESS = 0x03000800
+# The accepted forms that write ESP, whose stack effect this oracle cannot
+# compare (see the module docstring).
+ESP_WRITERS = {bytes([0x0f, 0xcc]): "bswap esp"}
 
 
 def run_matrix() -> bytes:
@@ -192,6 +203,11 @@ def main() -> int:
     executed = [(form, state) for form, state in records if state is not None]
     refused = [form for form, state in records if state is None]
     assert len(executed) > 50, f"only {len(executed)} forms executed"
+    writers = sorted({ESP_WRITERS[bytes(instruction_bytes(form))]
+                      for form, _ in executed
+                      if bytes(instruction_bytes(form)) in ESP_WRITERS})
+    assert writers == sorted(ESP_WRITERS.values()), (
+        "the set of ESP-writing forms changed: " f"{writers}")
     asm = generate(header, [form for form, _ in executed])
     native = run_native(asm, len(executed))
     assert len(native) == len(executed) * STATE_BYTES, len(native)
@@ -206,7 +222,8 @@ def main() -> int:
     print(f"SSE form matrix passed: {len(executed)} forms in register and "
           f"memory form against the host CPU in four engine modes "
           f"({len(refused)} refused by the guard for an operand the initial "
-          "state sends out of the window)")
+          f"state sends out of the window; ESP excluded, including "
+          f"{', '.join(writers)})")
     return 0
 
 

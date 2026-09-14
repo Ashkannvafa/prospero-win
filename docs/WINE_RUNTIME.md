@@ -91,7 +91,7 @@ is GNU `ld` (binutils) through `i686-w64-mingw32-gcc`; it honours
 `SOURCE_DATE_EPOCH` for the PE timestamp, which is the only non-deterministic
 field otherwise present. The observed difference between two builds without
 that variable is exactly the file-header `TimeDateStamp` and the derived
-optional-header `Checksum`; with it, two clean rebuilds are byte-identical.
+optional-header `Checksum`; with it, two forced rebuilds in one pinned build tree are byte-identical.
 No field is zeroed, masked or excluded from the digest.
 
 Tool versions that can change the bytes are recorded in the manifest, because

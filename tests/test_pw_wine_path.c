@@ -138,7 +138,7 @@ static void test_registry(void)
                PW_ERR_MALFORMED);
         assert(status == PW_NT_OBJECT_NAME_INVALID);
     }
-    assert(pw_wine_path_registry_root("\\registry\\machine", 
+    assert(pw_wine_path_registry_root("\\registry\\machine",
                                       "\\registry\\machine") == 1);
     assert(pw_wine_path_registry_root("\\registry\\machinemanager",
                                       "\\registry\\machine") == 0);

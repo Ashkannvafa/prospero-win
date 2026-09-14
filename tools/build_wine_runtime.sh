@@ -127,10 +127,10 @@ if [ "$check_reproducible" = 1 ]; then
     for module in $MODULES; do
         if ! cmp -s "$build_root/stage-a/$LIBRARY/$module.dll" \
                     "$build_root/stage-b/$LIBRARY/$module.dll"; then
-            fail "$module.dll differs between two clean builds"
+            fail "$module.dll differs between two forced rebuilds in one pinned build tree"
         fi
     done
-    echo "reproducible: two clean builds produced identical modules"
+    echo "reproducible: two forced rebuilds in one pinned build tree produced identical modules"
 fi
 
 stage "$out_dir"
