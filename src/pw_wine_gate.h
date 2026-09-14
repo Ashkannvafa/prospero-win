@@ -209,6 +209,7 @@ typedef struct PwWineModuleRecord {
     uint8_t loaded;
     uint8_t tls_present;
     uint8_t runtime;
+    uint8_t origin_application;     /* fingerprint came from PW_FILE_APPLICATION */
 } PwWineModuleRecord;
 
 typedef struct PwWineGateConfig {
@@ -262,6 +263,14 @@ typedef struct PwWineGateConfig {
     uint8_t residency;
     uint8_t lazy_flags;
     uint8_t modes_set;              /* 0 keeps the engine defaults */
+    /*
+     * Where the root module comes from. 0 keeps the Wine-runtime control (the
+     * root is a system module read from PW_FILE_RUNTIME); 1 says the root is an
+     * application image and must come from PW_FILE_APPLICATION. There is no
+     * fallback between the two namespaces: a namespace that does not hold the
+     * name fails the run rather than quietly trying the other one.
+     */
+    uint8_t root_application;
     uint8_t bridge_calls;           /* service Unix calls instead of stopping */
     /* Publish and service the second dispatcher:
      * __wine_unix_call_dispatcher / __wine_unixlib_handle. Off by default, so

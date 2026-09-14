@@ -48,18 +48,23 @@ static PwWineModuleRecord *record_for(PwWineGateReport *report,
     return NULL;
 }
 
+/*
+ * Fingerprints one module from exactly the namespace its origin names, so a
+ * module that only exists in the other namespace is a refusal rather than a
+ * silent fallback.
+ */
 static int hash_module(const PwFileProvider *provider, const char *name,
-                       PwWineModuleRecord *record)
+                       PwWineModuleRecord *record, PwFileNamespace space)
 {
     PwFileSpan span;
     int status;
 
     memset(&span, 0, sizeof(span));
-    status = provider->open_namespace(provider->context, PW_FILE_RUNTIME, name,
-                                      &span);
+    status = provider->open_namespace(provider->context, space, name, &span);
     if (status != PW_OK)
         return status;
     pw_sha256_hex_span(span.bytes, span.size, record->sha256);
+    record->origin_application = space == PW_FILE_APPLICATION ? 1u : 0u;
     record->size = (uint32_t)span.size;
     copy_text(record->path, sizeof(record->path), span.path);
     provider->close(provider->context, &span);
@@ -1018,8 +1023,18 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                                      config->modules[index]) != PW_OK)
             return PW_ERR_PRECONDITION;
         report->module_count++;
-        if (hash_module(config->provider, record->name, record) != PW_OK)
-            return PW_ERR_NOT_FOUND;
+        {
+            /* record 0 is the configured root; the rest are dependencies whose
+             * origin the loader policy decides when it opens them. */
+            const PwFileNamespace space =
+                (report->module_count == 1u && config->root_application)
+                    ? PW_FILE_APPLICATION
+                    : PW_FILE_RUNTIME;
+
+            if (hash_module(config->provider, record->name, record, space) !=
+                PW_OK)
+                return PW_ERR_NOT_FOUND;
+        }
     }
 
     status = pw_loader_init(&runner->loader, config->provider, pw_guest_vm_backend(&guest_vm));
@@ -1039,10 +1054,10 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
                                           sizeof(root_canonical), root);
         if (status != PW_OK)
             goto done;
-        status = config->provider->open_namespace(config->provider->context,
-                                                  PW_FILE_RUNTIME,
-                                                  root_canonical,
-                                                  &root_span);
+        status = config->provider->open_namespace(
+            config->provider->context,
+            config->root_application ? PW_FILE_APPLICATION : PW_FILE_RUNTIME,
+            root_canonical, &root_span);
         if (status != PW_OK)
             goto done;
         status = pw_loader_load(&runner->loader, root_span.bytes, root_span.size,

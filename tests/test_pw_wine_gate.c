@@ -67,10 +67,22 @@ static const PwFileProvider provider = {
     .open_namespace = NULL,
 };
 
+/* What the provider was asked for, so the origin rule can be checked: the
+ * root comes from the namespace its origin names, and never from the other. */
+static unsigned application_opens;
+static unsigned runtime_opens;
+static int refuse_application;
+
 static int fake_open_namespace(void *context, PwFileNamespace file_namespace,
                                const char *canonical_name, PwFileSpan *out)
 {
-    (void)file_namespace;
+    if (file_namespace == PW_FILE_APPLICATION) {
+        application_opens++;
+        if (refuse_application)
+            return PW_ERR_NOT_FOUND;
+    } else {
+        runtime_opens++;
+    }
     return fake_open(context, canonical_name, out);
 }
 
@@ -240,5 +252,34 @@ int main(void)
     config.entry_symbol = "NtClose";
     config.provider = NULL;
     assert(pw_wine_gate_run(&config, &report) == PW_ERR_PRECONDITION);
+
+    /*
+     * The root's origin. With root_application the root is read from
+     * PW_FILE_APPLICATION and the dependencies still come from the runtime; if
+     * the application namespace refuses the root, the run fails instead of
+     * falling back to the runtime for it.
+     */
+    {
+        PwWineGateReport app_report;
+        PwWineGateConfig app_config = config;
+
+        memset(&app_report, 0, sizeof(app_report));
+        application_opens = 0u;
+        runtime_opens = 0u;
+        app_config.provider = &namespaced;
+        app_config.backend = &vm;
+        app_config.root_application = 1u;
+        pw_wine_runner_init(&test_runner);
+        assert(pw_wine_gate_run(&app_config, &app_report) == PW_OK);
+        assert(application_opens >= 1u);
+        assert(runtime_opens >= 1u);
+        assert(app_report.modules[0].origin_application == 1u);
+
+        refuse_application = 1;
+        memset(&app_report, 0, sizeof(app_report));
+        pw_wine_runner_init(&test_runner);
+        assert(pw_wine_gate_run(&app_config, &app_report) != PW_OK);
+        refuse_application = 0;
+    }
     return 0;
 }
