@@ -128,16 +128,28 @@ static int release_pages(PwGuestProcess *process, const PwVmBackend *backend,
                          uint32_t count)
 {
     int status = PW_OK;
+    uint32_t kept = 0u;
 
     process->released = 0u;
     for (uint32_t index = 0u; index < count; ++index) {
         if (backend->release(backend->context, &process->pages[index]) !=
-            PW_OK)
+            PW_OK) {
+            /*
+             * The page is still ours: a failed release must not drop the only
+             * record of it, or the mapping leaks and nobody can retry. Keep
+             * it in the inventory (compacted, so the array stays dense) and
+             * report the failure.
+             */
             status = PW_ERR_VM;
-        else
+            if (kept != index)
+                process->pages[kept] = process->pages[index];
+            kept++;
+        } else {
             process->released++;
+        }
     }
-    process->mapped = 0u;
+    /* What the process still owns after this attempt, not what it once had. */
+    process->mapped = kept;
     return status;
 }
 

@@ -1204,32 +1204,63 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 
 done:
     report->status = status;
-    for (uint32_t slot = 0u; slot < (uint32_t)PW_NT_HANDLE_MAX; ++slot) {
-        const uint32_t value = pw_nt_handle_value_of(&calls.handles, slot);
+    {
+        uint32_t failures = 0u;
 
-        if (value != 0u)
-            (void)pw_wine_handle_release(&calls, value);
-    }
-    if (have_engine) {
-        if (pw_x86_engine_destroy(&engine) == PW_OK)
-            report->cleanup_translations++;
-    }
-    if (have_process) {
-        (void)pw_guest_process_release(&process, config->backend);
-        report->cleanup_mappings += process.released;
-    }
-    /* The parameters page is registered among the call regions (it is the
-     * block ntdll replaces and releases), so it is released below with them
-     * and only once, whether or not the guest already gave it back. */
-    for (uint32_t index = 0; index < calls.region_count; ++index) {
-        if (calls.vm->base.release(calls.vm->base.context,
-                                    &calls.regions[index]) == PW_OK)
-            report->cleanup_mappings++;
-    }
-    if (have_loader) {
-        report->cleanup_modules = loader.module_count;
-        report->cleanup_mappings += loader.module_count;
-        (void)pw_loader_release(&loader);
+        /*
+         * Every teardown action is attempted even when an earlier one fails,
+         * and every failure is counted into the evidence. The verdict has to
+         * come from what the releases actually did: an action that fails
+         * keeps its owner in place (the page, the module, the region), so the
+         * caller can retry, and the report says the cleanup is not complete
+         * instead of counting what the run once mapped.
+         */
+        for (uint32_t slot = 0u; slot < (uint32_t)PW_NT_HANDLE_MAX; ++slot) {
+            const uint32_t value = pw_nt_handle_value_of(&calls.handles, slot);
+
+            if (value != 0u &&
+                pw_wine_handle_release(&calls, value) != PW_OK)
+                failures++;
+        }
+        if (have_engine) {
+            const int engine_status = pw_x86_engine_destroy(&engine);
+
+            if (engine_status == PW_OK)
+                report->cleanup_translations++;
+            else
+                failures++;
+        }
+        if (have_process) {
+            if (pw_guest_process_release(&process, config->backend) != PW_OK)
+                failures++;
+            report->cleanup_mappings += process.released;
+            report->cleanup_process_pages_pending = process.mapped;
+        }
+        /* The parameters page is registered among the call regions (it is the
+         * block ntdll replaces and releases), so it is released below with
+         * them and only once, whether or not the guest already gave it back. */
+        for (uint32_t index = 0; index < calls.region_count; ++index) {
+            if (calls.vm->base.release(calls.vm->base.context,
+                                        &calls.regions[index]) == PW_OK)
+                report->cleanup_mappings++;
+            else
+                failures++;
+        }
+        if (have_loader) {
+            /* Counted before the release: a complete release zeroes the
+             * loader's inventory, so the pending count has to come from the
+             * inventory the run actually held. */
+            const uint32_t owned = loader.module_count;
+            const int loader_status = pw_loader_release(&loader);
+
+            if (loader_status != PW_OK)
+                failures++;
+            report->cleanup_modules = loader.released_modules;
+            report->cleanup_modules_pending =
+                owned - loader.released_modules;
+            report->cleanup_mappings += loader.released_modules;
+        }
+        report->cleanup_failures = failures;
     }
     if (root_span.bytes && config->provider->close)
         config->provider->close(config->provider->context, &root_span);

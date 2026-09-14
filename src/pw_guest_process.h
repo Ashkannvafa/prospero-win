@@ -48,7 +48,9 @@ typedef struct PwGuestProcessConfig {
 
 typedef struct PwGuestProcess {
     PwVmRegion pages[PW_GUEST_PROCESS_PAGES];
-    uint32_t mapped;                /* pages successfully mapped */
+    /* Pages this process still owns. A release that fails keeps the page
+     * here, so the caller can retry instead of losing the mapping. */
+    uint32_t mapped;
     uint32_t released;              /* pages the last release gave back */
     PwGuestProcessLayout layout;
 } PwGuestProcess;

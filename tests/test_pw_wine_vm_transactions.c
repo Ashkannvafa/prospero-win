@@ -19,6 +19,7 @@
 #include "pw_unhandled_call.h"
 
 #include "../src/pw_module_name.h"
+#include "../src/pw_guest_process.h"
 #include "../src/pw_vm_posix.h"
 #include "../src/pw_wine_gate.h"
 
@@ -50,6 +51,16 @@ enum TestMode {
     MODE_COMMIT_FAIL = 2,
     MODE_RELEASE_FAIL = 3,
     MODE_CAPACITY = 4,
+    /* Teardown failures: the releases the gate performs at cleanup, which are
+     * the ones outside the guest's heap window. Ordinal 1 is the translation
+     * engine's own region, 2 is the first process page; ALL fails every one. */
+    /* Teardown failure: every release the gate performs at cleanup, which is
+     * what happens outside the guest's heap window. This fixture's run has no
+     * translation engine and no guest process (it stops before them), so the
+     * owner this mode exercises here is the loader's module; the process pages
+     * and the engine have their own fault injection in
+     * tests/test_pw_wine_teardown.c. */
+    MODE_CLEANUP_FAIL = 5,
 };
 
 static uint8_t image[64 * 1024];
@@ -288,6 +299,8 @@ typedef struct FaultBackend {
     unsigned heap_release_ok;
     unsigned heap_release_failed;
     unsigned released_heap;
+    unsigned cleanup_releases;      /* releases outside the guest heap window */
+    unsigned cleanup_release_failed;
 } FaultBackend;
 
 static FaultBackend faults;
@@ -354,6 +367,18 @@ static int fault_release(void *context, PwVmRegion *region)
             faults.heap_release_ok++;
         return PW_OK;
     }
+    /*
+     * Outside the heap window this is a teardown release - a module image, the
+     * engine's own region, a process page or a call region the run registered
+     * - and this mode fails every one of them so the run's cleanup verdict and
+     * its ownership bookkeeping can be checked rather than inferred from
+     * counts.
+     */
+    faults.cleanup_releases++;
+    if (faults.fail_on == MODE_CLEANUP_FAIL) {
+        faults.cleanup_release_failed++;
+        return PW_ERR_VM;
+    }
     return faults.real->release(faults.real->context, region);
 }
 
@@ -399,6 +424,8 @@ typedef struct CaseResult {
     unsigned heap_commits;
     unsigned heap_release_ok;
     unsigned heap_release_failed;
+    unsigned cleanup_releases;
+    unsigned cleanup_release_failed;
     int status;
 } CaseResult;
 
@@ -453,6 +480,8 @@ static CaseResult run_case(enum TestMode mode, int inject)
     result.heap_commits = faults.heap_commits;
     result.heap_release_ok = faults.heap_release_ok;
     result.heap_release_failed = faults.heap_release_failed;
+    result.cleanup_releases = faults.cleanup_releases;
+    result.cleanup_release_failed = faults.cleanup_release_failed;
     return result;
 }
 
@@ -564,6 +593,31 @@ int main(void)
 
             assert(last->args[0] == PW_NT_INVALID_PARAMETER);
         }
+    }
+    /*
+     * Teardown failures. The cleanup verdict has to come from what the
+     * releases did, not from what the run mapped: a release that fails keeps
+     * its owner so it can be retried, and the report has to say so.
+     */
+    /* Every teardown release fails: the run reports it, keeps the owner so it
+     * can be retried, and still executed exactly what it executed before. */
+    {
+        const CaseResult control = run_case(MODE_CLEANUP_FAIL, 0);
+        const CaseResult injected = run_case(MODE_CLEANUP_FAIL, 1);
+
+        assert(control.report.cleanup_failures == 0u);
+        assert(control.report.cleanup_modules_pending == 0u);
+        assert(control.report.cleanup_modules == control.report.module_count);
+        assert(injected.cleanup_releases >= 1u);
+        assert(injected.cleanup_release_failed == injected.cleanup_releases);
+        assert(injected.report.cleanup_failures >= 1u);
+        assert(injected.report.cleanup_modules == 0u);
+        assert(injected.report.cleanup_modules_pending ==
+               injected.report.module_count);
+        /* A cleanup failure is not a different execution. */
+        assert(injected.report.stop == control.report.stop);
+        assert(injected.report.retired == control.report.retired);
+        assert(injected.status == control.status);
     }
     return 0;
 }

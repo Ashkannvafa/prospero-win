@@ -253,6 +253,7 @@ tests/test_wine_gate_host.py
 tests/test_pw_guest_process.c
 tests/test_pw_nt_handle.c
 tests/test_pw_wine_path.c
+tests/test_pw_wine_teardown.c
 tests/test_pw_sse_matrix.py
 tests/test_pw_guest_vm.c
 tests/test_pw_wine_gate.c

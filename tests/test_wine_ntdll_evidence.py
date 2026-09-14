@@ -66,7 +66,9 @@ def base_records() -> dict[str, list[dict[str, str]]]:
                  "stop_address": hex(NTDLL_BASE + THUNK_RVA),
                  "stop": VALIDATOR.ACCEPTED_STOP, "syscall": "0x0000000f",
                  "host_calls": "0"}],
-        "cleanup": [{"modules": "2", "mappings": "3", "translations": "1",
+        "cleanup": [{"modules": "2", "pending_modules": "0",
+                     "pending_pages": "0", "mappings": "3",
+                     "translations": "1", "failures": "0",
                      "status": "ok"}],
         "verdict": [{"accepted": "1", "stop": VALIDATOR.ACCEPTED_STOP,
                      "entry_id": "0x0000000f", "syscall": "0x0000000f",
@@ -246,6 +248,22 @@ class Case(unittest.TestCase):
         def mutate(records):
             records["cleanup"][0]["status"] = "vm"
         self.expect_failure("ended with status vm", mutate)
+
+    def test_cleanup_release_failure(self) -> None:
+        """A teardown that failed leaves its owner behind: not acceptance."""
+        def mutate(records):
+            records["cleanup"][0]["failures"] = "1"
+        self.expect_failure("cleanup left failures=1 behind", mutate)
+
+    def test_cleanup_pending_module(self) -> None:
+        def mutate(records):
+            records["cleanup"][0]["pending_modules"] = "1"
+        self.expect_failure("cleanup left pending_modules=1 behind", mutate)
+
+    def test_cleanup_pending_page(self) -> None:
+        def mutate(records):
+            records["cleanup"][0]["pending_pages"] = "3"
+        self.expect_failure("cleanup left pending_pages=3 behind", mutate)
 
     def test_verdict_not_accepted(self) -> None:
         def mutate(records):

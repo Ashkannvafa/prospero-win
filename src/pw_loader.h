@@ -76,6 +76,10 @@ typedef struct PwLoader {
     const PwVmBackend *backend;
     PwModulePolicy policy;
     uint32_t module_count;
+    /* Modules the last release actually gave back. A failed mapping release
+     * keeps its module in the inventory (mapped_ok still set) so the caller
+     * can retry, and module_count then stays as the remaining inventory. */
+    uint32_t released_modules;
     uint32_t local_count;
     uint32_t host_count;
     uint32_t runtime_count;

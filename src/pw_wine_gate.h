@@ -307,6 +307,13 @@ typedef struct PwWineGateReport {
     uint32_t cleanup_modules;
     uint32_t cleanup_mappings;
     uint32_t cleanup_translations;
+    /* What cleanup did not manage to give back, and how many teardown actions
+     * failed. The verdict comes from these, not from what the run mapped: a
+     * release that fails leaves its owner in place to be retried, and the
+     * evidence says so instead of reporting a complete cleanup. */
+    uint32_t cleanup_modules_pending;
+    uint32_t cleanup_process_pages_pending;
+    uint32_t cleanup_failures;
     PwWineStop stop;
     int status;
 } PwWineGateReport;

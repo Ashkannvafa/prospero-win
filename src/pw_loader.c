@@ -409,6 +409,8 @@ int pw_loader_finalize(PwLoader *loader)
 int pw_loader_release(PwLoader *loader)
 {
     int first_error = PW_OK;
+    uint32_t released = 0u;
+    uint32_t remaining = 0u;
 
     if (!loader)
         return PW_ERR_PRECONDITION;
@@ -418,15 +420,29 @@ int pw_loader_release(PwLoader *loader)
         if (module->mapped_ok) {
             const int status = pw_map_release(&module->mapped,
                                               loader->backend);
-            if (status != PW_OK && first_error == PW_OK)
-                first_error = status;
-            module->mapped_ok = 0u;
+            if (status != PW_OK) {
+                /*
+                 * The mapping is still ours. Keep the module in the inventory
+                 * - mapped_ok stays set and the counts below stay untouched -
+                 * so a retry can release it instead of the span leaking and
+                 * the load disappearing from the record.
+                 */
+                if (first_error == PW_OK)
+                    first_error = status;
+                remaining++;
+            } else {
+                module->mapped_ok = 0u;
+                released++;
+            }
         }
         if (module->owns_span && loader->provider) {
             loader->provider->close(loader->provider->context, &module->span);
             module->owns_span = 0u;
         }
     }
+    loader->released_modules = released;
+    if (remaining != 0u)
+        return first_error;
     loader->module_count = 0u;
     loader->local_count = 0u;
     loader->host_count = 0u;
