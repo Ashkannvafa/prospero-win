@@ -33,7 +33,7 @@ WINE_GATE := src/pw_wine_gate.c src/pw_guest_vm.c src/pw_guest_process.c \
 	src/pw_x86_cache.c src/pw_x86_block.c src/pw_x87.c src/pw_guest_fp.c \
 	src/pw_guest_call.c src/pw_wine_path.c src/pw_wine_handle.c \
 	src/pw_wine_file.c src/pw_wine_registry.c src/pw_wine_query.c \
-	src/pw_wine_object.c
+	src/pw_wine_object.c src/pw_unixlib.c src/pw_wine_unixlib.c
 
 $(eval $(call test_rule,test_pe_image,tests/test_pe_image.c src/pe_image.c src/pw_result.c,))
 $(eval $(call test_rule,test_pe_resource,tests/test_pe_resource.c src/pe_resource.c src/pe_image.c,))

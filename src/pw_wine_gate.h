@@ -27,6 +27,7 @@
 #include "pw_sha256.h"
 #include "pw_unix_call.h"
 #include "pw_x86_engine.h"
+#include "pw_wine_unixlib.h"
 
 enum {
     PW_WINE_GATE_MAX_MODULES = 8,
@@ -162,7 +163,37 @@ typedef enum PwWineStop {
     PW_WINE_STOP_UNIX_CALL_UNKNOWN = 12,
     PW_WINE_STOP_UNIX_CALL_REJECTED = 13,
     PW_WINE_STOP_PROCESS_TERMINATED = 14,
+    /* The second dispatcher: reached with the Unix-call bridge disabled, and
+     * the outcome of a call the bridge refused at that boundary. The specific
+     * reason lives in the tally's last_status, because an unknown handle, an
+     * unknown code and an unreadable frame are different facts that must not
+     * be collapsed into one. */
+    PW_WINE_STOP_UNIXLIB_BOUNDARY = 15,
+    PW_WINE_STOP_UNIXLIB_REFUSED = 16,
+    PW_WINE_STOP_UNIXLIB_UNIMPLEMENTED = 17,
 } PwWineStop;
+
+/*
+ * What the second dispatcher did, kept apart from the NT-syscall tallies: a
+ * guest reaching one boundary tells you nothing about the other.
+ */
+typedef struct PwUnixlibTally {
+    uint64_t serviced;              /* calls answered with a status */
+    uint64_t unknown_handle;        /* the handle was not this run's */
+    uint64_t unknown_code;          /* outside the pinned eight-entry table */
+    uint64_t malformed;             /* frame, params or span refused */
+    uint64_t service_failed;        /* the injected sink refused */
+    uint64_t unimplemented;         /* a pinned call this bridge does not serve */
+    uint64_t unsupported;           /* answered with a documented failure */
+    uint64_t debug_bytes;           /* bytes delivered to the debug sink */
+    uint32_t last_code;
+    uint32_t last_status;           /* PwWineUnixlibStatus */
+    /* Provenance of the last call, read from the frame the guest left: the
+     * return PC inside the caller and the args pointer it passed. The evidence
+     * names the call site; it never prints guest bytes. */
+    uint32_t last_return_pc;
+    uint32_t last_args;
+} PwUnixlibTally;
 
 typedef struct PwWineModuleRecord {
     char name[PW_MODULE_NAME_MAX + 1];
@@ -223,6 +254,13 @@ typedef struct PwWineGateConfig {
     uint8_t lazy_flags;
     uint8_t modes_set;              /* 0 keeps the engine defaults */
     uint8_t bridge_calls;           /* service Unix calls instead of stopping */
+    /* Publish and service the second dispatcher:
+     * __wine_unix_call_dispatcher / __wine_unixlib_handle. Off by default, so
+     * the NT-syscall control run is byte-for-byte what it was. */
+    uint8_t unixlib_calls;
+    /* The host side of unix_wine_dbg_write; NULL makes that call a service
+     * failure rather than a silent success. */
+    const PwWineDebugSink *debug_sink;
     uint32_t call_budget;           /* 0 uses PW_WINE_GATE_DEFAULT_CALLS */
     uint32_t allocation_limit;      /* bytes one run may allocate; 0 = default */
 } PwWineGateConfig;
@@ -240,6 +278,14 @@ typedef struct PwWineGateReport {
     uint32_t boundary_slot_va;
     uint32_t boundary_thunk_rva;
     uint32_t boundary_thunk_va;
+    /* The second boundary: where the guest lands when it calls through
+     * __wine_unix_call_dispatcher, and the opaque handle published in
+     * __wine_unixlib_handle. Zero when the second dispatcher is disabled. */
+    uint32_t unixlib_boundary_va;
+    uint32_t unixlib_dispatcher_slot_va;
+    uint32_t unixlib_handle;
+    uint32_t unixlib_handle_slot_va;
+    PwUnixlibTally unixlib;
     uint32_t entry_rva;
     uint32_t entry_eip;             /* initial guest EIP */
     uint32_t entry_pe_rva;          /* the module's own entry point */

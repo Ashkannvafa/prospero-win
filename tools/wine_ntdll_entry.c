@@ -25,6 +25,35 @@
 static PwWineGateReport report;
 
 /*
+ * The host side of unix_wine_dbg_write for this runner. Wine's CU side does
+ * `write(2, params->str, params->len)`; the transcript is public evidence, so
+ * this sink deliberately does *not* keep or print the guest's text - it counts
+ * the writes and the bytes, and the report records the same numbers. A private
+ * capture can be added later behind an explicit flag.
+ */
+typedef struct RunnerDebugSink {
+    uint64_t writes;
+    uint64_t bytes;
+} RunnerDebugSink;
+
+static RunnerDebugSink debug_sink_state;
+
+static int runner_debug_write(void *context, const void *bytes,
+                              uint32_t length)
+{
+    RunnerDebugSink *sink = context;
+
+    (void)bytes;
+    sink->writes++;
+    sink->bytes += length;
+    return 0;
+}
+
+static const PwWineDebugSink debug_sink = {
+    .context = &debug_sink_state, .write = runner_debug_write,
+};
+
+/*
  * Host file service below the Unix-call boundary. The gate has already
  * translated the guest path into a canonical name inside the runtime
  * distribution; this only opens, reads and closes it, and it never sees a
@@ -509,6 +538,8 @@ int main(int argc, char **argv)
     config.trace = argument_value(argc, argv, "--trace", NULL) ? trace_step
                                                                : NULL;
     config.bridge_calls = (uint8_t)(argument_number(argc, argv, "--bridge", 0u) != 0u);
+    config.unixlib_calls = (uint8_t)(argument_number(argc, argv, "--unixlib", 0u) != 0u);
+    config.debug_sink = config.unixlib_calls ? &debug_sink : NULL;
     config.call_budget = argument_number(argc, argv, "--call-budget", 0u);
     {
         const char *modes = argument_value(argc, argv, "--modes", NULL);
@@ -618,6 +649,30 @@ int main(int argc, char **argv)
      * PE32 image cannot use; the evidence says so instead of leaving the
      * rejection unexplained. */
     printf("kind=host-wine-low exhausted=%u\n", report.low_exhausted);
+    if (config.unixlib_calls) {
+        printf("kind=host-wine-unixlib boundary=0x%08x slot=0x%08x "
+               "handle=0x%08x handle_slot=0x%08x serviced=%llu "
+               "unknown_handle=%llu unknown_code=%llu malformed=%llu "
+               "service_failed=%llu unimplemented=%llu unsupported=%llu "
+               "debug_bytes=%llu "
+               "sink_writes=%llu last_code=%u last_status=%s "
+               "last_return_pc=0x%08x last_args=0x%08x\n",
+               report.unixlib_boundary_va, report.unixlib_dispatcher_slot_va,
+               report.unixlib_handle, report.unixlib_handle_slot_va,
+               (unsigned long long)report.unixlib.serviced,
+               (unsigned long long)report.unixlib.unknown_handle,
+               (unsigned long long)report.unixlib.unknown_code,
+               (unsigned long long)report.unixlib.malformed,
+               (unsigned long long)report.unixlib.service_failed,
+               (unsigned long long)report.unixlib.unimplemented,
+               (unsigned long long)report.unixlib.unsupported,
+               (unsigned long long)report.unixlib.debug_bytes,
+               (unsigned long long)debug_sink_state.writes,
+               report.unixlib.last_code,
+               pw_wine_unixlib_status_name(
+                   (PwWineUnixlibStatus)report.unixlib.last_status),
+               report.unixlib.last_return_pc, report.unixlib.last_args);
+    }
     if (config.bridge_calls) {
         char file_path[2u * (PW_WINE_GATE_MAX_PATH + 1u)];
         char key_path[2u * (PW_WINE_GATE_MAX_PATH + 1u)];

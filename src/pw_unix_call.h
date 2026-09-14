@@ -148,6 +148,9 @@ enum {
     PW_NT_UNABLE_TO_FREE_VM = 0xc000001au,
     PW_NT_MEMORY_NOT_ALLOCATED = 0xc00000a0u,
     PW_NT_NOT_SUPPORTED = 0xc00000bbu,
+    /* What Wine's own Unix loader answers when it cannot find a Unix library
+     * (dlls/ntdll/unix/loader.c:862,987). */
+    PW_NT_DLL_NOT_FOUND = 0xc0000135u,
     PW_NT_OBJECT_NAME_INVALID = 0xc0000033u,
     PW_NT_BUFFER_OVERFLOW = 0x80000005u,
 };

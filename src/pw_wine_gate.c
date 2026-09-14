@@ -630,6 +630,161 @@ static const PwNtHandler *dispatch_find(uint32_t id)
     return NULL;
 }
 
+/*
+ * Writes into a mapped module's image at the RVA the export resolver reported.
+ * The write goes to the image's writable alias, which is where the loader put
+ * the section; this is the same publication Wine's own Unix loader performs on
+ * these two data exports (dlls/ntdll/unix/loader.c:1594-1597), and it is why
+ * the gate verifies they are data and not code before writing.
+ */
+static int module_write(const PwModule *module, uint32_t rva, const void *bytes,
+                        uint32_t length)
+{
+    uint8_t *target;
+
+    if (!module || !bytes || !module->mapped.region.write_base ||
+        rva > module->mapped.image_bytes ||
+        length > module->mapped.image_bytes - rva)
+        return PW_ERR_MALFORMED;
+    target = (uint8_t *)module->mapped.region.write_base + rva;
+    memcpy(target, bytes, length);
+    return PW_OK;
+}
+
+/* The same for the gate-owned guest pages, addressed by their guest address. */
+static int guest_page_write(const PwGuestProcess *process, uint32_t address,
+                            const void *bytes, uint32_t length)
+{
+    for (uint32_t index = 0u; index < (uint32_t)PW_GUEST_PROCESS_PAGES; ++index) {
+        const uint64_t base =
+            (uint64_t)(uintptr_t)process->pages[index].exec_base;
+
+        if ((uint64_t)address < base ||
+            (uint64_t)address + length > base + process->pages[index].bytes)
+            continue;
+        memcpy((uint8_t *)process->pages[index].write_base +
+                   (address - (uint32_t)base), bytes, length);
+        return PW_OK;
+    }
+    return PW_ERR_MALFORMED;
+}
+
+/*
+ * The opaque handle published in __wine_unixlib_handle. Wine puts the host
+ * address of unix_call_funcs[] there; a guest must never receive, or be able to
+ * name, a host pointer, so this is a tag plus 24 bits derived from the entry
+ * module's own SHA-256 - an identifier tied to the pinned runtime that the
+ * gate can check without any table living in the guest address space.
+ */
+static uint32_t unixlib_handle_value(const PwWineModuleRecord *record)
+{
+    uint32_t derived = 0u;
+
+    if (!record)
+        return 0u;
+    for (uint32_t index = 0u; index < 6u; ++index) {
+        const char high = record->sha256[index * 2u];
+        const char low = record->sha256[index * 2u + 1u];
+        uint32_t nibble;
+
+        nibble = (uint32_t)(high >= 'a' ? high - 'a' + 10 : high - '0');
+        derived = (derived << 8) | nibble;
+        nibble = (uint32_t)(low >= 'a' ? low - 'a' + 10 : low - '0');
+        derived = (derived << 8) | nibble;
+    }
+    /* The tag keeps the value far from anything a guest would invent, and the
+     * "or 1" makes it nonzero even for a pathological all-zero digest. */
+    return 0x50000000u | (derived & 0x00ffffffu) | 1u;
+}
+
+/*
+ * Services one call at the second boundary. The frame is the WINAPI/stdcall
+ * frame the PE side leaves for
+ * __wine_unix_call_dispatcher(handle, code, args); on return the callee has
+ * popped the three arguments and the return PC, which is the sixteen bytes the
+ * frame occupies.
+ */
+static PwWineStop service_unixlib_call(PwWineCallContext *calls,
+                                       PwX86State *state,
+                                       const PwWineGateConfig *config)
+{
+    PwWineGateReport *report = calls->report;
+    PwWineUnixlibFrame frame;
+    const PwUnixlibFunc *func;
+    PwWineUnixlibStatus result = PW_WINE_UNIXLIB_UNIMPLEMENTED;
+    uint32_t failed = 0u;
+    uint32_t length = 0u;
+
+    memset(&frame, 0, sizeof(frame));
+    if (pw_wine_unixlib_read_frame(gate_guest_access, state, state->gpr[4],
+                                   &frame, &failed) != PW_OK) {
+        report->unixlib.malformed++;
+        report->unixlib.last_status = PW_WINE_UNIXLIB_MALFORMED;
+        return PW_WINE_STOP_UNIXLIB_REFUSED;
+    }
+    if (frame.handle != report->unixlib_handle) {
+        report->unixlib.unknown_handle++;
+        report->unixlib.last_status = PW_WINE_UNIXLIB_UNKNOWN_HANDLE;
+        return PW_WINE_STOP_UNIXLIB_REFUSED;
+    }
+    func = pw_unixlib_lookup(frame.code);
+    if (!func) {
+        report->unixlib.unknown_code++;
+        report->unixlib.last_status = PW_WINE_UNIXLIB_UNKNOWN_CODE;
+        return PW_WINE_STOP_UNIXLIB_REFUSED;
+    }
+    report->unixlib.last_code = frame.code;
+    report->unixlib.last_return_pc = frame.return_pc;
+    report->unixlib.last_args = frame.args;
+    switch (frame.code) {
+    case PW_UNIXLIB_CODE_LOAD_SO_DLL:
+        /*
+         * Wine's CU side dlopen()s a Unix shared library. This project has no
+         * dlopen and no host Wine libraries, so the honest answer is the one
+         * Wine's own loader gives for a library it cannot find
+         * (dlls/ntdll/unix/loader.c:862,987): STATUS_DLL_NOT_FOUND. The guest's
+         * error path decides what happens next, and the record says this call
+         * was answered with a documented failure rather than serviced.
+         */
+        report->unixlib.unsupported++;
+        report->unixlib.last_status = PW_WINE_UNIXLIB_UNIMPLEMENTED;
+        state->gpr[0] = PW_NT_DLL_NOT_FOUND;
+        state->eip = frame.return_pc;
+        state->gpr[4] += (uint32_t)PW_WINE_UNIXLIB_FRAME_BYTES;
+        return PW_WINE_STOP_NONE;
+    case PW_UNIXLIB_CODE_WINE_DBG_WRITE:
+        result = pw_wine_unixlib_debug_write(gate_guest_access, state,
+                                             frame.args, config->debug_sink,
+                                             &length);
+        if (result == PW_WINE_UNIXLIB_MALFORMED) {
+            report->unixlib.malformed++;
+            report->unixlib.last_status = result;
+            return PW_WINE_STOP_UNIXLIB_REFUSED;
+        }
+        if (result != PW_WINE_UNIXLIB_OK) {
+            report->unixlib.service_failed++;
+            report->unixlib.last_status = result;
+            return PW_WINE_STOP_UNIXLIB_REFUSED;
+        }
+        report->unixlib.debug_bytes += length;
+        break;
+    default:
+        /* A pinned call this bridge does not serve is a versioned
+         * unimplemented record, never a fabricated success. */
+        report->unixlib.unimplemented++;
+        report->unixlib.last_status = PW_WINE_UNIXLIB_UNIMPLEMENTED;
+        return PW_WINE_STOP_UNIXLIB_UNIMPLEMENTED;
+    }
+    report->unixlib.serviced++;
+    report->unixlib.last_status = result;
+    /* Wine's CU side returns write(2,...) straight through as the "status":
+     * the byte count on success, -1 on failure. */
+    state->gpr[0] = result == PW_WINE_UNIXLIB_OK ? length : 0xffffffffu;
+    state->eip = frame.return_pc;
+    state->gpr[4] += (uint32_t)PW_WINE_UNIXLIB_FRAME_BYTES;
+    return PW_WINE_STOP_NONE;
+}
+
 static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
                                     PwWineGateReport *report)
 {
@@ -830,6 +985,9 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     int have_loader = 0;
     int have_engine = 0;
     int have_process = 0;
+    /* The module that plays the process image: the boundary setup finds it and
+     * the second-dispatcher publication needs it later, outside that block. */
+    int entry_index = -1;
 
     if (!config || !report || !config->provider || !config->backend ||
         config->module_count == 0u ||
@@ -954,7 +1112,6 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         const char *entry_machine = config->entry_module
             ? config->entry_module : "ntdll.dll";
         char canonical[PW_MODULE_NAME_MAX + 1];
-        int entry_index;
 
         status = pw_module_name_canonical(canonical, sizeof(canonical),
                                           entry_machine);
@@ -1046,6 +1203,75 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         calls.regions[calls.region_count] = process.pages[3];
         calls.region_owned[calls.region_count] = 0u;
         calls.region_count++;
+
+        /*
+         * The second dispatcher. Wine's Unix loader publishes the handle and
+         * the dispatcher through the two exported data slots; here the handle
+         * is an opaque identifier bound to this runtime's identity and the
+         * boundary is a gate-owned guest address, so the guest can call
+         * through the slot without ever naming host code. Nothing is published
+         * unless the run asks for it, which is what keeps the NT-syscall
+         * control byte-for-byte identical.
+         */
+        if (config->unixlib_calls) {
+            const PwModule *entry_module_now =
+                entry_index >= 0 ? pw_loader_module(&loader,
+                                                    (uint32_t)entry_index)
+                                 : NULL;
+            PeExportSymbol dispatcher = { 0 }, handle = { 0 };
+            PeExportDirectory exports;
+            uint8_t trap[2] = { 0x0fu, 0x0bu };      /* ud2 */
+            const uint32_t boundary =
+                process.layout.teb_base +
+                (uint32_t)PW_WINE_UNIXLIB_BOUNDARY_OFFSET;
+            uint32_t published;
+
+            if (!entry_module_now) {
+                status = PW_ERR_NOT_FOUND;
+                goto done;
+            }
+            status = pe_export_parse(&exports, &entry_module_now->image);
+            if (status != PW_OK)
+                goto done;
+            status = pe_export_find_name(&entry_module_now->image, &exports,
+                                         "__wine_unix_call_dispatcher",
+                                         &dispatcher);
+            if (status != PW_OK)
+                goto done;
+            status = pe_export_find_name(&entry_module_now->image, &exports,
+                                         "__wine_unixlib_handle", &handle);
+            if (status != PW_OK)
+                goto done;
+            /* Both are data exports: a code export would mean the layout this
+             * publication assumes is not the one in the pinned image. */
+            if (dispatcher.is_code || handle.is_code || dispatcher.is_forwarder ||
+                handle.is_forwarder) {
+                status = PW_ERR_UNSUPPORTED;
+                goto done;
+            }
+            report->unixlib_dispatcher_slot_va =
+                (uint32_t)pw_map_exec_address(&entry_module_now->mapped,
+                                              dispatcher.rva);
+            report->unixlib_handle_slot_va =
+                (uint32_t)pw_map_exec_address(&entry_module_now->mapped,
+                                              handle.rva);
+            report->unixlib_boundary_va = boundary;
+            report->unixlib_handle =
+                unixlib_handle_value(&report->modules[0]);
+            published = report->unixlib_boundary_va;
+            status = module_write(entry_module_now, dispatcher.rva, &published,
+                                  4u);
+            if (status != PW_OK)
+                goto done;
+            published = report->unixlib_handle;
+            status = module_write(entry_module_now, handle.rva, &published,
+                                  4u);
+            if (status != PW_OK)
+                goto done;
+            status = guest_page_write(&process, boundary, trap, sizeof(trap));
+            if (status != PW_OK)
+                goto done;
+        }
         report->call_regions = calls.region_count;
     }
 
@@ -1110,6 +1336,30 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
 
         if (config->trace)
             config->trace(config->trace_context, &state);
+        if (report->unixlib_boundary_va != 0u &&
+            state.eip == report->unixlib_boundary_va) {
+            /*
+             * The second boundary. It is checked before the engine steps, so
+             * the boundary address is never executed: the frame on the guest
+             * stack is read through the validated accessor and the call is
+             * serviced or refused, never guessed.
+             */
+            const uint32_t budget = config->call_budget != 0u
+                ? config->call_budget : PW_WINE_GATE_DEFAULT_CALLS;
+            PwWineStop serviced;
+
+            report->stop_address = state.eip;
+            if (report->unixlib.serviced >= budget) {
+                report->stop = PW_WINE_STOP_STEP_BUDGET;
+                break;
+            }
+            serviced = service_unixlib_call(&calls, &state, config);
+            if (serviced == PW_WINE_STOP_NONE)
+                continue;
+            report->stop = serviced;
+            report->stop_address = state.eip;
+            break;
+        }
         if (state.eip == report->boundary_thunk_va) {
             /* Stopped before executing the dispatcher jump: no unvalidated
              * guest pointer is dereferenced to reach it. */
@@ -1316,6 +1566,9 @@ const char *pw_wine_stop_name(PwWineStop stop)
     case PW_WINE_STOP_UNIX_CALL_UNKNOWN: return "unix-call-unknown";
     case PW_WINE_STOP_UNIX_CALL_REJECTED: return "unix-call-rejected";
     case PW_WINE_STOP_PROCESS_TERMINATED: return "process-terminated";
+    case PW_WINE_STOP_UNIXLIB_BOUNDARY: return "unixlib-boundary";
+    case PW_WINE_STOP_UNIXLIB_REFUSED: return "unixlib-refused";
+    case PW_WINE_STOP_UNIXLIB_UNIMPLEMENTED: return "unixlib-unimplemented";
     default: return "unknown";
     }
 }

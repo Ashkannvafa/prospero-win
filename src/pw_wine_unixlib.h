@@ -35,6 +35,15 @@ enum {
     /* One debug write is bounded: the sink is a transcript, not a channel for
      * an unbounded guest buffer. */
     PW_WINE_UNIXLIB_MAX_DEBUG_BYTES = 4096,
+    /*
+     * Where the published boundary lives inside the gate-owned thread block
+     * (the TEB's page). The page belongs to the run, the offset is past every
+     * documented TEB field, and the two bytes there are `ud2`: the run loop
+     * recognises the boundary before executing anything, and if it ever did
+     * execute, it would stop as an unsupported instruction instead of running
+     * whatever happened to be there.
+     */
+    PW_WINE_UNIXLIB_BOUNDARY_OFFSET = 0x800,
 };
 
 /*
