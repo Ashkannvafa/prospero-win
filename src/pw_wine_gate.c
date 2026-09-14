@@ -794,6 +794,148 @@ static int gate_nt_query_virtual_memory(PwWineCallContext *calls,
 }
 
 /*
+ * NtAreMappedFilesTheSame: the question ntdll's loader asks itself about two
+ * addresses it already owns.
+ *
+ * find_existing_module (dlls/ntdll/loader.c:2798) walks the module list ntdll
+ * built, compares the base of each record with the address of an image it has
+ * just mapped - address against address - and keeps the record when this call
+ * says they are the same file. Wine answers it from its own view table
+ * (dlls/ntdll/unix/virtual.c:6897): an address that is not one of its views is
+ * STATUS_INVALID_ADDRESS, a view that is not a file view is
+ * STATUS_CONFLICTING_ADDRESSES, one view against itself is STATUS_SUCCESS, and
+ * two views of different files are STATUS_NOT_SAME_DEVICE, which is what the
+ * server's is_same_mapping decides (server/mapping.c:1779) by comparing the
+ * file descriptors behind the views.
+ *
+ * This run has both of the same two universes, so it answers from both: the
+ * module graph holds the images this gate mapped before the run (the root
+ * module among them) and the sections hold the images the guest mapped itself
+ * during it. Two addresses inside one view, or in two views of the same
+ * canonical file in the same namespace, are the same file; anything else that
+ * is mapped is a different one. A private region - the stack, the TEB, the PEB,
+ * an allocation - is the case Wine answers with STATUS_CONFLICTING_ADDRESSES,
+ * and an address this run never mapped is refused rather than described: the
+ * gate does not model the rest of the address space, so it cannot say what
+ * lives there.
+ */
+enum {
+    GATE_VIEW_NONE = 0u,       /* nothing this run mapped backs the address */
+    GATE_VIEW_IMAGE = 1u,      /* a mapped image: a section view or a module */
+    GATE_VIEW_PRIVATE = 2u,    /* mapped, but not a file view */
+};
+
+typedef struct GateMappedView {
+    unsigned kind;
+    const char *name;          /* canonical name of the file, when there is one */
+    PwFileNamespace file_namespace;
+    unsigned is_module;        /* the identity indexes the module graph */
+    unsigned identity;
+} GateMappedView;
+
+static void gate_address_view(const PwWineCallContext *calls,
+                              PwX86State *state, uint32_t address,
+                              GateMappedView *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->kind = GATE_VIEW_NONE;
+    /*
+     * The sections first: they are the views the guest made during this run,
+     * and their ranges are the ones this question is about.
+     */
+    for (uint32_t index = 0u; index < calls->section_count; ++index) {
+        const PwWineSection *section = &calls->sections[index];
+        const uint64_t high = (uint64_t)section->view_base +
+                              (uint64_t)section->view_bytes;
+
+        if (section->view_base == 0u || section->view_bytes == 0u ||
+            address < section->view_base || (uint64_t)address >= high)
+            continue;
+        out->kind = GATE_VIEW_IMAGE;
+        out->name = section->name;
+        out->file_namespace = section->file_namespace;
+        out->is_module = 0u;
+        out->identity = index;
+        return;
+    }
+    /* Then the images this gate mapped before the run started. */
+    {
+        uint32_t region_end = 0u;
+        uint32_t protect = 0u;
+        const PwModule *module = gate_image_containing(
+            calls->loader, address, &region_end, &protect);
+
+        if (module) {
+            out->kind = GATE_VIEW_IMAGE;
+            out->name = module->name;
+            out->file_namespace = module->kind == PW_MODULE_RUNTIME
+                ? PW_FILE_RUNTIME : PW_FILE_APPLICATION;
+            out->is_module = 1u;
+            out->identity = (unsigned)(module - calls->loader->modules);
+            return;
+        }
+    }
+    /* Everything else this run mapped is private memory, not a file view. */
+    for (uint32_t index = 0u; index < state->memory_count; ++index) {
+        const PwX86Memory *region = &state->memory[index];
+
+        if ((uint64_t)address < region->low ||
+            (uint64_t)address >= region->high)
+            continue;
+        out->kind = GATE_VIEW_PRIVATE;
+        out->is_module = 0u;
+        out->identity = index;
+        return;
+    }
+}
+
+static int gate_nt_are_mapped_files_the_same(PwWineCallContext *calls,
+                                             const PwUnixCallFrame *frame,
+                                             PwUnixCallAccess guest_access,
+                                             void *access_context,
+                                             uint32_t *status,
+                                             uint32_t *argument_index)
+{
+    const uint32_t first = frame->args[0];
+    const uint32_t second = frame->args[1];
+    PwX86State *state = access_context;
+    GateMappedView left;
+    GateMappedView right;
+
+    (void)guest_access;
+    (void)argument_index;
+    calls->report->address_comparisons++;
+    gate_address_view(calls, state, first, &left);
+    gate_address_view(calls, state, second, &right);
+    if (left.kind == GATE_VIEW_NONE || right.kind == GATE_VIEW_NONE) {
+        *status = PW_NT_INVALID_ADDRESS;
+        calls->report->address_comparison_refusals++;
+        return PW_OK;
+    }
+    if (left.kind == GATE_VIEW_PRIVATE || right.kind == GATE_VIEW_PRIVATE) {
+        *status = PW_NT_CONFLICTING_ADDRESSES;
+        calls->report->address_comparison_refusals++;
+        return PW_OK;
+    }
+    if (left.is_module == right.is_module && left.identity == right.identity) {
+        *status = PW_NT_SUCCESS;
+        return PW_OK;
+    }
+    /*
+     * Two different views are the same file when they name the same canonical
+     * file in the same root: that pair is the identity this run can guarantee,
+     * and the one every other answer in this gate is built on.
+     */
+    if (left.file_namespace == right.file_namespace && left.name != NULL &&
+        right.name != NULL && strcmp(left.name, right.name) == 0) {
+        *status = PW_NT_SUCCESS;
+        return PW_OK;
+    }
+    *status = PW_NT_NOT_SAME_DEVICE;
+    return PW_OK;
+}
+
+/*
  * The one place the serviced calls are listed. `classes` names the information
  * classes the handler answers (PW_NT_CLASS_NONE when the call has none) and
  * `test` names the self-contained test that owns it; both are what
@@ -837,6 +979,8 @@ static const PwNtHandler dispatch_table[] = {
       pw_wine_query_process_image },
     { 0x0023u, { 0u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_virtual_memory.c",
       gate_nt_query_virtual_memory },
+    { 0x0072u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_virtual_memory.c",
+      gate_nt_are_mapped_files_the_same },
     { 0x0039u, { 0x0009009cu, PW_NT_CLASS_NONE },
       "tests/test_pw_wine_file_service.c", pw_wine_file_fs_control },
     { 0x004au, { 0x01000000u, PW_NT_CLASS_NONE },

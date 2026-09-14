@@ -52,7 +52,11 @@ enum {
      * requirement instead of at it. */
     PW_WINE_GATE_CACHE_ENTRIES = 4096,
     PW_WINE_GATE_ARENA_BYTES = 4u * 1024u * 1024u,
-    PW_WINE_GATE_DEFAULT_CALLS = 64,
+    /* Measured: the application-root run needs 67 serviced calls to reach the
+     * service it does not have next (NtGetNextThread, i386 syscall 0x00a0), so
+     * the default is clear of the requirement rather than at it - the same rule
+     * the cache, step and region bounds follow. */
+    PW_WINE_GATE_DEFAULT_CALLS = 1024,
     PW_WINE_GATE_MAX_CALL_REGIONS = 16,
     /* Image sections one run may have alive at once. A process maps its
      * modules one at a time and closes each section once its view exists, so
@@ -402,6 +406,10 @@ typedef struct PwWineGateReport {
     uint32_t process_image_characteristics;
     /* NtQueryVirtualMemory answers this run gave about its own mappings. */
     uint64_t virtual_queries;
+    /* NtAreMappedFilesTheSame: how many address pairs the run compared, and
+     * how many of those did not describe a file view this run owns. */
+    uint64_t address_comparisons;
+    uint64_t address_comparison_refusals;
     uint64_t object_opens;
     uint64_t object_refusals;
     uint32_t objects_configured;

@@ -40,6 +40,11 @@ typedef struct PwWineSection {
     PwFileNamespace file_namespace;
     uint64_t file_size;
     uint64_t image_base;
+    /* Where this section was mapped into the guest, and how far: 0 until a
+     * view exists. A question about an address ("are these two the same
+     * file?") is a question about a view, and this is the run's record of it. */
+    uint32_t view_base;
+    uint32_t view_bytes;
     uint32_t protection;
     uint32_t attributes;
     uint8_t headers[PW_WINE_SECTION_HEADER_BYTES];

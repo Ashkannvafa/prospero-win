@@ -40,9 +40,11 @@ enum {
     LOADED_TYPE_RVA = DATA_RVA + 0x0A0,     /* Type the guest read */
     STACK_BASE_RVA = DATA_RVA + 0x0B0,      /* the stack's AllocationBase */
     STATUS_RVA = DATA_RVA + 0x100,          /* six status slots */
+    COMPARE_STATUS_RVA = DATA_RVA + 0x140,  /* five slots: the comparisons */
     THUNK_RVA = TEXT_RVA + 0x200,
     STUB_QUERY_RVA = TEXT_RVA + 0x210,      /* NtQueryVirtualMemory, 0x23 */
     STUB_TERMINATE_RVA = TEXT_RVA + 0x220,  /* NtTerminateProcess, 0x2c */
+    STUB_COMPARE_RVA = TEXT_RVA + 0x230,    /* NtAreMappedFilesTheSame, 0x72 */
     CALLER_RVA = TEXT_RVA,
     /* The fixture's own entry point, which is what the guest measures. */
     FIXTURE_ENTRY_RVA = CALLER_RVA,
@@ -62,6 +64,8 @@ _Static_assert(MBI_RVA + MBI_BYTES <= LOADED_BASE_RVA,
                "the answer overlaps the slots the guest copies out of it");
 _Static_assert(STATUS_RVA + 6u * 4u <= DATA_RVA + 0x400u,
                "status slots run past the data section");
+_Static_assert(COMPARE_STATUS_RVA + 5u * 4u <= DATA_RVA + 0x400u,
+               "comparison slots run past the data section");
 
 static uint8_t image[64 * 1024];
 static uint8_t text[1024];
@@ -177,6 +181,33 @@ static void emit_copy_field_to_slot(uint32_t field_offset, uint32_t slot_rva)
     emit_store_eax(slot_rva);
 }
 
+/* NtAreMappedFilesTheSame(addr1 in eax, addr2 in edx), the question ntdll's
+ * loader asks itself when it wants to know whether an image it has just mapped
+ * is one it already has. Both addresses are guest addresses it owns. */
+static void emit_compare_eax_edx(uint32_t status_rva)
+{
+    emit_byte(0x52);                        /* push edx: the second address */
+    emit_push_eax();                        /* push eax: the first address */
+    emit_call(STUB_COMPARE_RVA);
+    emit_store_eax(status_rva);
+}
+
+/* "mov edx, [abs]" */
+static void emit_load_edx(uint32_t rva)
+{
+    emit_byte(0x8b);
+    emit_byte(0x15);
+    emit_absolute(rva);
+}
+
+/* "mov edx, imm32": the immediate is an address of ours, so it needs the same
+ * base relocation an absolute operand in the code does. */
+static void emit_mov_edx_absolute(uint32_t rva)
+{
+    emit_byte(0xba);
+    emit_absolute(rva);
+}
+
 static void emit_stub(uint32_t index, uint32_t id, uint16_t arg_bytes)
 {
     while (text_bytes < (uint32_t)index - TEXT_RVA)
@@ -246,6 +277,41 @@ static size_t build_module(void)
     emit_store_eax(ADDRESS_RVA);
     emit_query(0u, MBI_BYTES, STATUS_RVA + 20u);
 
+    /*
+     * NtAreMappedFilesTheSame, the question ntdll's loader asks itself when it
+     * wants to know whether an image it has just mapped is one it already has
+     * (dlls/ntdll/loader.c:2798 compares the base of a module record with the
+     * new image, address against address). Three shapes are asked here: two
+     * addresses inside one image, which is one view; the image against the
+     * private page the process runs on, which is not a file view; and the
+     * image against a page this run never mapped.
+     */
+    emit_mov_eax_absolute(CALLER_RVA);      /* the fixture's own entry point */
+    emit_mov_edx_absolute(MBI_RVA);         /* another address in the same image */
+    emit_compare_eax_edx(COMPARE_STATUS_RVA);
+
+    emit_load_esp();                        /* the process's own stack page */
+    emit_byte(0x89); emit_byte(0xc2);       /* mov edx, eax */
+    emit_mov_eax_absolute(CALLER_RVA);
+    emit_compare_eax_edx(COMPARE_STATUS_RVA + 4u);
+
+    emit_mov_eax_absolute(CALLER_RVA);
+    emit_byte(0xba);                        /* mov edx, a page with nothing on it */
+    emit_u32(UNMAPPED_ADDRESS);
+    emit_compare_eax_edx(COMPARE_STATUS_RVA + 8u);
+
+    /*
+     * The three answers travel as arguments of two more comparisons, which are
+     * refused before they look at an address: the transcript, not this test,
+     * carries what the guest actually saw.
+     */
+    emit_load_eax(COMPARE_STATUS_RVA);
+    emit_load_edx(COMPARE_STATUS_RVA + 4u);
+    emit_compare_eax_edx(COMPARE_STATUS_RVA + 12u);
+    emit_load_eax(COMPARE_STATUS_RVA + 8u);
+    emit_load_edx(LOADED_BASE_RVA);
+    emit_compare_eax_edx(COMPARE_STATUS_RVA + 16u);
+
     /* Now end the process, reporting the image allocation base the guest read
      * out of the first answer as the exit status. */
     emit_load_eax(LOADED_BASE_RVA);
@@ -259,6 +325,7 @@ static size_t build_module(void)
     emit_absolute(SLOT_RVA);
     emit_stub(STUB_QUERY_RVA, 0x0023u, 24u);
     emit_stub(STUB_TERMINATE_RVA, 0x002cu, 8u);
+    emit_stub(STUB_COMPARE_RVA, 0x0072u, 8u);
     emit_byte(0xc3);
 
     memset(&spec, 0, sizeof(spec));
@@ -360,8 +427,8 @@ int main(void)
     /* The run ends because the guest ended its own process, with the allocation
      * base it read out of the answer as its exit status. */
     assert(report.stop == PW_WINE_STOP_PROCESS_TERMINATED);
-    assert(report.calls.records == 7u);
-    assert(report.calls.handled == 7u);
+    assert(report.calls.records == 12u);
+    assert(report.calls.handled == 12u);
     assert(report.calls.rejected == 0u && report.calls.unknown == 0u);
     assert(report.calls.unimplemented == 0u);
     /* Four of the six queries name the class this bridge answers and a handle
@@ -391,7 +458,39 @@ int main(void)
     /* The query about an unmapped page reached the handler and was refused. */
     assert(report.calls.sequence[5].args[1] == UNMAPPED_ADDRESS);
     /* The image allocation base the guest read is what it exited with. */
-    assert(report.calls.sequence[6].id == 0x002cu);
-    assert(report.calls.sequence[6].args[1] == report.modules[0].base);
+    assert(report.calls.sequence[11].id == 0x002cu);
+    assert(report.calls.sequence[11].args[1] == report.modules[0].base);
+    /*
+     * The address comparisons, in the order the guest asked them. Two
+     * addresses inside one image are one view - and the two arguments are
+     * different addresses, so the answer cannot be address equality. The
+     * process's own stack page is mapped but is not a file view, which is the
+     * case Wine answers with STATUS_CONFLICTING_ADDRESSES, and a page this run
+     * never mapped is refused rather than guessed at.
+     */
+    assert(report.address_comparisons == 5u);
+    assert(report.address_comparison_refusals == 4u);
+    for (uint32_t index = 6u; index < 11u; ++index)
+        assert(report.calls.sequence[index].id == 0x0072u);
+    assert(report.calls.sequence[6].status == PW_NT_SUCCESS);
+    assert(report.calls.sequence[6].args[0] != report.calls.sequence[6].args[1]);
+    assert(report.calls.sequence[7].status == PW_NT_CONFLICTING_ADDRESSES);
+    /* The private address is the guest's own stack pointer, which lies inside
+     * the stack region this run declared for it, not at its base. */
+    assert(report.calls.sequence[7].args[0] == expected_entry);
+    assert(report.calls.sequence[7].args[1] >= report.stack_base);
+    assert(report.calls.sequence[7].args[1] <
+           report.stack_base + report.stack_bytes);
+    assert(report.calls.sequence[8].status == PW_NT_INVALID_ADDRESS);
+    assert(report.calls.sequence[8].args[0] == expected_entry);
+    assert(report.calls.sequence[8].args[1] == UNMAPPED_ADDRESS);
+    /* The two refused carries: the answers the guest read back travel as the
+     * addresses of the next comparison, so their values are in the record. */
+    assert(report.calls.sequence[9].status == PW_NT_INVALID_ADDRESS);
+    assert(report.calls.sequence[9].args[0] == PW_NT_SUCCESS);
+    assert(report.calls.sequence[9].args[1] == PW_NT_CONFLICTING_ADDRESSES);
+    assert(report.calls.sequence[10].status == PW_NT_INVALID_ADDRESS);
+    assert(report.calls.sequence[10].args[0] == PW_NT_INVALID_ADDRESS);
+    assert(report.calls.sequence[10].args[1] == report.modules[0].base);
     return 0;
 }

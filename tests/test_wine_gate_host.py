@@ -150,20 +150,18 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    # Moved deliberately in the commit that lets the loader resolve the
-    # application's own modules: the image and the search path name the
-    # application's directory, the file service serves that directory in its
-    # own namespace, and the run no longer terminates with STATUS_DLL_NOT_FOUND
-    # over b.dll. Residency off now stops at the next service the loader wants,
-    # NtAreMappedFilesTheSame (i386 syscall 0x72, the call ntdll's
-    # find_existing_module makes against a base address and the new image); the
-    # fault address with residency on moved with the host layout while the
-    # faulting block stayed the same (0x105c1aa7, 9 instructions, resident mask
-    # 0x43), which is the signature the private report records for it.
+    # Moved deliberately in the commit that serves NtAreMappedFilesTheSame and
+    # raises the call budget to the measured requirement: residency off now
+    # stops at the service after it, NtGetNextThread (i386 syscall 0x00a0, the
+    # call ntdll's LdrpAllocateTls makes while it gives every running thread a
+    # TLS block for the two modules that carry a TLS directory). The fault
+    # address with residency on is unchanged while the faulting block stays the
+    # same (0x105c1aa7, 9 instructions, resident mask 0x43), which is the
+    # signature the private report records for it.
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "unix-call-unimplemented", "retired": "490542",
-                      "blocks": "1747"},
+    "residency_off": {"stop": "unix-call-unimplemented", "retired": "495501",
+                      "blocks": "1797"},
 }
 
 

@@ -847,6 +847,15 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
     calls->region_count++;
     calls->report->call_regions = calls->region_count;
     calls->report->section_views++;
+    /*
+     * The view is the section's own record of where its file now lives in the
+     * guest, because the loader asks that question next: find_existing_module
+     * compares the base of a module it already has with the image it just
+     * mapped, address against address, and takes "the same file" as the
+     * answer (dlls/ntdll/loader.c:2798, NtAreMappedFilesTheSame).
+     */
+    section->view_base = base;
+    section->view_bytes = bytes;
     if (guest(context, base_pointer, &base, 4u, 1) != PW_OK) {
         *argument_index = 3u;
         return PW_ERR_MALFORMED;

@@ -139,6 +139,12 @@ enum {
     PW_NT_NOT_IMPLEMENTED = 0xc0000002u,
     PW_NT_ACCESS_DENIED = 0xc0000022u,
     PW_NT_CONFLICTING_ADDRESSES = 0xc0000018u,
+    /* What Wine answers when the address is not one of its own views, and what
+     * its server answers when two views are not the same file
+     * (dlls/ntdll/unix/virtual.c:6897 NtAreMappedFilesTheSame and
+     * server/mapping.c:1779 is_same_mapping). */
+    PW_NT_NOT_SAME_DEVICE = 0xc00000d4u,
+    PW_NT_INVALID_ADDRESS = 0xc0000141u,
     PW_NT_OBJECT_NAME_NOT_FOUND = 0xc0000034u,
     PW_NT_END_OF_FILE = 0xc0000011u,
     PW_NT_INVALID_INFO_CLASS = 0xc0000003u,

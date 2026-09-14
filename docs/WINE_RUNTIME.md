@@ -616,6 +616,19 @@ NtQueryVirtualMemory          (0x0023) MemoryBasicInformation only, answered
                                        region reports MEM_PRIVATE, and a page
                                        this run never mapped is refused instead
                                        of being described as MEM_FREE
+NtAreMappedFilesTheSame       (0x0072) two guest addresses, answered from the
+                                       views this run owns: the images the
+                                       guest mapped itself and the images this
+                                       gate mapped before the run. Two
+                                       addresses in one view, or in two views
+                                       of the same canonical file in the same
+                                       root, are the same file; a page this
+                                       run mapped that is not a file view is
+                                       STATUS_CONFLICTING_ADDRESSES, and an
+                                       address this run never mapped is
+                                       refused rather than guessed at, because
+                                       the rest of the address space is not
+                                       modelled here
 NtTerminateProcess            (0x002c) the current process only; the run stops
                                        with a classified stop instead of
                                        pretending a terminated process runs on
