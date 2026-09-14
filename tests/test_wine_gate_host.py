@@ -134,6 +134,71 @@ def validate_transcript(text: str, expect_entry: str) -> str:
     return check.stdout.strip()
 
 
+# The application-root scenario: the same bounded gate with a generated PE32
+# application as the process image, reading the runtime's own DLLs. Its frontier
+# is pinned here for the same reason the control's is - so that "we got further"
+# and "we quietly got less far" are different outcomes - and because the two
+# configurations disagree: with register residency on, the run stops at the
+# engine defect recorded in the private report (a memory-bounds stop inside
+# dlls/ntdll's rb-tree fixup); with residency off it runs to the gate's own step
+# budget. Either number moving is a decision, not an accident.
+#
+# The fixture is generated, not committed: tools/make_test_pe.py writes the
+# application, its two DLLs and the dependency diamond into a temporary
+# directory the run is pointed at.
+APPLICATION_PINNED = {
+    "residency_on": {"stop": "memory-bounds", "fault": "0x61906000",
+                     "retired": "56239", "blocks": "1219"},
+    "residency_off": {"stop": "step-budget", "retired": "320379",
+                      "blocks": "1515"},
+}
+
+
+def run_application(modes: str) -> str:
+    with tempfile.TemporaryDirectory() as directory:
+        built = subprocess.run(
+            [sys.executable, str(ROOT / "tools/make_test_pe.py"), "--application",
+             "--out-dir", directory], check=True, capture_output=True, text=True)
+        assert built.returncode == 0, built.stderr
+        return run_gate("--runtime", str(DISTRIBUTION / "lib/i386-windows"),
+                        "--application", directory, "--root-application", "1",
+                        "--root", "app.exe", "--entry-module", "ntdll.dll",
+                        "--entry-symbol", "LdrInitializeThunk",
+                        "--modules",
+                        "app.exe,ntdll.dll,kernelbase.dll,a.dll,b.dll",
+                        "--bridge", "1", "--unixlib", "1", "--modes", modes,
+                        expect_acceptance=False)
+
+
+def check_application_frontier() -> None:
+    on = run_application("1,1,1")
+    off = run_application("0,0,1")
+    problems = []
+    for label, text in (("residency_on", on), ("residency_off", off)):
+        expected = APPLICATION_PINNED[label]
+        stop = field(text, "run", "stop")
+        if stop != expected["stop"]:
+            problems.append(f"{label}: stop {stop} != {expected['stop']}")
+        for name in ("retired", "blocks"):
+            observed = field(text, "run", name)
+            if observed != expected[name]:
+                problems.append(f"{label}: {name} {observed} != "
+                                f"{expected[name]}")
+        if "fault" in expected:
+            address = field(text, "fault", "address")
+            if address != expected["fault"]:
+                problems.append(f"{label}: fault address {address} != "
+                                f"{expected['fault']}")
+    if problems:
+        raise SystemExit(
+            "wine ntdll gate: the application-root frontier moved, and moving "
+            "it must be a decision recorded in the same commit:\n  " +
+            "\n  ".join(problems))
+    print("wine ntdll gate: application-root frontier confirmed "
+          f"(residency on {APPLICATION_PINNED['residency_on']['stop']}, "
+          f"residency off {APPLICATION_PINNED['residency_off']['stop']})")
+
+
 def main() -> int:
     if not RUNNER.exists() or not MANIFEST.exists():
         print("wine ntdll gate: skipped (no staged runtime)")
@@ -231,6 +296,7 @@ def main() -> int:
             "wine ntdll gate: the pinned checkpoint moved, and moving it must "
             "be a decision recorded in the same commit:\n  " +
             "\n  ".join(problems))
+    check_application_frontier()
     print("wine ntdll gate: pinned checkpoint confirmed "
           f"({len(sequence)} calls, {PINNED_RUN['retired']} retired "
           f"instructions, stop {PINNED_RUN['stop']} at "
