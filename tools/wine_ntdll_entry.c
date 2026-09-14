@@ -706,7 +706,8 @@ int main(int argc, char **argv)
                "registry=%u key_opens=%llu key_queries=%llu key_values=%llu "
                "key_creates=%llu key_refusals=%llu tokens=%llu last_key=%s "
                "objects=%u object_opens=%llu object_refusals=%llu "
-               "last_object=%s processes=%llu image_characteristics=0x%04x\n",
+               "last_object=%s processes=%llu image_characteristics=0x%04x "
+               "vm_queries=%llu\n",
                report.calls_serviced,
                (unsigned long long)report.calls.handled,
                (unsigned long long)report.calls.unimplemented,
@@ -736,7 +737,8 @@ int main(int argc, char **argv)
                recorded_path(report.last_object[0] ? report.last_object : "-",
                              object_path, sizeof(object_path)),
                (unsigned long long)report.process_queries,
-               report.process_image_characteristics);
+               report.process_image_characteristics,
+               (unsigned long long)report.virtual_queries);
         for (uint32_t index = 0; index < report.calls.records; ++index) {
             const PwUnixCallRecord *record = &report.calls.sequence[index];
 

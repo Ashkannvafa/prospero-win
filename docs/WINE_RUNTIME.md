@@ -539,6 +539,14 @@ NtOpenSection                 (0x0037) a section by absolute name or relative
                                        to a directory object the gate owns
 NtQueryInformationProcess     (0x0019) ProcessImageInformation only, answered
                                        from the process module's own PE headers
+NtQueryVirtualMemory          (0x0023) MemoryBasicInformation only, answered
+                                       from this run's own mappings: a module
+                                       image reports its base, extent and the
+                                       protection of the section the page falls
+                                       in with MEM_IMAGE, every other declared
+                                       region reports MEM_PRIVATE, and a page
+                                       this run never mapped is refused instead
+                                       of being described as MEM_FREE
 NtTerminateProcess            (0x002c) the current process only; the run stops
                                        with a classified stop instead of
                                        pretending a terminated process runs on

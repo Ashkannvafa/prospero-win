@@ -364,6 +364,8 @@ typedef struct PwWineGateReport {
     uint64_t token_queries;
     uint64_t process_queries;
     uint32_t process_image_characteristics;
+    /* NtQueryVirtualMemory answers this run gave about its own mappings. */
+    uint64_t virtual_queries;
     uint64_t object_opens;
     uint64_t object_refusals;
     uint32_t objects_configured;

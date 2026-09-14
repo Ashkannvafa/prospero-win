@@ -606,6 +606,193 @@ static int gate_nt_free_virtual_memory(PwWineCallContext *calls,
 }
 
 /*
+ * NtQueryVirtualMemory, for the one class ntdll's own loader asks about.
+ *
+ * build_ntdll_module (dlls/ntdll/loader.c:2355-2372) queries the address of
+ * LdrInitializeThunk and takes AllocationBase out of the answer, then builds
+ * the ntdll module record from the guest's own mapped image. The question is
+ * therefore "where does the module I am running inside actually live", asked
+ * before any record of that module exists, and the answer has to come from
+ * this run's own mappings: the module graph for an image (its base, its
+ * extent, the protection of the section the queried page falls in and
+ * MEM_IMAGE) and the declared regions for everything else the run owns (stack,
+ * TEB, PEB, parameters page and every NT allocation, as MEM_PRIVATE).
+ *
+ * A page this run never mapped is refused rather than described as MEM_FREE.
+ * Wine answers MEM_FREE for its own address space because the Unix loader owns
+ * all of it; this run owns a bounded set of mappings and does not model the
+ * rest, so claiming free space there would be an answer about memory nothing
+ * here can back.
+ */
+enum {
+    /* MEMORY_BASIC_INFORMATION32, as an i386 guest lays it out and reads it
+     * back: BaseAddress, AllocationBase, AllocationProtect, RegionSize, State,
+     * Protect, Type. */
+    PW_WINE_MBI_BYTES = 28u,
+    PW_WINE_MBI_BASE_ADDRESS = 0u,
+    PW_WINE_MBI_ALLOCATION_BASE = 4u,
+    PW_WINE_MBI_ALLOCATION_PROTECT = 8u,
+    PW_WINE_MBI_REGION_SIZE = 12u,
+    PW_WINE_MBI_STATE = 16u,
+    PW_WINE_MBI_PROTECT = 20u,
+    PW_WINE_MBI_TYPE = 24u,
+    PW_WINE_MEMORY_BASIC_INFORMATION = 0u,
+    PW_WINE_MEM_COMMIT = 0x1000u,
+    PW_WINE_MEM_IMAGE = 0x1000000u,
+    PW_WINE_MEM_PRIVATE = 0x20000u,
+    PW_WINE_PAGE_READONLY = 0x02u,
+    PW_WINE_PAGE_READWRITE = 0x04u,
+    PW_WINE_PAGE_EXECUTE_READ = 0x20u,
+    PW_WINE_PAGE_SIZE = 0x1000u,
+};
+
+static void put_le32(uint8_t *out, uint32_t offset, uint32_t value)
+{
+    out[offset + 0u] = (uint8_t)(value & 0xffu);
+    out[offset + 1u] = (uint8_t)((value >> 8) & 0xffu);
+    out[offset + 2u] = (uint8_t)((value >> 16) & 0xffu);
+    out[offset + 3u] = (uint8_t)((value >> 24) & 0xffu);
+}
+
+/*
+ * The module image containing the page, with the protection of the section the
+ * page falls in. Wine maps an image in one step here, so the allocation
+ * protection is the protection the loader installed on the page; the fields
+ * are deliberately the same rather than a modelled reserve-then-protect pair.
+ */
+static const PwModule *gate_image_containing(const PwLoader *loader,
+                                             uint32_t address,
+                                             uint32_t *region_end,
+                                             uint32_t *protect)
+{
+    for (uint32_t index = 0u; index < loader->module_count; ++index) {
+        const PwModule *module = &loader->modules[index];
+        const uint32_t base = (uint32_t)module->mapped.actual_base;
+        const uint64_t high = (uint64_t)base + module->mapped.image_bytes;
+        uint32_t found = PW_WINE_PAGE_READONLY;
+
+        if (!module->mapped_ok || address < base || (uint64_t)address >= high)
+            continue;
+        for (uint32_t section = 0u; section < module->layout.section_count;
+             ++section) {
+            const PeLayoutSection *entry = &module->layout.sections[section];
+            const uint64_t low = (uint64_t)base + entry->rva;
+
+            if ((uint64_t)address < low ||
+                (uint64_t)address >= low + entry->mapped_bytes)
+                continue;
+            if (entry->protection & PW_PROT_EXEC)
+                found = PW_WINE_PAGE_EXECUTE_READ;
+            else if (entry->protection & PW_PROT_WRITE)
+                found = PW_WINE_PAGE_READWRITE;
+            break;
+        }
+        *region_end = (uint32_t)high;
+        *protect = found;
+        return module;
+    }
+    return NULL;
+}
+
+static int gate_nt_query_virtual_memory(PwWineCallContext *calls,
+                                        const PwUnixCallFrame *frame,
+                                        PwUnixCallAccess guest_access,
+                                        void *access_context, uint32_t *status,
+                                        uint32_t *argument_index)
+{
+    const uint32_t process_handle = frame->args[0];
+    const uint32_t address = frame->args[1];
+    const uint32_t information_class = frame->args[2];
+    const uint32_t buffer = frame->args[3];
+    const uint32_t length = frame->args[4];
+    const uint32_t result_pointer = frame->args[5];
+    PwX86State *state = access_context;
+    const PwModule *image;
+    const uint32_t base = address & ~(PW_WINE_PAGE_SIZE - 1u);
+    uint32_t region_end = 0u;
+    uint32_t allocation_base = 0u;
+    uint32_t protect = 0u;
+    uint32_t type = 0u;
+    uint32_t answered = 0u;
+    uint32_t written = PW_WINE_MBI_BYTES;
+    uint8_t answer[PW_WINE_MBI_BYTES];
+
+    if (information_class != PW_WINE_MEMORY_BASIC_INFORMATION) {
+        *status = PW_NT_INVALID_INFO_CLASS;
+        return PW_OK;
+    }
+    if (process_handle != 0xffffffffu) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    calls->report->virtual_queries++;
+    /* Wine reports the length it needs instead of answering, and it does so
+     * before it looks at the buffer. */
+    if (length < PW_WINE_MBI_BYTES) {
+        *status = PW_NT_INFO_LENGTH_MISMATCH;
+        return PW_OK;
+    }
+    /*
+     * Both output spans are proved before the answer is composed, so a query
+     * whose buffer the guest cannot receive into leaves nothing half-written.
+     */
+    if (!guest_span_writable(access_context, buffer, PW_WINE_MBI_BYTES)) {
+        *argument_index = 4u;
+        return PW_ERR_MALFORMED;
+    }
+    if (result_pointer != 0u &&
+        !guest_span_writable(access_context, result_pointer, 4u)) {
+        *argument_index = 6u;
+        return PW_ERR_MALFORMED;
+    }
+    image = gate_image_containing(calls->loader, base, &region_end, &protect);
+    if (image) {
+        allocation_base = (uint32_t)image->mapped.actual_base;
+        type = PW_WINE_MEM_IMAGE;
+    } else {
+        for (uint32_t index = 0u; index < state->memory_count; ++index) {
+            const PwX86Memory *region = &state->memory[index];
+
+            if ((uint64_t)base < region->low ||
+                (uint64_t)base >= region->high)
+                continue;
+            allocation_base = region->low;
+            region_end = (uint32_t)region->high;
+            protect = (region->permissions & PW_X86_WRITE)
+                ? PW_WINE_PAGE_READWRITE : PW_WINE_PAGE_READONLY;
+            type = PW_WINE_MEM_PRIVATE;
+            answered = 1u;
+            break;
+        }
+        if (!answered) {
+            *status = PW_NT_INVALID_PARAMETER;
+            return PW_OK;
+        }
+    }
+    memset(answer, 0, sizeof(answer));
+    put_le32(answer, PW_WINE_MBI_BASE_ADDRESS, base);
+    put_le32(answer, PW_WINE_MBI_ALLOCATION_BASE, allocation_base);
+    put_le32(answer, PW_WINE_MBI_ALLOCATION_PROTECT, protect);
+    put_le32(answer, PW_WINE_MBI_REGION_SIZE, region_end - base);
+    put_le32(answer, PW_WINE_MBI_STATE, PW_WINE_MEM_COMMIT);
+    put_le32(answer, PW_WINE_MBI_PROTECT, protect);
+    put_le32(answer, PW_WINE_MBI_TYPE, type);
+    if (guest_access(access_context, buffer, answer, sizeof(answer), 1) !=
+        PW_OK) {
+        *argument_index = 4u;
+        return PW_ERR_MALFORMED;
+    }
+    if (result_pointer != 0u &&
+        guest_access(access_context, result_pointer, &written, 4u, 1) !=
+            PW_OK) {
+        *argument_index = 6u;
+        return PW_ERR_MALFORMED;
+    }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
  * The one place the serviced calls are listed. `classes` names the information
  * classes the handler answers (PW_NT_CLASS_NONE when the call has none) and
  * `test` names the self-contained test that owns it; both are what
@@ -647,6 +834,8 @@ static const PwNtHandler dispatch_table[] = {
       pw_wine_object_open_section },
     { 0x0019u, { 0x25u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_process_info.c",
       pw_wine_query_process_image },
+    { 0x0023u, { 0u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_virtual_memory.c",
+      gate_nt_query_virtual_memory },
 };
 
 static const PwNtHandler *dispatch_find(uint32_t id)
@@ -1405,6 +1594,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     calls.config = config;
     calls.report = report;
     calls.root = pw_loader_module(&runner->loader, 0u);
+    calls.loader = &runner->loader;
     calls.heap_cursor = PW_WINE_GATE_HEAP_BASE;
     calls.limit = config->allocation_limit != 0u ? config->allocation_limit
                                                  : PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT;

@@ -19,6 +19,7 @@
 #define PROSPERO_WIN_PW_WINE_CONTEXT_H
 
 #include "pw_guest_vm.h"
+#include "pw_loader.h"
 #include "pw_nt_handle.h"
 #include "pw_wine_gate.h"
 
@@ -29,6 +30,13 @@ typedef struct PwWineCallContext {
     /* The module that plays the process image: ntdll's loader describes it
      * back to itself through NtQueryInformationProcess. */
     const PwModule *root;
+    /* The whole module graph, because a question about an address is a
+     * question about every module this run mapped, not only the root:
+     * ntdll's loader asks where the ntdll image it was started inside lives
+     * (build_ntdll_module, dlls/ntdll/loader.c:2362) before it has a module
+     * record for it, so the answer cannot come from the inventory it is
+     * about to build. */
+    const PwLoader *loader;
     uint32_t heap_cursor;
     uint32_t limit;
     PwVmRegion regions[PW_WINE_GATE_MAX_CALL_REGIONS];
