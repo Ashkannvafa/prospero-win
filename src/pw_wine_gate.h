@@ -38,10 +38,15 @@ enum {
     PW_WINE_GATE_DEFAULT_STEPS = 65536,
     PW_WINE_GATE_MAX_STEPS = 1048576,
     PW_WINE_GATE_STACK_BYTES = 64u * 1024u,
-    PW_WINE_GATE_CACHE_ENTRIES = 1024,
     /* ntdll's loader path translates far more code than a title's startup:
-     * the arena is the gate's own budget, and running out of it is reported
-     * as its own classified stop rather than as a guest fault. */
+     * the entry count and the code arena are the gate's own budgets, and
+     * running out of either is reported as its own classified stop rather
+     * than as a guest fault. Measured on the pinned runtime, the Wine-runtime
+     * control needs 968 blocks and the application-root run 1 027 to reach its
+     * current frontier while using 660 KB of the arena, so the entry count was
+     * what bound the run and this bound is set clear of the measured
+     * requirement instead of at it. */
+    PW_WINE_GATE_CACHE_ENTRIES = 4096,
     PW_WINE_GATE_ARENA_BYTES = 4u * 1024u * 1024u,
     PW_WINE_GATE_DEFAULT_CALLS = 64,
     PW_WINE_GATE_MAX_CALL_REGIONS = 16,
