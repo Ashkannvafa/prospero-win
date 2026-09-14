@@ -232,6 +232,13 @@ guest thread block, all of which are now implemented and host-tested:
   instruction carries the same prefix, so the host provides the atomicity; a
   register destination or a pure compare is not a legal LOCK form and stays
   refused.
+- **XCHG with a memory operand** (`xchg [mem], reg`, with or without the
+  redundant LOCK prefix), which is what ntdll's heap takes an entry off a free
+  list with. i386 performs that form atomically whether LOCK is written or not,
+  so the emitted code calls a helper that performs exactly one host exchange,
+  and the register and the operand swap values while no flag is written at all.
+  The register form has no memory operand to exchange and the byte and 16-bit
+  forms are not implemented, so all three stay refused.
 - A **minimal guest TEB and PEB** owned by the gate: the TEB is what FS points
   at, with the documented NT offsets for `StackBase` (0x04), `StackLimit`
   (0x08), `Self` (0x18) and `ProcessEnvironmentBlock` (0x30), and the PEB is
@@ -733,6 +740,37 @@ NtQueryInformationThread      (0x0025) ThreadBasicInformation only:
                                        refused, and a buffer shorter than the
                                        structure is reported before anything is
                                        written
+NtContinue                    (0x0043) the state a thread resumes at, read out
+                                       of the guest's own I386_CONTEXT (0x2cc
+                                       bytes) and installed whole: Eax..Edi,
+                                       Eip, Esp and Eflags, plus the x87
+                                       control word and MXCSR. The call does
+                                       not return to its stub - the
+                                       instruction pointer and the stack come
+                                       from the context - and the run carries
+                                       on wherever it said. A context that does
+                                       not ask for the integer and control
+                                       groups, or that names a code or stack
+                                       segment other than the user ones this
+                                       run publishes (0x1b/0x23), is refused
+                                       with STATUS_INVALID_PARAMETER rather
+                                       than run in a segment it cannot
+                                       describe; the x87 register file and the
+                                       XMM file are the run's own FP state and
+                                       are not rebuilt from the context
+NtTerminateThread             (0x0053) a stop, like NtTerminateProcess and
+                                       next to it in the dispatcher: a thread
+                                       that has ended does not keep executing,
+                                       and this run models one thread, so
+                                       terminating it ends the process. That is
+                                       how a program's own clean exit arrives -
+                                       its entry point returns, kernel32's
+                                       BaseThreadInitThunk passes the value to
+                                       RtlExitUserThread, and that calls
+                                       NtTerminateThread( GetCurrentThread(),
+                                       status ) - and the status travels in the
+                                       evidence as the exit code. Any other
+                                       handle is STATUS_INVALID_HANDLE
 NtQueryDefaultLocale          (0x0015) the user's locale or the system's, both
                                        of them the one locale this run models
                                        (MAKELANGID( LANG_ENGLISH,

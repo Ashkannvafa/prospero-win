@@ -337,6 +337,23 @@ typedef struct PwWineGateReport {
     uint32_t entry_rva;
     uint32_t entry_eip;             /* initial guest EIP */
     uint32_t entry_pe_rva;          /* the module's own entry point */
+    /*
+     * ntdll's own RtlUserThreadStart, which is what the kernel puts in the
+     * first thread's context as its Eip (dlls/ntdll/unix/signal_i386.c:2474)
+     * and what NtContinue therefore installs. Zero when the entry module does
+     * not export it - a synthetic fixture with an entry of its own - in which
+     * case the context carries that zero rather than an invented address.
+     */
+    uint32_t thread_start_rva;
+    uint32_t thread_start_eip;
+    /*
+     * The transfer address the first thread is started with: the root image's
+     * own entry point, which is what the unix side hands signal_start_thread
+     * as the thread's start routine (dlls/ntdll/unix/server.c:1780,
+     * `main_image_info.TransferAddress`), with the PEB as that thread's
+     * argument. Zero when the root image has no entry point.
+     */
+    uint32_t main_entry_eip;
     uint32_t stub_syscall_id;       /* decoded from the stub's first bytes */
     uint32_t observed_syscall_id;   /* EAX when the boundary was reached */
     uint32_t boundary_return_eip;   /* guest return address at the boundary */
@@ -361,6 +378,15 @@ typedef struct PwWineGateReport {
      * status without naming the call that asked for it says half of it. */
     uint32_t stop_call_id;
     uint32_t stop_call_args[6];
+    /*
+     * The call that ended the process and the status it named: NtTerminateThread
+     * or NtTerminateProcess, with the value the guest passed as the exit code.
+     * For the generated application this is its own entry point's return value,
+     * because that is what kernel32's BaseThreadInitThunk hands to
+     * RtlExitUserThread.
+     */
+    uint32_t exit_call_id;
+    uint32_t exit_status;
     uint32_t chaining;
     uint32_t residency;
     uint32_t lazy_flags;
@@ -432,6 +458,11 @@ typedef struct PwWineGateReport {
     uint64_t thread_handles;
     uint64_t thread_queries;
     uint64_t thread_refusals;
+    /* NtContinue: how many times the run installed a thread's own context, and
+     * how many of those contexts it refused (a segment this run cannot run in,
+     * or state it could not read). */
+    uint64_t context_restores;
+    uint64_t context_restore_refusals;
     uint64_t object_opens;
     uint64_t object_refusals;
     uint32_t objects_configured;

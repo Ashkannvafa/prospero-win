@@ -857,6 +857,41 @@ static void cmpxchg_call(Emitter *e, unsigned source)
     byte(e,0x85);byte(e,0xc0);byte(e,0x74);byte(e,1);byte(e,0xc3);
 }
 
+/*
+ * XCHG r/m32, r32: one exchange of the operand with its register, which is
+ * what Wine's heap code uses to take an entry off a free list
+ * (heap_thread_detach_bin_groups, dlls/ntdll/heap.c). i386 performs this form
+ * atomically whether or not LOCK is written, so the helper performs exactly
+ * one host exchange rather than a load/store pair, and - unlike the
+ * compare-and-swap - it writes no flags at all, which is why the caller only
+ * has to protect the pending lazy flags across the C call rather than let the
+ * helper announce new ones.
+ */
+static int xchg_dispatch(PwX86State *state, uint32_t *address, unsigned source)
+{
+    uint32_t previous;
+
+    if (!state || !address || source > 7u)
+        return PW_ERR_PRECONDITION;
+    previous = __atomic_exchange_n(address, state->gpr[source],
+                                   __ATOMIC_SEQ_CST);
+    state->gpr[source] = previous;
+    return PW_OK;
+}
+
+/* Calls xchg_dispatch with the address the block computed (in RAX) and the
+ * index of the register operand. */
+static void xchg_call(Emitter *e, unsigned source)
+{
+    byte(e,0x48);byte(e,0x89);byte(e,0xc6);       /* mov rsi, rax */
+    byte(e,0xba);word(e,source);                  /* mov edx, source */
+    byte(e,0x57);byte(e,0x48);byte(e,0xb8);
+    uint64_t target=(uint64_t)(uintptr_t)&xchg_dispatch;
+    word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
+    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);       /* call rax; pop rdi */
+    byte(e,0x85);byte(e,0xc0);byte(e,0x74);byte(e,1);byte(e,0xc3);
+}
+
 static void string_call(Emitter *e,unsigned opcode,unsigned width,unsigned repeat)
 {
     byte(e,0xbe);word(e,opcode);byte(e,0xba);word(e,width);byte(e,0xb9);word(e,repeat);
@@ -939,6 +974,7 @@ typedef struct DecodedInst {
     unsigned word_operand;
     unsigned lock_prefix;
     unsigned cmpxchg;               /* 0f b1 to memory: compare with EAX */
+    unsigned xchg;                  /* 87 to memory: swap with a register */
     unsigned bit_op;                /* 1 bt, 2 bts, 3 btr, 4 btc; 0 none */
     unsigned bit_imm;               /* the bit index is an imm8 */
     unsigned cmov;                  /* 0f 40..4f: conditional move */
@@ -1213,7 +1249,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         size_t length = 0;
         Operand operand;
         memset(&operand, 0, sizeof(operand));
-        unsigned compare=0,alu=7,short_imm=0,word_operand=0,lock_prefix=0,cmpxchg=0,conditional=0,extend=0,setcc=0;
+        unsigned compare=0,alu=7,short_imm=0,word_operand=0,lock_prefix=0,cmpxchg=0,xchg=0,conditional=0,extend=0,setcc=0;
         unsigned bit_op=0,bit_imm=0;
         unsigned cmov=0,cmov_condition=0;
         unsigned sse_kind=PW_SSE_NONE,sse_mem_bytes=0,sse_has_imm=0;
@@ -1518,6 +1554,23 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
             if(result!=PW_OK)DECODE_FAIL(result);
             if(operand.mod==3)DECODE_FAIL(PW_ERR_UNSUPPORTED);
             cmpxchg=1;length=2+operand.bytes;can_fault=1;
+        } else if(op==0x87 || (op==0xf0 && bytes-cursor>=2 &&
+                               source[cursor+1]==0x87)) {
+            /*
+             * XCHG r/m32, r32 to memory: Wine's heap code takes an entry off
+             * a free list with it (heap_thread_detach_bin_groups,
+             * dlls/ntdll/heap.c:1863). The memory form is the one with an
+             * atom to exchange - i386 makes it atomic even without LOCK - and
+             * it writes no flags; the register form has no memory operand and
+             * stays refused rather than being translated as two moves.
+             */
+            const size_t prefix=op==0xf0?1u:0u;
+            int result=decode_operand(source+cursor+prefix+1,
+                                      bytes-cursor-prefix-1,&operand);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            if(operand.mod==3)DECODE_FAIL(PW_ERR_UNSUPPORTED);
+            xchg=1;lock_prefix=op==0xf0?1u:0u;
+            length=1+prefix+operand.bytes;can_fault=1;
         } else if(op==0x66 || op==0xf0 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=(op==0x66 || op==0xf0)?1:0;
             if(bytes-cursor<=prefix)DECODE_FAIL(PW_ERR_TRUNCATED);
@@ -1730,6 +1783,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->word_operand = word_operand;
         d->lock_prefix = lock_prefix;
         d->cmpxchg = cmpxchg;
+        d->xchg = xchg;
         d->bit_op = bit_op;
         d->bit_imm = bit_imm;
         d->cmov = cmov;
@@ -1870,6 +1924,7 @@ analyze_and_emit:
         unsigned word_operand = d->word_operand;
         unsigned lock_prefix = d->lock_prefix;
         unsigned cmpxchg = d->cmpxchg;
+        unsigned xchg = d->xchg;
         unsigned bit_op = d->bit_op;
         unsigned bit_imm = d->bit_imm;
         unsigned cmov = d->cmov;
@@ -1931,6 +1986,21 @@ analyze_and_emit:
             effective_address(&e,&operand,&block->exit_contract);
             memory_address_width(&e,2,4);
             cmpxchg_call(&e,operand.reg);
+            emit_load_all_resident(&e, &block->exit_contract);
+        }
+        else if(xchg) {
+            /*
+             * One exchange in the helper, because i386 performs XCHG with a
+             * memory operand atomically. The helper writes no flags, but the C
+             * call can clobber the host flag register the pending lazy flags
+             * live in, so they are committed first and the resident registers
+             * reloaded afterwards - the same ownership boundary the
+             * compare-and-swap helper uses.
+             */
+            emit_commit_flags(&e);
+            effective_address(&e,&operand,&block->exit_contract);
+            memory_address_width(&e,2,4);
+            xchg_call(&e,operand.reg);
             emit_load_all_resident(&e, &block->exit_contract);
         }
         else if(byte_alu) {

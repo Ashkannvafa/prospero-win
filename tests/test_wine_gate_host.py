@@ -178,24 +178,33 @@ APPLICATION_PINNED = {
     # (0x10101010) as a function pointer and stopped as non-code.
     #
     # (4) The initialization entry's first argument is the register context the
-    # kernel builds at the top of the thread's stack, not the PEB. Passing the
-    # PEB made loader_init write the image's entry point into the middle of the
-    # PEB and made ntdll's signal_start_thread clear 0xf000 bytes of stack
-    # below the PEB - memory nothing had mapped - which is the bounds fault
-    # this scenario stopped on before.
+    # kernel builds at the top of the thread's stack, not the PEB - and the
+    # context itself is the one the unix side builds: Eip is ntdll's own
+    # RtlUserThreadStart, Eax is the process image's transfer address and Ebx
+    # is the PEB (dlls/ntdll/unix/signal_i386.c:2455-2506, called as
+    # signal_start_thread( main_image_info.TransferAddress, peb, teb ),
+    # dlls/ntdll/unix/server.c:1780). Passing the PEB made loader_init write
+    # the image's entry point into the middle of the PEB and made
+    # signal_start_thread clear 0xf000 bytes of stack below the PEB - memory
+    # nothing had mapped - which is the bounds fault this scenario stopped on
+    # before.
     #
-    # With all four in place the loader's own start-up completes and the run
-    # reaches the *next service it does not have*: NtContinue (syscall 0x43),
-    # which is what signal_start_thread calls last to enter the thread
-    # (dlls/ntdll/signal_i386.c:524) with the context this gate now builds.
-    # That is the next piece of work, and it is also the application entry
-    # point. The fault address with residency on is unchanged while the
-    # faulting block stays the same (0x105c1aa7, 9 instructions, resident mask
-    # 0x43), which is the signature the private report records for it.
+    # With all four in place the application runs. NtContinue (0x0043) is
+    # served, so the loader's last call enters the thread at RtlUserThreadStart;
+    # kernel32's BaseThreadInitThunk calls the application's own entry point with
+    # the PEB as its argument (the transfer address the context named), the
+    # entry returns 1, RtlExitUserThread hands that value to NtTerminateThread
+    # (0x0053) and the run ends as a classified clean exit with the status the
+    # guest named. So the two pinned words below are the application's own exit
+    # code and the call that carried it. What still stops every run before this
+    # without register residency is the engine defect recorded in the private
+    # report; its fault address and block are unchanged (0x105c1aa7, 9
+    # instructions, resident mask 0x43).
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "unix-call-unimplemented", "retired": "593688",
-                      "blocks": "2902"},
+    "residency_off": {"stop": "process-terminated", "retired": "598404",
+                      "blocks": "2981", "exit_status": "0x1",
+                      "exit_call": "0x00000053"},
 }
 
 
@@ -234,6 +243,12 @@ def check_application_frontier() -> None:
             if address != expected["fault"]:
                 problems.append(f"{label}: fault address {address} != "
                                 f"{expected['fault']}")
+        for name in ("exit_status", "exit_call"):
+            if name in expected:
+                observed = field(text, "verdict", name)
+                if observed != expected[name]:
+                    problems.append(f"{label}: {name} {observed} != "
+                                    f"{expected[name]}")
     if problems:
         raise SystemExit(
             "wine ntdll gate: the application-root frontier moved, and moving "

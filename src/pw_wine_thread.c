@@ -14,6 +14,20 @@ static void put_le32(uint8_t *out, uint32_t offset, uint32_t value)
     out[offset + 3u] = (uint8_t)((value >> 24) & 0xffu);
 }
 
+static uint32_t get_le32(const uint8_t *in, uint32_t offset)
+{
+    return (uint32_t)in[offset + 0u] |
+           ((uint32_t)in[offset + 1u] << 8) |
+           ((uint32_t)in[offset + 2u] << 16) |
+           ((uint32_t)in[offset + 3u] << 24);
+}
+
+static uint16_t get_le16(const uint8_t *in, uint32_t offset)
+{
+    return (uint16_t)((uint16_t)in[offset + 0u] |
+                      (uint16_t)((uint16_t)in[offset + 1u] << 8));
+}
+
 /*
  * NtGetNextThread: the next thread of this process after `last`, with a handle
  * to it.
@@ -194,6 +208,96 @@ int pw_wine_thread_query(struct PwWineCallContext *calls,
         *argument_index = 3u;
         return PW_ERR_MALFORMED;
     }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
+ * NtContinue: install the state the guest's own context describes and resume
+ * there, which is what makes a thread start.
+ *
+ * Wine's NtContinue is NtContinueEx with the boolean packed into a pointer
+ * (dlls/ntdll/unix/server.c:2060), and that function waits for a pending user
+ * APC when the caller asked to be alerted and otherwise ends in
+ * signal_set_full_context: the context is loaded into the CPU and the call
+ * does not return to its caller. This run models no APC queue at all -
+ * NtQueueApcThread has no handler, so nothing can ever be pending - which
+ * makes "there is no APC to deliver" the truthful answer and the context the
+ * thing that decides where execution goes.
+ *
+ * What is installed is the whole integer and control state - Eax..Edi, Eip,
+ * Esp and Eflags - plus the two floating-point control words, which the
+ * context carries at fixed offsets and this run's FP state has as its own
+ * fields. What is *not* modelled is recorded here rather than left implicit,
+ * and each is refused or ignored in a way the guest can see:
+ *
+ *  - the segment selectors. A context that does not name the user code and
+ *    stack segments this run publishes (0x1b/0x23, the ones the kernel puts in
+ *    the context it builds) is refused with STATUS_INVALID_PARAMETER, because
+ *    running in a segment this gate cannot describe is not something it can
+ *    do. FS is not modelled as a selector at all - the run addresses the TEB
+ *    by base - so SegFs and SegGs are ignored and the FS base the process unit
+ *    published stays.
+ *  - the floating-point register files. The x87 register area and the XMM file
+ *    are the run's own FP state and are not rebuilt from this context.
+ */
+int pw_wine_thread_continue(struct PwWineCallContext *calls,
+                            const PwUnixCallFrame *frame,
+                            PwUnixCallAccess guest, void *context,
+                            uint32_t *status, uint32_t *argument_index)
+{
+    PwX86State *state = context;
+    const uint32_t pointer = frame->args[0];
+    uint8_t raw[PW_WINE_CONTEXT_BYTES];
+    const uint32_t required = PW_WINE_CONTEXT_FLAG_i386 |
+                              PW_WINE_CONTEXT_FLAG_CONTROL |
+                              PW_WINE_CONTEXT_FLAG_INTEGER;
+    uint32_t flags;
+
+    if (!calls || !state || !guest || pointer == 0u) {
+        *argument_index = 0u;
+        return PW_ERR_MALFORMED;
+    }
+    if (guest(context, pointer, raw, sizeof(raw), 0) != PW_OK) {
+        *argument_index = 0u;
+        return PW_ERR_MALFORMED;
+    }
+    flags = get_le32(raw, PW_WINE_CONTEXT_OFFSET_FLAGS);
+    if ((flags & required) != required) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->context_restore_refusals++;
+        return PW_OK;
+    }
+    if (get_le16(raw, PW_WINE_CONTEXT_OFFSET_SEG_CS) !=
+            (uint16_t)PW_WINE_CONTEXT_USER_CS ||
+        get_le16(raw, PW_WINE_CONTEXT_OFFSET_SEG_SS) !=
+            (uint16_t)PW_WINE_CONTEXT_USER_SS) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->context_restore_refusals++;
+        return PW_OK;
+    }
+    state->gpr[0] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EAX);
+    state->gpr[1] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_ECX);
+    state->gpr[2] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EDX);
+    state->gpr[3] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EBX);
+    state->gpr[4] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_ESP);
+    state->gpr[5] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EBP);
+    state->gpr[6] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_ESI);
+    state->gpr[7] = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EDI);
+    state->eip = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EIP);
+    /* The flags come from the context whole, so nothing the run deferred from
+     * an earlier instruction may be merged into them afterwards. */
+    state->eflags = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EFLAGS);
+    state->deferred_flags.raw_flags = 0u;
+    state->deferred_flags.known_mask = 0u;
+    state->fp.x87_control = get_le16(raw, PW_WINE_CONTEXT_OFFSET_FLOAT_CONTROL);
+    state->fp.mxcsr = get_le32(raw, PW_WINE_CONTEXT_OFFSET_EXTENDED_MXCSR);
+    /*
+     * The instruction pointer and the stack are now the context's, so the
+     * dispatcher must not synthesize the stub's own return over them.
+     */
+    calls->state_installed = 1u;
+    calls->report->context_restores++;
     *status = PW_NT_SUCCESS;
     return PW_OK;
 }

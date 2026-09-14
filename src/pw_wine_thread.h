@@ -40,6 +40,53 @@ enum {
     PW_WINE_THREAD_BASE_PRIORITY = 8u,
 };
 
+/*
+ * The i386 register context, which is how a thread's state travels: the
+ * kernel builds one at the top of a thread's initial stack and ntdll's
+ * initialization entry receives it as its first argument
+ * (dlls/ntdll/unix/signal_i386.c:2455-2506), and NtContinue is what installs
+ * one to resume a thread. The offsets are the documented NT ones
+ * (`winnt.h`'s I386_CONTEXT: 0x2cc bytes, Eax at 0xb0, the floating-point save
+ * area at 0x1c with its register area at 0x34, and the 512-byte
+ * ExtendedRegisters blob at 0xcc, whose XSAVE_FORMAT shape puts MxCsr at
+ * 0x18).
+ */
+enum {
+    PW_WINE_CONTEXT_BYTES = 0x2ccu,
+    PW_WINE_CONTEXT_OFFSET_FLAGS = 0x00u,
+    PW_WINE_CONTEXT_OFFSET_FLOAT_CONTROL = 0x1cu,
+    PW_WINE_CONTEXT_OFFSET_SEG_GS = 0x8cu,
+    PW_WINE_CONTEXT_OFFSET_SEG_FS = 0x90u,
+    PW_WINE_CONTEXT_OFFSET_EDI = 0x9cu,
+    PW_WINE_CONTEXT_OFFSET_ESI = 0xa0u,
+    PW_WINE_CONTEXT_OFFSET_EBX = 0xa4u,
+    PW_WINE_CONTEXT_OFFSET_EDX = 0xa8u,
+    PW_WINE_CONTEXT_OFFSET_ECX = 0xacu,
+    PW_WINE_CONTEXT_OFFSET_EAX = 0xb0u,
+    PW_WINE_CONTEXT_OFFSET_EBP = 0xb4u,
+    PW_WINE_CONTEXT_OFFSET_EIP = 0xb8u,
+    PW_WINE_CONTEXT_OFFSET_SEG_CS = 0xbcu,
+    PW_WINE_CONTEXT_OFFSET_EFLAGS = 0xc0u,
+    PW_WINE_CONTEXT_OFFSET_ESP = 0xc4u,
+    PW_WINE_CONTEXT_OFFSET_SEG_SS = 0xc8u,
+    PW_WINE_CONTEXT_OFFSET_EXTENDED_CONTROL = 0xccu,
+    PW_WINE_CONTEXT_OFFSET_EXTENDED_MXCSR = 0xe4u,
+    /* The three groups the kernel's own initial context asks for. */
+    PW_WINE_CONTEXT_FLAG_CONTROL = 0x00000001u,
+    PW_WINE_CONTEXT_FLAG_INTEGER = 0x00000002u,
+    PW_WINE_CONTEXT_FLAG_SEGMENTS = 0x00000004u,
+    PW_WINE_CONTEXT_FLAG_i386 = 0x00010000u,
+    /* What the kernel fills the initial context's ContextFlags with:
+     * CONTEXT_FULL (control, integer, segments) plus the floating-point and
+     * extended-register groups (dlls/ntdll/unix/signal_i386.c:2493). */
+    PW_WINE_CONTEXT_FLAGS_INITIAL = 0x0001002fu,
+    /* The user code and stack segments this run publishes, and the flags word
+     * the kernel gives a fresh thread. */
+    PW_WINE_CONTEXT_USER_CS = 0x1bu,
+    PW_WINE_CONTEXT_USER_SS = 0x23u,
+    PW_WINE_CONTEXT_EFLAGS = 0x202u,
+};
+
 /* One thread of this run. */
 typedef struct PwWineThread {
     uint32_t id;                    /* UniqueThread, as this run publishes it */
@@ -59,5 +106,12 @@ int pw_wine_thread_query(struct PwWineCallContext *calls,
                          const PwUnixCallFrame *frame, PwUnixCallAccess guest,
                          void *context, uint32_t *status,
                          uint32_t *argument_index);
+
+/* NtContinue: install the state the guest's own context describes and resume
+ * there instead of returning to the caller. */
+int pw_wine_thread_continue(struct PwWineCallContext *calls,
+                            const PwUnixCallFrame *frame,
+                            PwUnixCallAccess guest, void *context,
+                            uint32_t *status, uint32_t *argument_index);
 
 #endif /* PROSPERO_WIN_PW_WINE_THREAD_H */

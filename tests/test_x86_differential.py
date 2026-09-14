@@ -18,10 +18,12 @@ with tempfile.TemporaryDirectory(prefix="pw-x86-reference-") as directory:
                                 check=True, capture_output=True, timeout=5).stdout
     # 36 bytes of stack/FS/lock/bit-test values, the 24 bytes of the two
     # LOCK CMPXCHG shapes (word, accumulator and flags each), the 4 bytes of
-    # the accumulator's byte forms and the 24 bytes of the SSE lane (16 stored
-    # bytes, the lane mask and the extracted word).
-    assert len(native) == 88 and translated == native, (native.hex(), translated.hex())
+    # the accumulator's byte forms, the 12 bytes of the memory XCHG (the flags
+    # after the exchange, the register and the word) and the 24 bytes of the
+    # SSE lane (16 stored bytes, the lane mask and the extracted word).
+    assert len(native) == 100 and translated == native, (native.hex(), translated.hex())
 print("x86 differential passed: stack/call semantics, 32-bit SIB address wrap, "
       "FS-prefixed absolute operands, lock-prefixed read-modify-write, lock "
       "compare-and-swap to memory in both of its outcomes, the accumulator's "
-      "byte forms, bit test, conditional move and the SSE lane sequence")
+      "byte forms, exchange with a memory operand leaving the flags alone, bit "
+      "test, conditional move and the SSE lane sequence")

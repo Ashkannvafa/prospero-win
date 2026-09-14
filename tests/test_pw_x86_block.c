@@ -1092,6 +1092,31 @@ static void lock_prefix_tests(void)
                                scratch2,sizeof(scratch2),&block2)==PW_ERR_UNSUPPORTED);
         assert(pw_x86_translate(cmpxchg_byte,sizeof(cmpxchg_byte),0,
                                scratch2,sizeof(scratch2),&block2)==PW_ERR_UNSUPPORTED);
+        /*
+         * XCHG: the memory form is what Wine's heap code uses to take an entry
+         * off a free list, with or without the redundant LOCK prefix, and both
+         * are translated. The register form has no memory operand to exchange
+         * and the byte and 16-bit forms are not implemented, so all three stay
+         * refused rather than half-translated.
+         */
+        {
+            const uint8_t xchg_memory[]={0x87,0x11};      /* xchg [ecx], edx */
+            const uint8_t xchg_locked[]={0xf0,0x87,0x11}; /* lock xchg [ecx],edx */
+            const uint8_t xchg_register[]={0x87,0xd0};    /* xchg eax, edx */
+            const uint8_t xchg_byte[]={0x86,0x10};        /* xchg [eax], dl */
+            const uint8_t xchg_word[]={0x66,0x87,0x11};   /* xchg [ecx], dx */
+
+            assert(pw_x86_translate(xchg_memory,sizeof(xchg_memory),0,
+                                    scratch2,sizeof(scratch2),&block2)==PW_OK);
+            assert(pw_x86_translate(xchg_locked,sizeof(xchg_locked),0,
+                                    scratch2,sizeof(scratch2),&block2)==PW_OK);
+            assert(pw_x86_translate(xchg_register,sizeof(xchg_register),0,
+                                    scratch2,sizeof(scratch2),&block2)==PW_ERR_UNSUPPORTED);
+            assert(pw_x86_translate(xchg_byte,sizeof(xchg_byte),0,
+                                    scratch2,sizeof(scratch2),&block2)==PW_ERR_UNSUPPORTED);
+            assert(pw_x86_translate(xchg_word,sizeof(xchg_word),0,
+                                    scratch2,sizeof(scratch2),&block2)==PW_ERR_UNSUPPORTED);
+        }
         /* A locked compare-and-swap still requires write permission. */
         state.stack_low=state.stack_high=0;
         state.memory_count=1;
@@ -1913,6 +1938,49 @@ int main(int argc, char **argv)
         }
         state.memory[0]=saved_memory;
         state.memory_count=saved_count;
+    }
+    /*
+     * XCHG to memory, the same shape the native reference in
+     * tests/test_pw_x86_reference.S executes: the operand and the register
+     * exchange values, and the instruction writes no flags at all - so the
+     * flags "xor eax, eax" left behind (ZF and PF, which the mask below keeps)
+     * must still be there afterwards. The three words printed here are the
+     * flags after the exchange, the register and the word, in the native
+     * program's order: a translation that only stored, that left the register
+     * alone, or that announced flags of its own differs on one of them.
+     */
+    {
+        PwVmRegion slot;
+        const uint8_t exchange[]={
+            0xc7,0x01,0x44,0x33,0x22,0x11,      /* mov [ecx], 0x11223344 */
+            0xba,0xdd,0xcc,0xbb,0xaa,           /* mov edx, 0xaabbccdd */
+            0x31,0xc0,                          /* xor eax, eax: ZF and PF */
+            0x87,0x11,                          /* xchg [ecx], edx */
+        };
+
+        assert(backend.reserve_at(NULL,0x03300000,4096,4096,&slot)==PW_OK);
+        assert(backend.commit(NULL,&slot,0,slot.bytes,
+                              PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+        state.memory_count=1;
+        state.memory[0]=(PwX86Memory){0x03300000,0x03301000,
+                                      PW_X86_READ|PW_X86_WRITE};
+        state.gpr[1]=0x03300000;
+        assert(run(exchange,sizeof(exchange),0x02400000)==0);
+        /* The word took the register and the register took the word. */
+        assert(*(uint32_t *)(uintptr_t)(0x03300000+0x0)==0xaabbccddu);
+        assert(state.gpr[2]==0x11223344u);
+        /* And the flags the "xor eax, eax" left behind are untouched: 0x8d5
+         * is the architectural flag mask, and ZF|PF is what the xor set. */
+        assert((state.eflags&0x8d5u)==0x44u);
+        if (argc==2 && strcmp(argv[1],"--emit")==0) {
+            uint32_t flags=state.eflags&0x8d5u;
+
+            assert(fwrite((void *)(uintptr_t)(0x03300000),4,1,stdout)==1);
+            assert(fwrite(&state.gpr[2],4,1,stdout)==1);
+            assert(fwrite(&flags,4,1,stdout)==1);
+        }
+        state.memory_count=0;
+        assert(backend.release(NULL,&slot)==PW_OK);
     }
     /*
      * The SSE lane, executed here through the translator as one block and in

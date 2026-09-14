@@ -26,10 +26,10 @@ CALL = re.compile(r'\{\s*(0x[0-9a-f]{4})u,\s*"([^"]+)",\s*(\d+)u\s*\}')
 # The handler list in the runtime documentation.
 DOC = re.compile(r'^(Nt[A-Za-z]+)\s+\(0x([0-9a-f]{4})\)', re.M)
 
-# NtTerminateProcess is a stop, not a service: the dispatcher handles it before
-# it consults the registry, so the documentation lists it and the registry does
-# not.
-DOCUMENTED_STOP = 0x002C
+# NtTerminateProcess and NtTerminateThread are stops, not services: the
+# dispatcher handles them before it consults the registry, so the documentation
+# lists them and the registry does not.
+DOCUMENTED_STOPS = {0x002C, 0x0053}
 
 
 def registry() -> list[tuple[int, list[int], str, str]]:
@@ -80,7 +80,7 @@ def main() -> int:
 
     # The documentation's list is the registry plus the one deliberate stop.
     for identifier, name in docs.items():
-        if identifier == DOCUMENTED_STOP:
+        if identifier in DOCUMENTED_STOPS:
             continue
         assert identifier in ids, (
             f"the docs list {name} (0x{identifier:04x}) but nothing serves it")
@@ -93,8 +93,9 @@ def main() -> int:
 
     print("handler ledger passed: "
           f"{len(entries)} serviced calls, all present in the pinned Wine "
-          f"table and in the documented list, plus the documented stop "
-          f"0x{DOCUMENTED_STOP:04x}")
+          f"table and in the documented list, plus the documented stops "
+          + ", ".join(f"0x{documented:04x}" for documented in
+                      sorted(DOCUMENTED_STOPS)))
     for identifier, classes, test, handler in entries:
         named = ", ".join(f"0x{class_id:04x}" for class_id in classes)
         print(f"  0x{identifier:04x} {calls[identifier]:<28} "

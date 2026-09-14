@@ -91,6 +91,14 @@ typedef struct PwWineCallContext {
      */
     PwWineSection sections[PW_WINE_GATE_MAX_SECTIONS];
     uint32_t section_count;
+    /*
+     * Set by a handler that installed the guest's whole CPU state itself -
+     * NtContinue is the only one - so the dispatcher must not then synthesize
+     * the stub's own return (EAX = status, EIP = return PC, ESP popped): the
+     * instruction pointer and the stack the guest resumes at are the ones the
+     * handler just read out of the guest's context, not the stub's.
+     */
+    uint8_t state_installed;
 } PwWineCallContext;
 
 #endif /* PROSPERO_WIN_PW_WINE_CONTEXT_H */

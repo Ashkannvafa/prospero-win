@@ -688,23 +688,6 @@ enum {
     PW_WINE_PAGE_READWRITE = 0x04u,
     PW_WINE_PAGE_EXECUTE_READ = 0x20u,
     PW_WINE_PAGE_SIZE = 0x1000u,
-    /*
-     * The register context the kernel places at the top of a thread's initial
-     * stack and ntdll's initialization entry receives as its first argument
-     * (winnt.h's I386_CONTEXT: 0x2cc bytes, Eax at 0xb0).
-     */
-    PW_WINE_CONTEXT_BYTES = 0x2ccu,
-    PW_WINE_CONTEXT_OFFSET_FLAGS = 0x00u,
-    PW_WINE_CONTEXT_OFFSET_EBX = 0xa4u,
-    PW_WINE_CONTEXT_OFFSET_EAX = 0xb0u,
-    PW_WINE_CONTEXT_OFFSET_CS = 0xbcu,
-    PW_WINE_CONTEXT_OFFSET_EFLAGS = 0xc0u,
-    PW_WINE_CONTEXT_OFFSET_ESP = 0xc4u,
-    PW_WINE_CONTEXT_OFFSET_SS = 0xc8u,
-    PW_WINE_CONTEXT_FULL = 0x00010007u,   /* CONTEXT_i386 | control|int|seg */
-    PW_WINE_CONTEXT_USER_CS = 0x1bu,
-    PW_WINE_CONTEXT_USER_SS = 0x23u,
-    PW_WINE_CONTEXT_EFLAGS = 0x202u,
 };
 
 static void put_le32(uint8_t *out, uint32_t offset, uint32_t value)
@@ -1049,6 +1032,8 @@ static const PwNtHandler dispatch_table[] = {
       pw_wine_thread_next },
     { 0x0025u, { 0u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_thread.c",
       pw_wine_thread_query },
+    { 0x0043u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_continue.c",
+      pw_wine_thread_continue },
     { 0x0039u, { 0x0009009cu, PW_NT_CLASS_NONE },
       "tests/test_pw_wine_file_service.c", pw_wine_file_fs_control },
     { 0x004au, { 0x01000000u, PW_NT_CLASS_NONE },
@@ -1265,16 +1250,28 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
      * one falls through to the unimplemented stop, so the frame is still
      * understood and reported and the guest does not continue past it. */
     /*
-     * NtTerminateProcess is a stop rather than a service: a process that has
-     * ended does not keep executing, so the run ends here instead of handing
-     * the guest a status it would never see.
+     * NtTerminateProcess and NtTerminateThread are stops rather than services:
+     * a process or its last thread that has ended does not keep executing, so
+     * the run ends here instead of handing the guest a status it would never
+     * see. This run models one thread, so terminating that thread is the
+     * process ending - and that is how a program's own clean exit arrives:
+     * the application's entry point returns, kernel32's BaseThreadInitThunk
+     * passes the value to RtlExitUserThread, and that calls
+     * NtTerminateThread( GetCurrentThread(), status ) and never returns
+     * (dlls/ntdll/thread.c:764). The status the guest named is recorded, so
+     * the evidence carries the application's own exit code.
      */
-    if (info->id == 0x002cu) {
-        status = frame.args[0] == 0xffffffffu ? PW_NT_SUCCESS
-                                             : PW_NT_INVALID_HANDLE;
+    if (info->id == 0x002cu || info->id == 0x0053u) {
+        const uint32_t current = info->id == 0x002cu ? 0xffffffffu
+                                                     : 0xfffffffeu;
+
+        status = frame.args[0] == current ? PW_NT_SUCCESS
+                                          : PW_NT_INVALID_HANDLE;
         if (status != PW_NT_SUCCESS) {
             result = PW_OK;
         } else {
+            report->exit_call_id = info->id;
+            report->exit_status = frame.args[1];
             pw_unix_call_record(&report->calls, &frame, info, status,
                                 info->arg_bytes / 4u, PW_UNIX_CALL_HANDLED);
             report->calls_serviced++;
@@ -1308,6 +1305,17 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
                         info->arg_bytes / 4u, PW_UNIX_CALL_HANDLED);
     if (terminate)
         return PW_WINE_STOP_PROCESS_TERMINATED;
+    /*
+     * A handler that installed the guest's whole CPU state (NtContinue) has
+     * already named the instruction pointer and the stack the guest resumes
+     * at, so the stub's own return must not be synthesized over them: the run
+     * continues wherever the context said.
+     */
+    if (calls->state_installed) {
+        calls->state_installed = 0u;
+        report->calls_serviced++;
+        return PW_WINE_STOP_NONE;
+    }
     /* Return to the stub with its stdcall frame popped. */
     state->gpr[0] = status;
     /* [esp] is the stub's own return address and [esp+4] the caller's, so
@@ -1671,6 +1679,23 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             (uint32_t)pw_map_exec_address(&entry_module->mapped, symbol.rva);
         report->stub_syscall_id =
             decode_stub_syscall(entry_module, symbol.rva);
+        /*
+         * ntdll's own thread entry, which is what the kernel puts in the first
+         * thread's context as its Eip (dlls/ntdll/unix/signal_i386.c:2474) and
+         * what NtContinue therefore installs. A module that does not export it
+         * - a synthetic fixture whose entry is a function of its own - leaves
+         * both fields zero, so the context carries that zero rather than an
+         * invented address. Not finding it is not fatal: a run that reaches
+         * NtContinue is a run whose ntdll exports the syscall dispatcher.
+         */
+        if (pe_export_find_name(&entry_module->image, &directory,
+                                "RtlUserThreadStart", &symbol) == PW_OK &&
+            symbol.is_forwarder == 0u && symbol.is_code != 0u) {
+            report->thread_start_rva = symbol.rva;
+            report->thread_start_eip =
+                (uint32_t)pw_map_exec_address(&entry_module->mapped,
+                                              symbol.rva);
+        }
     }
 
     /*
@@ -1702,6 +1727,12 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         have_process = 1;
         report->stack_base = process.layout.stack_base;
         report->stack_bytes = process.layout.stack_bytes;
+        /* The root image's own transfer address: the routine the first thread
+         * is started with (dlls/ntdll/unix/server.c:1780). */
+        report->main_entry_eip = root_module_loaded
+            ? (uint32_t)root_module_loaded->mapped.actual_base +
+              root_module_loaded->image.entry_point
+            : 0u;
         report->teb_base = process.layout.teb_base;
         report->teb_bytes = process.layout.teb_bytes;
         /*
@@ -1875,46 +1906,87 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     if (status != PW_OK)
         goto done;
     /*
-     * ntdll's initialization entry takes a register *context*, and the kernel
-     * builds it at the top of the thread's initial stack: LdrInitializeThunk
-     * hands it to loader_init, which uses a null start routine to name the
-     * process's own entry point (dlls/ntdll/loader.c:4527 - that is how Wine
-     * starts its first thread), and then to signal_start_thread, which clears
-     * the 0xf000 bytes of stack *below* it before entering the thread through
-     * NtContinue (dlls/ntdll/signal_i386.c:514-524).
+     * The first thread's frame, exactly as the kernel builds it before ntdll
+     * runs (dlls/ntdll/unix/signal_i386.c:2455-2506):
      *
-     * Measured, this run passed the PEB instead: the loader wrote the image's
-     * entry point into the middle of the PEB, and the clear ran down from
-     * 0x0d000000 - the PEB - into memory nothing had mapped, so the run ended
-     * on the guard's classified bounds fault at the last instructions of
-     * ntdll's own start-up. The context sits one page below the stack's top
-     * because the entry's own argument frame lives in the top sixteen bytes.
+     *   Esp      = StackBase - 16
+     *   context  = Esp - sizeof(CONTEXT), ContextFlags = CONTEXT_FULL plus the
+     *              floating-point and extended groups, Eip = ntdll's own
+     *              RtlUserThreadStart, Eax = the thread's start routine (null
+     *              for the first thread, which is what makes loader_init
+     *              publish the process image's own entry point through it,
+     *              dlls/ntdll/loader.c:4527), Ebx = the thread's argument
+     *              (null here), Eflags = 0x202 and the x87/MXCSR control words
+     *   below it the call frame LdrInitializeThunk is entered with: a return
+     *              address, the context as its first argument and three zero
+     *              argument slots
+     *
+     * LdrInitializeThunk hands that context to loader_init and then to
+     * signal_start_thread, which clears the 0xf000 bytes of stack *below* it
+     * and enters the thread through NtContinue (dlls/ntdll/signal_i386.c:514).
+     * Measured, this run passed the PEB as that argument instead: the loader
+     * wrote the image's entry point into the middle of the PEB, and the clear
+     * ran down from 0x0d000000 into memory nothing had mapped - a bounds fault
+     * at the last instructions of ntdll's own start-up.
      */
     {
         uint8_t context[PW_WINE_CONTEXT_BYTES];
+        uint32_t value;
         const uint32_t stack_high = report->stack_base + report->stack_bytes;
         const uint32_t context_va =
-            (stack_high - PW_WINE_PAGE_SIZE - PW_WINE_CONTEXT_BYTES) & ~15u;
+            (stack_high - 16u - PW_WINE_CONTEXT_BYTES) & ~3u;
 
-        if (context_va < report->stack_base) {
+        if (context_va < report->stack_base ||
+            context_va - 20u < report->stack_base) {
             stage = "context";
             status = PW_ERR_LIMIT;
             goto done;
         }
         memset(context, 0, sizeof(context));
-        put_le32(context, PW_WINE_CONTEXT_OFFSET_FLAGS, PW_WINE_CONTEXT_FULL);
-        put_le32(context, PW_WINE_CONTEXT_OFFSET_CS, PW_WINE_CONTEXT_USER_CS);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_FLAGS,
+                 PW_WINE_CONTEXT_FLAGS_INITIAL);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_SEG_CS,
+                 PW_WINE_CONTEXT_USER_CS);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_SEG_SS,
+                 PW_WINE_CONTEXT_USER_SS);
         put_le32(context, PW_WINE_CONTEXT_OFFSET_EFLAGS,
                  PW_WINE_CONTEXT_EFLAGS);
-        put_le32(context, PW_WINE_CONTEXT_OFFSET_ESP, stack_high);
-        put_le32(context, PW_WINE_CONTEXT_OFFSET_SS, PW_WINE_CONTEXT_USER_SS);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_ESP, stack_high - 16u);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_EIP,
+                 report->thread_start_eip);
         /*
-         * Eax stays null, so loader_init publishes the image's own entry point
-         * there, and Ebx - the argument a thread is started with - is null for
-         * the first thread, which is what the kernel passes.
+         * The thread's start routine and its argument, which are not null for
+         * the first thread of a process: the unix side starts it with
+         * signal_start_thread( main_image_info.TransferAddress, peb, teb )
+         * (dlls/ntdll/unix/server.c:1780), so the process image's own entry
+         * point is the routine and the PEB is the argument the image's entry
+         * is called with. loader_init only fills this in itself for an
+         * IL-only image (dlls/ntdll/loader.c:4527), which is why the kernel
+         * side has to say it.
          */
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_EAX, report->main_entry_eip);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_EBX, report->peb_base);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_FLOAT_CONTROL, 0x27fu);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_EXTENDED_CONTROL, 0x27fu);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_EXTENDED_MXCSR, 0x1f80u);
         memcpy((void *)(uintptr_t)context_va, context, sizeof(context));
-        memcpy((void *)(uintptr_t)(state.gpr[4] + 4u), &context_va, 4u);
+        /*
+         * The five dwords below the context: three zero argument slots, the
+         * context itself as the first argument, and the address the
+         * initialization entry was entered from. That last one is the gate's
+         * own caller address - zero, the address this run called the entry
+         * from - rather than Wine's poison value (0xdeadbabe), because it is
+         * the sentinel this run's loop already recognizes as "the entry
+         * returned to its caller" and the real path never reads it
+         * (LdrInitializeThunk does not return).
+         */
+        value = 0u;
+        memcpy((void *)(uintptr_t)(context_va - 4u), &value, 4u);
+        memcpy((void *)(uintptr_t)(context_va - 8u), &value, 4u);
+        memcpy((void *)(uintptr_t)(context_va - 12u), &value, 4u);
+        memcpy((void *)(uintptr_t)(context_va - 16u), &context_va, 4u);
+        memcpy((void *)(uintptr_t)(context_va - 20u), &value, 4u);
+        state.gpr[4] = context_va - 20u;
     }
 
     report->first_eip = state.eip;

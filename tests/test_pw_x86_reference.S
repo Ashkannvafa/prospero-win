@@ -145,6 +145,31 @@ target:
     movl $1, %ebx
     movl $4, %eax
     int $0x80
+    addl $8, %esp
+/*
+ * XCHG to memory: the operand and the register exchange values and the
+ * instruction writes no flags, so the flags "xorl %eax,%eax" left behind (ZF
+ * and PF, 0x44) must still be there afterwards. Three words are printed - the
+ * flags after the exchange, the register and the word - so a translation that
+ * only stored, that left the register alone, or that announced flags of its
+ * own differs here.
+ */
+    movl $0x11223344, xchg_target
+    movl $0xaabbccdd, %edx
+    xorl %eax, %eax
+    xchgl %edx, xchg_target
+    pushfl
+    popl %eax
+    andl $0x8d5, %eax
+    pushl %eax
+    pushl %edx
+    pushl xchg_target
+    movl %esp, %ecx
+    movl $12, %edx
+    movl $1, %ebx
+    movl $4, %eax
+    int $0x80
+    addl $12, %esp
 /*
  * The SSE lane. Every register the sequence reads is written by the sequence
  * itself first, so the host CPU's initial XMM state is irrelevant: the bytes
@@ -191,6 +216,9 @@ cmpxchg_target:
     .long 0
 .align 4
 byte_target:
+    .long 0
+.align 4
+xchg_target:
     .long 0
 .align 16
 sse_in:

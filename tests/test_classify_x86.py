@@ -19,7 +19,8 @@ result = subprocess.run(
           "660ffdc1\n660f74c1\n660fd7c1\n660f6e03\n660f7e03\n660ff9c1\n"
           "660ff7c1\n660fe7c1\n"
           "0f28c3\n0f29c3\n660f6fc3\n660f7fc3\n"
-          "0f2810\n0f2910\n660f6f10\n660f7f10\n",
+          "0f2810\n0f2910\n660f6f10\n660f7f10\n"
+          "8711\nf08711\n87d0\n8610\n668711\n",
     text=True, capture_output=True, check=True)
 statuses = [int(line) for line in result.stdout.splitlines()]
 assert statuses[:3] == [0, 0, 0], statuses
@@ -37,6 +38,12 @@ assert statuses[14] != 0 and statuses[15] != 0, statuses
 # emitted instruction and there is no classified guest alignment fault yet.
 assert statuses[16:20] == [0] * 4, statuses
 assert statuses[20:24] == [-5] * 4, statuses
+# XCHG: the memory form Wine's heap code uses to take an entry off a free list
+# is translated, with or without the redundant LOCK prefix; the register form
+# has no memory operand to exchange and the byte and 16-bit forms are not
+# implemented, so all three are refused rather than half-translated.
+assert statuses[24:26] == [0, 0], statuses
+assert statuses[26:29] == [-5, -5, -5], statuses
 print("x86 instruction classifier passed: exact supported and rejected forms")
 
 assert x87_form(bytes.fromhex("d9e8"), "FLD1") == "FLD1:op1/reg/g5/r0"

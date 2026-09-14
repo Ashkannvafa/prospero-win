@@ -762,10 +762,14 @@ int main(int argc, char **argv)
            report.boundary_count, report.boundary_thunk_rva,
            report.boundary_thunk_va);
     printf("kind=host-wine-entry module=%s symbol=%s rva=0x%08x eip=0x%08x "
-           "pe_entry_rva=0x%08x stub_id=0x%08x kind=%s\n",
+           "pe_entry_rva=0x%08x stub_id=0x%08x kind=%s "
+           "thread_start_rva=0x%08x thread_start_eip=0x%08x "
+           "main_entry_eip=0x%08x\n",
            entry_module, entry_symbol, report.entry_rva, report.entry_eip,
            report.entry_pe_rva, report.stub_syscall_id,
-           report.stub_syscall_id != 0u ? "stub" : "initialization");
+           report.stub_syscall_id != 0u ? "stub" : "initialization",
+           report.thread_start_rva, report.thread_start_eip,
+           report.main_entry_eip);
     printf("kind=host-wine-call return_eip=0x%08x in_module=%u caller_rva=0x%08x "
            "caller_id=0x%08x observed=0x%08x\n",
            report.boundary_return_eip, report.boundary_return_in_module,
@@ -940,13 +944,14 @@ int main(int argc, char **argv)
     }
     printf("kind=host-wine-verdict accepted=%d stop=%s entry_id=0x%08x "
            "syscall=0x%08x stop_call=0x%08x stop_call_args=%#x,%#x,%#x,%#x,%#x,%#x "
-           "retired=%llu\n",
+           "exit_call=0x%08x exit_status=%#x retired=%llu\n",
            status == PW_OK && pw_wine_stop_is_acceptance(report.stop),
            pw_wine_stop_name(report.stop), report.stub_syscall_id,
            report.observed_syscall_id, report.stop_call_id,
            report.stop_call_args[0], report.stop_call_args[1],
            report.stop_call_args[2], report.stop_call_args[3],
            report.stop_call_args[4], report.stop_call_args[5],
+           report.exit_call_id, report.exit_status,
            (unsigned long long)report.retired);
     /* A classified stop is evidence, never a compatibility claim. */
     return status == PW_OK && pw_wine_stop_is_acceptance(report.stop) ? 0 : 1;
