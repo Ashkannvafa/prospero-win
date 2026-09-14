@@ -59,6 +59,11 @@ enum {
                                              * transcript */
     MARKER_RVA = DATA_RVA + 0x260,          /* what the guest wrote and read */
     PROTECT_STATUS_RVA = DATA_RVA + 0x400,  /* the four protect/query statuses */
+    NLS_PTR_RVA = DATA_RVA + 0x420,         /* NtInitializeNlsFiles outputs */
+    NLS_LCID_RVA = DATA_RVA + 0x424,
+    NLS_SIZE_RVA = DATA_RVA + 0x428,        /* LARGE_INTEGER */
+    NLS_STATUS_RVA = DATA_RVA + 0x430,
+    NLS_LCID_COPY_RVA = DATA_RVA + 0x434,
     DIRECTORY_RVA = DATA_RVA + 0x280,       /* UNICODE_STRING of a directory */
     DIRECTORY_TEXT_RVA = DATA_RVA + 0x290,
     DIRECTORY_ATTRS_RVA = DATA_RVA + 0x2D0,
@@ -71,6 +76,7 @@ enum {
     STUB_ATTRS_RVA = TEXT_RVA + 0x350,      /* NtQueryAttributesFile: none */
     STUB_MAP_RVA = TEXT_RVA + 0x360,        /* NtMapViewOfSection, 0x28 */
     STUB_PROTECT_RVA = TEXT_RVA + 0x370,    /* NtProtectVirtualMemory, 0x50 */
+    STUB_NLS_RVA = TEXT_RVA + 0x380,        /* NtInitializeNlsFiles, 0xa4 */
     CALLER_RVA = TEXT_RVA,
     /* The shapes and classes the guest asks with. */
     SECTION_IMAGE_INFORMATION = 1u,
@@ -433,6 +439,29 @@ static size_t build_module(void)
     emit_push_eax();
     emit_call(STUB_QUERY_RVA);
     emit_store_eax(PROTECT_STATUS_RVA + 12u);
+    /*
+     * ntdll's NLS initialization: the runtime namespace is asked for its own
+     * locale.nls the way Wine asks, and the file service here does carry it, so
+     * the answer is the one this bridge gives for a data section it cannot map
+     * yet - a real status, not a fabricated mapping. The language id comes back
+     * either way, and the guest reads it and carries it out below.
+     */
+    emit_push_absolute(NLS_SIZE_RVA);
+    emit_push_absolute(NLS_LCID_RVA);
+    emit_push_absolute(NLS_PTR_RVA);
+    emit_call(STUB_NLS_RVA);
+    emit_store_eax(NLS_STATUS_RVA);
+    emit_load_eax(NLS_LCID_RVA);
+    emit_store_eax(NLS_LCID_COPY_RVA);
+    emit_load_eax(NLS_LCID_COPY_RVA);
+    emit_push_eax();                              /* length argument */
+    emit_push_absolute(NLS_PTR_RVA);              /* information pointer */
+    emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
+    emit_load_eax(SECTION_HANDLE_RVA);
+    emit_push_eax();
+    emit_call(STUB_QUERY_RVA);
+    emit_store_eax(NLS_STATUS_RVA + 4u);
+
     /* The write that must now be refused: the page is read-only again. */
     emit_load_eax(PROTECT_BASE_RVA);
     emit_byte(0xc7); emit_byte(0x00);             /* mov dword [eax], imm32 */
@@ -449,6 +478,7 @@ static size_t build_module(void)
     emit_stub(STUB_ATTRS_RVA, 0x003du, 8u);     /* NtQueryAttributesFile */
     emit_stub(STUB_MAP_RVA, 0x0028u, 40u);      /* NtMapViewOfSection */
     emit_stub(STUB_PROTECT_RVA, 0x0050u, 20u);  /* NtProtectVirtualMemory */
+    emit_stub(STUB_NLS_RVA, 0x00a4u, 12u);      /* NtInitializeNlsFiles */
     emit_byte(0xc3);
 
     emit_data_reloc(NAME_RVA + 4u);
@@ -492,6 +522,7 @@ static size_t build_module(void)
  * fixture's own image bytes as "test.dll" and nothing else. */
 typedef struct FakeFile {
     char last_name[64];                     /* what the service was asked for */
+    uint32_t library_seen;                  /* the run asked for its own DLL */
     uint32_t opens;
     uint32_t reads;
     uint32_t closes;
@@ -506,8 +537,16 @@ static PwWineFileStatus fake_open(void *context, const char *name,
 
     file->opens++;
     memcpy(file->last_name, name, strlen(name) + 1u);
+    if (strcmp(name, "locale.nls") == 0) {
+        /* The distribution carries the NLS data, which is the case this bridge
+         * answers with a status rather than a mapping. */
+        *size = 4u;
+        *token = file;
+        return PW_WINE_FILE_OK;
+    }
     if (strcmp(name, "test.dll") != 0)
         return PW_WINE_FILE_NOT_FOUND;
+    file->library_seen = 1u;
     *size = file->size;
     *token = file;
     return PW_WINE_FILE_OK;
@@ -632,9 +671,10 @@ int main(void)
      * mapped once, with no refusal. */
     assert(report.section_creates == 1u);
     assert(report.section_queries == 4u);
-    /* The short buffer, the unknown class, the data section, and the three
-     * unknown-class queries the guest uses to carry values out. */
-    assert(report.section_refusals == 6u);
+    /* The short buffer, the unknown class, the data section, the three
+     * unknown-class queries the guest uses to carry values out, and the NLS
+     * data this distribution carries but this bridge cannot map yet. */
+    assert(report.section_refusals == 7u);
     assert(report.section_views == 1u);
     assert(report.section_view_refusals == 0u);
     assert(report.calls.handled >= 10u);
@@ -702,6 +742,18 @@ int main(void)
     assert(record_with(&report, 17u)->args[3] != 0u);
     assert((record_with(&report, 17u)->args[3] & 0xfffu) == 0u);
     /*
+     * ntdll's NLS initialization. The distribution carries locale.nls, so the
+     * answer is a real refusal rather than a fabricated mapping, and the system
+     * language id comes back anyway - the guest reads it and the query below
+     * carries it out, so it can only be right if it landed in guest memory.
+     */
+    assert(record_with(&report, 18u)->id == 0x00a4u);
+    assert(record_with(&report, 18u)->status == PW_NT_NOT_SUPPORTED);
+    assert(record_with(&report, 19u)->id == 0x0051u);
+    assert(record_with(&report, 19u)->status == PW_NT_INVALID_INFO_CLASS);
+    assert(record_with(&report, 19u)->args[3] == 0x0409u);
+    assert(report.nls_refusals == 1u);
+    /*
      * And the run ends on the write that must be refused now: the page is
      * read-only again in the host mapping and in the dispatcher's view of it
      * together, so this is the guard's own classified stop at the page the
@@ -718,11 +770,15 @@ int main(void)
      * the name it carries - and the section read it once to describe the image
      * and once more for the headers plus every section that has bytes on disk
      * when it placed the view. */
-    assert(file.opens == 2u);
+    /* Three opens: the loader's, the section re-opening the file by name when
+     * the view is mapped, and the NLS data the run asks the namespace for. */
+    assert(file.opens == 3u);
     assert(file.reads == 2u + expected.section_count);
     /* The section resolved its file through the service by the canonical name
-     * the file handle carried. */
-    assert(strcmp(file.last_name, "test.dll") == 0);
+     * the file handle carried, and the last thing the namespace was asked for
+     * was the NLS data the run needs at this point of the boot. */
+    assert(file.library_seen == 1u);
+    assert(strcmp(file.last_name, "locale.nls") == 0);
     /* The DLL file and the gate-owned Windows directory. */
     assert(report.file_opens == 2u);
     return 0;

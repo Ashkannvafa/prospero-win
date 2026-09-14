@@ -514,6 +514,16 @@ NtReadFile                    (0x0006) handle, IO status, buffer, length,
                                        offset; a directory handle is refused
 NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
                                        and Directory for a directory object)
+NtInitializeNlsFiles          (0x00a4) the runtime namespace's own
+                                       locale.nls, asked for the way Wine asks:
+                                       when the distribution carries the file
+                                       the answer is STATUS_NOT_SUPPORTED,
+                                       because a file-backed data section is
+                                       not implemented yet, and when it does not
+                                       the answer is the failure of the open
+                                       Wine itself falls back to; the system
+                                       language id is written back either way,
+                                       as Wine writes it
 NtProtectVirtualMemory        (0x0050) a range this run mapped - an NT
                                        allocation or a section view - protected
                                        to PAGE_NOACCESS, READONLY, READWRITE,

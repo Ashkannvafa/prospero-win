@@ -80,4 +80,10 @@ int pw_wine_section_protect(struct PwWineCallContext *calls,
                             PwUnixCallAccess guest, void *context,
                             uint32_t *status, uint32_t *argument_index);
 
+/* NtInitializeNlsFiles (0x00a4): the NLS data the runtime namespace holds, as
+ * Wine's own initialization asks for it. */
+int pw_wine_section_init_nls_files(struct PwWineCallContext *calls,
+                                   const PwUnixCallFrame *frame,
+                                   PwUnixCallAccess guest, void *context,
+                                   uint32_t *status, uint32_t *argument_index);
 #endif /* PROSPERO_WIN_PW_WINE_SECTION_H */

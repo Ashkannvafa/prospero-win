@@ -9,6 +9,7 @@
 #include "pe_layout.h"
 #include "pw_wine_context.h"
 #include "pw_wine_handle.h"
+#include "pw_wine_path.h"
 
 #include <string.h>
 
@@ -398,6 +399,75 @@ int pw_wine_section_protect(PwWineCallContext *calls,
     (void)region_high;
     calls->report->section_protects++;
     *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
+ * NtInitializeNlsFiles: ntdll's own NLS initialization, which
+ * RtlGetLocaleFileMappingAddress asks for exactly once
+ * (dlls/ntdll/locale.c:605-621). Wine reads "<data dir>/nls/locale.nls" from
+ * the Unix side, falls back to "<system dir>locale.nls" through NtOpenFile,
+ * maps the file as a read-only SEC_COMMIT section and reports the system
+ * language id - writing the id whether or not the mapping worked, because the
+ * id comes from the locale settings and not from the file.
+ *
+ * This run serves the same flow out of the runtime namespace it owns: it looks
+ * for "locale.nls" through the same path translation every other file call
+ * uses, and answers with the NTSTATUS Wine's own fallback would answer when the
+ * distribution does not carry the data. A distribution that does carry it needs
+ * a file-backed data section, which this bridge does not have yet, so that case
+ * is answered with STATUS_NOT_SUPPORTED rather than with a mapping of its own.
+ * The id written back is the one Wine falls back to when the registry has no
+ * locale of its own: MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT ).
+ */
+enum {
+    PW_WINE_NLS_SYSTEM_LCID = 0x0409u,
+};
+
+int pw_wine_section_init_nls_files(PwWineCallContext *calls,
+                                   const PwUnixCallFrame *frame,
+                                   PwUnixCallAccess guest, void *context,
+                                   uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t pointer = frame->args[0];
+    const uint32_t lcid_pointer = frame->args[1];
+    const uint32_t size_pointer = frame->args[2];
+    uint32_t lcid = PW_WINE_NLS_SYSTEM_LCID;
+    char name[PW_NT_HANDLE_PATH_MAX + 1];
+    uint64_t size = 0u;
+    void *token = NULL;
+    int is_directory = 0;
+    uint32_t refused_status = PW_NT_OBJECT_NAME_NOT_FOUND;
+
+    if (pointer == 0u || lcid_pointer == 0u || size_pointer == 0u) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    /*
+     * The same translation every file call goes through, so "locale.nls" here
+     * is the distribution's own file and never a host path the guest named.
+     */
+    if (pw_wine_path_runtime("\\??\\C:\\windows\\system32\\locale.nls", name,
+                             sizeof(name), &is_directory,
+                             &refused_status) != PW_OK)
+        name[0] = '\0';
+    if (name[0] != '\0' && calls->config->files != NULL &&
+        !is_directory &&
+        calls->config->files->open(calls->config->files->context, name, &size,
+                                   &token) == PW_WINE_FILE_OK) {
+        calls->config->files->close(calls->config->files->context, token);
+        *status = PW_NT_NOT_SUPPORTED;
+        calls->report->nls_refusals++;
+    } else {
+        /* What Wine answers when the distribution has no locale.nls: the
+         * failure of the open it fell back to. */
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        calls->report->nls_refusals++;
+    }
+    if (guest(context, lcid_pointer, &lcid, 4u, 1) != PW_OK) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
     return PW_OK;
 }
 /*

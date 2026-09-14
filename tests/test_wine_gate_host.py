@@ -149,8 +149,8 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 APPLICATION_PINNED = {
     "residency_on": {"stop": "memory-bounds", "fault": "0x61906000",
                      "retired": "56239", "blocks": "1219"},
-    "residency_off": {"stop": "unix-call-unimplemented", "retired": "480687",
-                      "blocks": "1684"},
+    "residency_off": {"stop": "process-terminated", "retired": "495440",
+                      "blocks": "1780"},
 }
 
 

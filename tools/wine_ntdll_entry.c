@@ -773,10 +773,15 @@ int main(int argc, char **argv)
         }
     }
     printf("kind=host-wine-verdict accepted=%d stop=%s entry_id=0x%08x "
-           "syscall=0x%08x retired=%llu\n",
+           "syscall=0x%08x stop_call=0x%08x stop_call_args=%#x,%#x,%#x,%#x,%#x,%#x "
+           "retired=%llu\n",
            status == PW_OK && pw_wine_stop_is_acceptance(report.stop),
            pw_wine_stop_name(report.stop), report.stub_syscall_id,
-           report.observed_syscall_id, (unsigned long long)report.retired);
+           report.observed_syscall_id, report.stop_call_id,
+           report.stop_call_args[0], report.stop_call_args[1],
+           report.stop_call_args[2], report.stop_call_args[3],
+           report.stop_call_args[4], report.stop_call_args[5],
+           (unsigned long long)report.retired);
     /* A classified stop is evidence, never a compatibility claim. */
     return status == PW_OK && pw_wine_stop_is_acceptance(report.stop) ? 0 : 1;
 }

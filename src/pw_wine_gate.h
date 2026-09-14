@@ -340,6 +340,10 @@ typedef struct PwWineGateReport {
     int8_t fault_block_map[8];
     uint8_t fault_block_code[1024];
     uint32_t fault_block_code_bytes;
+    /* The call the run ended on, with its arguments: a stop that names its
+     * status without naming the call that asked for it says half of it. */
+    uint32_t stop_call_id;
+    uint32_t stop_call_args[6];
     uint32_t chaining;
     uint32_t residency;
     uint32_t lazy_flags;
@@ -378,6 +382,8 @@ typedef struct PwWineGateReport {
     uint64_t section_view_refusals;
     uint64_t section_protects;      /* protections this run installed */
     uint64_t section_protect_refusals;
+    /* NtInitializeNlsFiles answers this run gave, and what they refused. */
+    uint64_t nls_refusals;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t key_opens;

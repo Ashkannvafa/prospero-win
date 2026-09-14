@@ -847,6 +847,8 @@ static const PwNtHandler dispatch_table[] = {
       "tests/test_pw_wine_section.c", pw_wine_section_map_view },
     { 0x0050u, { 0x04u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
       pw_wine_section_protect },
+    { 0x00a4u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
+      pw_wine_section_init_nls_files },
 };
 
 static const PwNtHandler *dispatch_find(uint32_t id)
@@ -1025,6 +1027,7 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     int terminate = 0;
 
     report->observed_syscall_id = id;
+    report->stop_call_id = id;
     if (!info) {
         pw_unix_call_record(&report->calls, NULL, NULL, status, 0u,
                             PW_UNIX_CALL_UNKNOWN);
@@ -1032,6 +1035,7 @@ static PwWineStop service_unix_call(PwWineCallContext *calls, PwX86State *state,
     }
     result = pw_unix_call_read(info, gate_guest_access, state, state->gpr[4],
                                &frame, &argument_index);
+    memcpy(report->stop_call_args, frame.args, sizeof(report->stop_call_args));
     if (result != PW_OK) {
         pw_unix_call_record(&report->calls, &frame, info, status,
                             argument_index, PW_UNIX_CALL_REJECTED);
