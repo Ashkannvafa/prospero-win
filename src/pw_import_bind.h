@@ -3,7 +3,11 @@
 #define PW_IMPORT_BIND_H
 #include "pe_import.h"
 #include "pw_map.h"
-enum { PW_IMPORT_BIND_CAPACITY=512 };
+/* One module's import table has to fit: kernel32.dll in the pinned i386
+ * runtime declares 934 import symbols, so a 512-entry workspace refuses it
+ * before anything is bound. Two thousand entries cover every staged module
+ * with room to spare and stay a bounded, checked limit. */
+enum { PW_IMPORT_BIND_CAPACITY=2048 };
 typedef enum PwImportKind { PW_IMPORT_FUNCTION=1, PW_IMPORT_DATA=2 } PwImportKind;
 typedef struct PwImportTarget { uint64_t address; PwImportKind kind; } PwImportTarget;
 typedef int (*PwImportResolver)(void *,const char *,const PeImportSymbol *,PwImportTarget *);
