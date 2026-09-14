@@ -8,7 +8,7 @@
  * a later step fails would leave the run half-mutated. The output spans are
  * preflighted in tests/test_pw_wine_gate_bridge.c; this test injects the
  * failures of the *backend* steps themselves (reserve, commit, release) and
- * exhausts the declared-region capacity, and each case asserts that everything
+ * exhausts the run's NT-region budget, and each case asserts that everything
  * the call would have changed is exactly what it was.
  *
  * The backend is a thin double around the real one: it forwards every call and
@@ -47,7 +47,9 @@ enum {
     CALLER_RVA = TEXT_RVA,
     ALLOCATION_SIZE = 0x4000,
     LOOP_SIZE = 0x1000,
-    LOOP_COUNT = 11u,
+    /* One iteration past the regions a run may own, so the last one is the
+     * allocation the budget refuses. */
+    LOOP_COUNT = PW_WINE_GATE_MAX_CALL_REGIONS,
 };
 
 enum TestMode {
@@ -206,9 +208,9 @@ static size_t build_module(enum TestMode mode)
 
     if (mode == MODE_CAPACITY) {
         /*
-         * Fill the dispatcher's declared-region table: each iteration asks for
-         * a fresh block, and the allocation that no longer fits must be rolled
-         * back rather than counted.
+         * Exhaust the run's NT-region budget: each iteration asks for a fresh
+         * block, and the allocation past the budget must be refused before the
+         * backend is touched and must not be counted.
          */
         size_t loop_start;
 
@@ -571,21 +573,26 @@ int main(void)
             assert(last->args[2] == 0u);
         }
     }
-    /* Declared-region capacity: ten blocks fit, the eleventh does not and is
-     * rolled back, and the ten that fit stay live and accounted for. */
+    /* NT-region budget: the process-parameters block the run did not allocate
+     * takes the first of the regions the run may own, the blocks up to the
+     * budget stay live and accounted for, and the allocation past it is
+     * refused before any backend step. That this, and not the dispatcher's
+     * declared-region table, is what refuses is a property of the table being
+     * sized for the whole module graph plus this budget, which
+     * src/pw_wine_gate.c asserts at compile time. */
     {
         const CaseResult injected = run_case(MODE_CAPACITY, 0);
 
         assert(injected.status == PW_ERR_UNSUPPORTED);
-        assert(injected.report.allocations == 10u);
-        assert(injected.report.call_regions == 11u);
-        assert(injected.report.allocated_bytes == 10u * LOOP_SIZE);
-        assert(injected.heap_reserves == LOOP_COUNT);
-        assert(injected.heap_commits == LOOP_COUNT);
-        /* Ten blocks are live at the stop and one was rolled back, so the
-         * backend is asked to release one more block than the run accounts
-         * for; everything the run kept is released at cleanup. */
-        assert(injected.heap_release_ok == 11u);
+        assert(injected.report.allocations == LOOP_COUNT - 1u);
+        assert(injected.report.call_regions == PW_WINE_GATE_MAX_CALL_REGIONS);
+        assert(injected.report.allocated_bytes == (LOOP_COUNT - 1u) * LOOP_SIZE);
+        /* The refused allocation never reaches the backend, so it is neither
+         * reserved, committed nor released; everything the run kept is
+         * released at cleanup. */
+        assert(injected.heap_reserves == LOOP_COUNT - 1u);
+        assert(injected.heap_commits == LOOP_COUNT - 1u);
+        assert(injected.heap_release_ok == LOOP_COUNT - 1u);
         assert(injected.heap_reserve_ok - injected.heap_release_ok == 0);
         {
             const PwUnixCallRecord *last = &injected.report.calls.sequence[

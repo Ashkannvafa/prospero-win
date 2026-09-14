@@ -22,6 +22,28 @@
 
 #include <string.h>
 
+/*
+ * The dispatcher's region table is one table with two writers: the process
+ * graph is declared before the run (stack, TEB, PEB, parameters page and each
+ * module's image and writable span) and the NT allocation handlers append the
+ * regions they hand the guest while it runs. Sizing it for either writer
+ * alone leaves the other one refusing work the process legitimately asks for,
+ * which is what a 6-module graph does to a 16-entry table. Both budgets are
+ * gate constants, so the relationship is asserted here - the only place where
+ * both headers are visible - instead of being left to arithmetic in a comment.
+ */
+_Static_assert(PW_X86_MEMORY_REGIONS >= PW_WINE_GATE_MAX_MODULES * 2u + 4u +
+                                        PW_WINE_GATE_MAX_CALL_REGIONS,
+               "region table must hold the module graph and the NT regions");
+
+/*
+ * The generated guard compares memory_count against the table bound as a
+ * signed imm8, so a table that grew past 127 would be guarded by a negative
+ * bound and every access would be classified as out of bounds.
+ */
+_Static_assert(PW_X86_MEMORY_REGIONS <= 127,
+               "guard encodes the region table bound as a signed imm8");
+
 static void copy_text(char *out, size_t out_bytes, const char *text)
 {
     size_t length;

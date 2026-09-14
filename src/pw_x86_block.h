@@ -6,11 +6,16 @@
 #include "pw_guest_fp.h"
 #include "../include/prospero_win.h"
 
-/* The gate declares the stack, each module's image, the TEB and the PEB, and
- * every NT allocation the guest is handed, so the region table is wider than
- * the single-title profile needed. Fields after memory[] are addressed with
- * disp32, so widening it does not move anything the emitter indexes. */
-enum { PW_X86_MEMORY_REGIONS=16, PW_X86_READ=1, PW_X86_WRITE=2, PW_X86_MAX_HOST_REGS=3 };
+/* The gate declares the stack, the TEB, the PEB and its parameters page plus
+ * each module's image and writable span, and then appends every NT allocation
+ * the guest is handed while the same run is in flight. One table holds both
+ * writers, so its bound is the sum of the two budgets - 8 modules * 2 ranges
+ * + 4 process blocks + 16 NT regions - and not either budget on its own; the
+ * gate is the only place both constants are visible and asserts the sum
+ * there, together with the imm8 bound the generated guard encodes. Fields
+ * after memory[] are addressed with disp32, so widening the table does not
+ * move anything the emitter indexes. */
+enum { PW_X86_MEMORY_REGIONS=64, PW_X86_READ=1, PW_X86_WRITE=2, PW_X86_MAX_HOST_REGS=3 };
 typedef struct PwX86Memory {
     uint32_t low;
     uint64_t high; /* exclusive; can represent 4 GiB */
