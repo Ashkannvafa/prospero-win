@@ -262,11 +262,16 @@ class SampleChainTest(unittest.TestCase):
         forwarder = image[rva_to_offset(second):].split(b"\0", 1)[0]
         self.assertEqual(forwarder, b"other.dll.Target")
 
-        index_rva, callbacks_rva = struct.unpack_from(
+        index_va, callbacks_va = struct.unpack_from(
             "<II", image, rva_to_offset(tls_rva) + 8)
-        self.assertEqual(index_rva, 0x2000)
-        callbacks = rva_to_offset(callbacks_rva)
-        self.assertEqual(struct.unpack_from("<I", image, callbacks)[0], 0x1000)
+        # The directory holds virtual addresses - the image base plus the RVA
+        # the caller supplied, 0x400000 being the PE32 default this spec leaves
+        # in place - so converting back to a file offset means subtracting it.
+        image_base = 0x400000
+        self.assertEqual(index_va, image_base + 0x2000)
+        callbacks = rva_to_offset(callbacks_va - image_base)
+        self.assertEqual(struct.unpack_from("<I", image, callbacks)[0],
+                         image_base + 0x1000)
         self.assertEqual(struct.unpack_from("<I", image, callbacks + 4)[0], 0)
         self.assertGreaterEqual(tls_size, 24)
 

@@ -246,18 +246,28 @@ def _build_export_blob(spec: Spec, base_rva: int) -> bytes:
 
 
 def _build_tls_blob(spec: Spec, base_rva: int) -> bytes:
-    """The PE32 TLS directory plus its callback array, zero-terminated."""
+    """The PE32 TLS directory plus its callback array, zero-terminated.
+
+    The directory's fields and the entries of the callback array are *virtual
+    addresses* in the image, which is what a loader dereferences; the caller
+    supplies RVAs and the encoder adds the image base, so a caller cannot
+    accidentally encode an RVA where a VA is required (which is exactly the
+    mistake that made the gate refuse this fixture at the TLS stage).
+    """
     assert spec.tls is not None
+    image_base = spec.image_base
+    if image_base is None:
+        image_base = 0x140000000 if spec.pe32plus else 0x400000
     blob = _Blob()
-    blob.u32(0)                                  # StartAddressOfRawData
-    blob.u32(0)                                  # EndAddressOfRawData
-    blob.u32(spec.tls.index_rva or 0)            # AddressOfIndex
-    blob.u32(base_rva + 24)                      # AddressOfCallBacks
-    blob.u32(spec.tls.zero_fill)                 # SizeOfZeroFill
-    blob.u32(0)                                  # Characteristics
+    blob.u32(0)                                        # StartAddressOfRawData
+    blob.u32(0)                                        # EndAddressOfRawData
+    blob.u32(image_base + (spec.tls.index_rva or 0))   # AddressOfIndex
+    blob.u32(image_base + base_rva + 24)               # AddressOfCallBacks
+    blob.u32(spec.tls.zero_fill)                       # SizeOfZeroFill
+    blob.u32(0)                                        # Characteristics
     for callback in spec.tls.callbacks:
-        blob.u32(callback)
-    blob.u32(0)                                  # terminating entry
+        blob.u32(image_base + callback)
+    blob.u32(0)                                        # terminating entry
     return bytes(blob.data)
 
 
@@ -487,6 +497,7 @@ APP_IMAGE_BASE = 0x10000000
 A_IMAGE_BASE = 0x10100000
 B_IMAGE_BASE = 0x10200000
 TRACE_RVA = 0x2040                       # four dwords in the EXE's data
+DATA_RVA = 0x2000                        # the .data section of a DLL
 TEXT_RVA = 0x1000
 TEXT_CHARACTERISTICS = 0x60000020        # code, execute, read
 DATA_CHARACTERISTICS = 0xC0000040        # initialized data, read, write
@@ -542,7 +553,9 @@ def application_diamond() -> dict[str, bytes]:
         exports=[Export("Provide", rva=TEXT_RVA),
                  Export("Forwarded", forwarder="b.dll.Provided")],
         imports=[Import("kernel32.dll", names=("GetLastError",))],
-        tls=Tls(callbacks=(A_IMAGE_BASE + TEXT_RVA + 0x10,)),
+        # The directory's fields are RVAs, not virtual addresses: the loader
+        # adds the image base when it builds the callback list.
+        tls=Tls(callbacks=(TEXT_RVA + 0x10,), index_rva=DATA_RVA),
     ))
     second = build_pe(Spec(
         name="b.dll", pe32plus=False, dll=True, image_base=B_IMAGE_BASE,
@@ -554,7 +567,7 @@ def application_diamond() -> dict[str, bytes]:
         ],
         exports=[Export("Provided", rva=TEXT_RVA)],
         imports=[Import("kernel32.dll", names=("GetLastError",))],
-        tls=Tls(callbacks=(B_IMAGE_BASE + TEXT_RVA + 0x10,)),
+        tls=Tls(callbacks=(TEXT_RVA + 0x10,), index_rva=DATA_RVA),
     ))
     return {"app.exe": app, "a.dll": first, "b.dll": second}
 
