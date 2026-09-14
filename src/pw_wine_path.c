@@ -39,6 +39,13 @@ int pw_wine_path_registry(const char *path, char *out, size_t out_bytes,
     size_t length = 0u;
     size_t components = 0u;
 
+    if (!status || !path || !out)
+        return PW_ERR_PRECONDITION;
+    /* The namespace prefix itself has to fit before a byte of it is copied. */
+    if (out_bytes < sizeof(root_prefix)) {
+        *status = PW_NT_OBJECT_NAME_INVALID;
+        return PW_ERR_MALFORMED;
+    }
     if (!pw_wine_path_prefix(rest, root_prefix, &used)) {
         *status = PW_NT_OBJECT_NAME_INVALID;
         return PW_ERR_NOT_FOUND;
@@ -88,6 +95,8 @@ int pw_wine_path_registry(const char *path, char *out, size_t out_bytes,
             }
         }
     }
+    /* Terminate before the root check below reads `out` as a C string. */
+    out[length] = '\0';
     if (components == 0u ||
         !(pw_wine_path_registry_root(out, "\\registry\\machine") ||
           pw_wine_path_registry_root(out, "\\registry\\user"))) {
@@ -108,6 +117,8 @@ int pw_wine_path_value_name(PwUnixCallAccess guest, void *context,
     uint8_t header[8];
     uint16_t length = 0u;
 
+    if (!guest || !out || out_bytes == 0u)
+        return PW_ERR_MALFORMED;
     if (guest(context, address, header, sizeof(header), 0) != PW_OK)
         return PW_ERR_MALFORMED;
     memcpy(&length, header, 2u);
@@ -124,6 +135,12 @@ int pw_wine_path_value(const char *name, char *out, size_t out_bytes,
 {
     size_t length = 0u;
 
+    if (!status || !name || !out)
+        return PW_ERR_PRECONDITION;
+    if (out_bytes == 0u) {
+        *status = PW_NT_OBJECT_NAME_INVALID;
+        return PW_ERR_MALFORMED;
+    }
     while (name[length] != '\0') {
         const unsigned char character = (unsigned char)name[length];
 
@@ -152,7 +169,13 @@ int pw_wine_path_prefix(const char *text, const char *prefix, size_t *used)
 {
     size_t index = 0u;
 
+    if (!text || !prefix)
+        return 0;
     for (; prefix[index] != '\0'; ++index) {
+        /* A shorter string cannot match a longer prefix: stop at its
+         * terminator instead of reading past the end of it. */
+        if (text[index] == '\0')
+            return 0;
         if (pw_wine_path_lower(text[index]) != pw_wine_path_lower(prefix[index]))
             return 0;
     }
@@ -175,6 +198,12 @@ int pw_wine_path_runtime(const char *path, char *out, size_t out_bytes,
     size_t length = 0u;
     int directory = 0;
 
+    if (!status || !path || !out)
+        return PW_ERR_PRECONDITION;
+    if (out_bytes == 0u) {
+        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+        return PW_ERR_MALFORMED;
+    }
     if (pw_wine_path_prefix(rest, "\\??\\", &used))
         rest += used;
     if (pw_wine_path_prefix(rest, "C:\\windows\\system32", &used) ||
@@ -235,6 +264,8 @@ int pw_wine_path_read_unicode(PwUnixCallAccess guest, void *context,
     uint32_t buffer = 0u;
     uint16_t length = 0u;
 
+    if (!guest || !out || out_bytes == 0u)
+        return PW_ERR_MALFORMED;
     if (guest(context, address, header, sizeof(header), 0) != PW_OK)
         return PW_ERR_MALFORMED;
     memcpy(&length, header, 2u);
@@ -269,6 +300,8 @@ int pw_wine_path_object(const char *path, char *out, size_t out_bytes,
     size_t length = 1u;
     size_t components = 0u;
 
+    if (!status || !path || !out)
+        return PW_ERR_PRECONDITION;
     if (*rest != '\\' || out_bytes < 2u) {
         *status = PW_NT_OBJECT_NAME_INVALID;
         return PW_ERR_NOT_FOUND;

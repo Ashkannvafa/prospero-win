@@ -311,6 +311,126 @@ static void test_guest_strings(void)
                                      sizeof(out)) == PW_ERR_MALFORMED);
 }
 
+/*
+ * The declared boundaries. Every function here takes an explicit output size
+ * and a set of required pointers, and the final review found paths that wrote
+ * or read before proving either: the registry prefix copied before the size
+ * was checked, a root check reading an unterminated buffer, and prefix
+ * matching reading past a shorter string. These cases pin the rules, under the
+ * sanitizers as well as here.
+ */
+static void test_boundaries(void)
+{
+    FakeGuest guest;
+    char out[8];
+    char canary[8];
+    uint32_t status = 0u;
+    size_t used = 0u;
+    int directory = 0;
+
+    memset(&guest, 0, sizeof(guest));
+    guest.size = sizeof(guest.bytes);
+
+    /* Required pointers are refused, not dereferenced. */
+    assert(pw_wine_path_prefix(NULL, "a", &used) == 0);
+    assert(pw_wine_path_prefix("a", NULL, &used) == 0);
+    assert(pw_wine_path_registry(NULL, out, sizeof(out), &status) ==
+           PW_ERR_PRECONDITION);
+    assert(pw_wine_path_registry("\\Registry\\Machine", NULL, sizeof(out),
+                                 &status) == PW_ERR_PRECONDITION);
+    assert(pw_wine_path_registry("\\Registry\\Machine", out, sizeof(out),
+                                 NULL) == PW_ERR_PRECONDITION);
+    assert(pw_wine_path_value(NULL, out, sizeof(out), &status) ==
+           PW_ERR_PRECONDITION);
+    assert(pw_wine_path_value("a", NULL, sizeof(out), &status) ==
+           PW_ERR_PRECONDITION);
+    assert(pw_wine_path_value("a", out, sizeof(out), NULL) ==
+           PW_ERR_PRECONDITION);
+    assert(pw_wine_path_runtime(NULL, out, sizeof(out), &directory,
+                                &status) == PW_ERR_PRECONDITION);
+    assert(pw_wine_path_object(NULL, out, sizeof(out), &status) ==
+           PW_ERR_PRECONDITION);
+    assert(pw_wine_path_object("\\KnownDlls", NULL, sizeof(out), &status) ==
+           PW_ERR_PRECONDITION);
+    assert(pw_wine_path_read_unicode(NULL, NULL, 0u, out, sizeof(out)) ==
+           PW_ERR_MALFORMED);
+    assert(pw_wine_path_read_unicode(fake_access, &guest, 0u, NULL,
+                                     sizeof(out)) == PW_ERR_MALFORMED);
+    assert(pw_wine_path_value_name(NULL, NULL, 0u, out, sizeof(out)) ==
+           PW_ERR_MALFORMED);
+    assert(pw_wine_path_value_name(fake_access, &guest, 0u, NULL,
+                                   sizeof(out)) == PW_ERR_MALFORMED);
+
+    /* A zero-capacity output is refused before anything is written. */
+    assert(pw_wine_path_registry("\\Registry\\Machine", out, 0u, &status) ==
+           PW_ERR_MALFORMED);
+    assert(pw_wine_path_value("", out, 0u, &status) == PW_ERR_MALFORMED);
+    assert(pw_wine_path_runtime("C:\\windows", out, 0u, &directory,
+                                &status) == PW_ERR_MALFORMED);
+    assert(pw_wine_path_object("\\KnownDlls", out, 0u, &status) ==
+           PW_ERR_NOT_FOUND);
+    assert(pw_wine_path_read_unicode(fake_access, &guest, 0u, out, 0u) ==
+           PW_ERR_MALFORMED);
+    assert(pw_wine_path_value_name(fake_access, &guest, 0u, out, 0u) ==
+           PW_ERR_MALFORMED);
+
+    /* An output too small for the namespace prefix is refused before the copy:
+     * the canary bytes are untouched. */
+    memset(canary, 0x5a, sizeof(canary));
+    assert(pw_wine_path_registry("\\Registry\\Machine", canary, 4u, &status) ==
+           PW_ERR_MALFORMED);
+    for (size_t index = 0u; index < sizeof(canary); ++index)
+        assert((unsigned char)canary[index] == 0x5a);
+
+    /* A string shorter than the prefix is not read past its terminator. */
+    assert(pw_wine_path_prefix("\\Reg", "\\registry\\", &used) == 0);
+    assert(pw_wine_path_prefix("", "\\registry\\", &used) == 0);
+    assert(pw_wine_path_prefix("C:\\wind", "C:\\windows\\system32",
+                               &used) == 0);
+
+    /* The exact boundary fits; one byte less is refused rather than
+     * truncated. "\\Registry\\Machine\\" is 18 bytes, so a 20-byte path needs
+     * exactly 21 bytes with its terminator. */
+    {
+        char path[32];
+        char exact[21];
+        char short_buffer[20];
+
+        memcpy(path, "\\Registry\\Machine\\xy", 21);
+        assert(pw_wine_path_registry(path, exact, sizeof(exact), &status) ==
+               PW_OK);
+        assert(strcmp(exact, "\\registry\\machine\\xy") == 0);
+        assert(pw_wine_path_registry(path, short_buffer, sizeof(short_buffer),
+                                     &status) == PW_ERR_MALFORMED);
+        assert(status == PW_NT_OBJECT_NAME_INVALID);
+    }
+    /* The same boundary for a value name: three characters need four bytes. */
+    {
+        char exact[4];
+        char short_buffer[3];
+
+        assert(pw_wine_path_value("Abc", exact, sizeof(exact), &status) ==
+               PW_OK);
+        assert(strcmp(exact, "abc") == 0);
+        assert(pw_wine_path_value("Abc", short_buffer, sizeof(short_buffer),
+                                  &status) == PW_ERR_MALFORMED);
+        assert(status == PW_NT_OBJECT_NAME_INVALID);
+    }
+    /* A component of exactly the runtime buffer's size, and one over. */
+    {
+        char path[32];
+        char exact[8];
+
+        memcpy(path, "C:\\windows\\abcdefg", 19);
+        assert(pw_wine_path_runtime(path, exact, sizeof(exact), &directory,
+                                    &status) == PW_OK);
+        assert(strcmp(exact, "abcdefg") == 0 && directory == 0);
+        path[18] = 'h';                       /* one byte longer than `exact` */
+        assert(pw_wine_path_runtime(path, exact, sizeof(exact), &directory,
+                                    &status) == PW_ERR_MALFORMED);
+    }
+}
+
 int main(void)
 {
     test_prefix();
@@ -319,7 +439,8 @@ int main(void)
     test_object();
     test_value_name();
     test_guest_strings();
+    test_boundaries();
     printf("wine name translation passed: prefix, registry, runtime, object, "
-           "value and guest-string rules\n");
+           "value, guest-string and buffer-boundary rules\n");
     return 0;
 }

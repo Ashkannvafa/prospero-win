@@ -30,8 +30,14 @@ int pw_wine_handle_lookup(struct PwWineCallContext *calls, uint32_t value,
 /* Releases a handle and closes whatever the service behind it owns. */
 int pw_wine_handle_release(struct PwWineCallContext *calls, uint32_t value);
 
-/* What a handle names, built once at the call site. */
-PwNtObject pw_wine_handle_object(void *token, uint64_t size, const char *path);
+/*
+ * What a handle names, built once at the call site. A path longer than
+ * PW_NT_HANDLE_PATH_MAX is PW_ERR_LIMIT and nothing is copied: a truncated
+ * canonical name would name a different object. A NULL path is fine (a file
+ * handle names no path).
+ */
+int pw_wine_handle_object(void *token, uint64_t size, const char *path,
+                          PwNtObject *out);
 
 /* NtClose: the one handler every kind of handle shares. */
 int pw_wine_handle_close(struct PwWineCallContext *calls,

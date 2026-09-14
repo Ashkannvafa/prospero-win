@@ -140,7 +140,15 @@ int pw_wine_registry_open(PwWineCallContext *calls,
         calls->report->key_refusals++;
         return PW_OK;
     }
-    const PwNtObject handle_object = pw_wine_handle_object(token, 0u, canonical);
+    PwNtObject handle_object;
+
+    /* A refused construction means the canonical path did not fit the handle's
+     * own field; that is a malformed name, and the token goes back. */
+    if (pw_wine_handle_object(token, 0u, canonical, &handle_object) != PW_OK) {
+        calls->config->registry->close(calls->config->registry->context, token);
+        *status = PW_NT_OBJECT_NAME_INVALID;
+        return PW_OK;
+    }
     if (pw_wine_handle_alloc(calls, &handle_object, PW_NT_HANDLE_KEY,
                           &handle) != PW_OK) {
         calls->config->registry->close(calls->config->registry->context, token);
@@ -206,7 +214,13 @@ int pw_wine_registry_create(PwWineCallContext *calls,
         calls->report->key_refusals++;
         return PW_OK;
     }
-    const PwNtObject handle_object = pw_wine_handle_object(token, 0u, canonical);
+    PwNtObject handle_object;
+
+    if (pw_wine_handle_object(token, 0u, canonical, &handle_object) != PW_OK) {
+        calls->config->registry->close(calls->config->registry->context, token);
+        *status = PW_NT_OBJECT_NAME_INVALID;
+        return PW_OK;
+    }
     if (pw_wine_handle_alloc(calls, &handle_object, PW_NT_HANDLE_KEY,
                           &handle) != PW_OK) {
         calls->config->registry->close(calls->config->registry->context, token);

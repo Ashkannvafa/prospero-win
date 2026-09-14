@@ -64,16 +64,29 @@ int pw_wine_handle_release(PwWineCallContext *calls, uint32_t value)
 }
 
 /* What a handle names, built once at the call site. */
-PwNtObject pw_wine_handle_object(void *token, uint64_t size, const char *path)
+int pw_wine_handle_object(void *token, uint64_t size, const char *path,
+                          PwNtObject *out)
 {
-    PwNtObject object;
+    size_t length = 0u;
 
-    memset(&object, 0, sizeof(object));
-    object.token = token;
-    object.size = size;
-    if (path)
-        memcpy(object.path, path, strlen(path) + 1u);
-    return object;
+    if (!out)
+        return PW_ERR_PRECONDITION;
+    memset(out, 0, sizeof(*out));
+    out->token = token;
+    out->size = size;
+    if (!path)
+        return PW_OK;
+    length = strlen(path);
+    /*
+     * The copy is bounded by the field it goes into: an over-long path is
+     * refused rather than truncated, because a truncated canonical name would
+     * silently name a different object. Callers pass names this unit produced,
+     * but the API has to hold on its own.
+     */
+    if (length > (size_t)PW_NT_HANDLE_PATH_MAX)
+        return PW_ERR_LIMIT;
+    memcpy(out->path, path, length + 1u);
+    return PW_OK;
 }
 
 int pw_wine_handle_close(PwWineCallContext *calls, const PwUnixCallFrame *frame,

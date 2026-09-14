@@ -35,8 +35,17 @@ int pw_wine_file_open_directory(PwWineCallContext *calls, const char *reported,
                                  uint32_t *status, uint32_t *argument_index)
 {
     uint32_t handle = 0u;
+    PwNtObject handle_object;
 
-    const PwNtObject handle_object = pw_wine_handle_object(NULL, 0u, NULL);
+    /*
+     * The canonical names this unit produces fit the handle's field by
+     * construction; a refusal here would be a malformed call rather than a
+     * status the guest could act on.
+     */
+    if (pw_wine_handle_object(NULL, 0u, NULL, &handle_object) != PW_OK) {
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
     if (pw_wine_handle_alloc(calls, &handle_object,
                           PW_NT_HANDLE_DIRECTORY, &handle) != PW_OK) {
         *status = PW_NT_INVALID_PARAMETER;
@@ -135,7 +144,13 @@ int pw_wine_file_open(PwWineCallContext *calls,
         calls->report->file_refusals++;
         return PW_OK;
     }
-    const PwNtObject handle_object = pw_wine_handle_object(token, size, NULL);
+    PwNtObject handle_object;
+
+    if (pw_wine_handle_object(token, size, NULL, &handle_object) != PW_OK) {
+        calls->config->files->close(calls->config->files->context, token);
+        *status = PW_NT_INVALID_PARAMETER;
+        return PW_OK;
+    }
     if (pw_wine_handle_alloc(calls, &handle_object,
                           PW_NT_HANDLE_FILE, &handle) != PW_OK) {
         calls->config->files->close(calls->config->files->context, token);

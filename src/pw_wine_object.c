@@ -139,7 +139,13 @@ int pw_wine_object_open(PwWineCallContext *calls,
         calls->report->object_refusals++;
         return PW_OK;
     }
-    const PwNtObject handle_object = pw_wine_handle_object(token, 0u, canonical);
+    PwNtObject handle_object;
+
+    if (pw_wine_handle_object(token, 0u, canonical, &handle_object) != PW_OK) {
+        calls->config->objects->close(calls->config->objects->context, token);
+        *status = PW_NT_OBJECT_NAME_INVALID;
+        return PW_OK;
+    }
     if (pw_wine_handle_alloc(calls, &handle_object, handle_kind, &handle) !=
         PW_OK) {
         calls->config->objects->close(calls->config->objects->context, token);
