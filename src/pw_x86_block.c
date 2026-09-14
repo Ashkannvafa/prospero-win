@@ -1050,6 +1050,18 @@ static int decode_sse(uint8_t prefix, size_t prefix_bytes,
         if (aligned_move)
             return PW_ERR_UNSUPPORTED;
     }
+    /*
+     * PMOVMSKB (66 0f d7) and PEXTRW (66 0f c5) have no memory form: their
+     * r/m operand is an XMM register, so a ModRM that names memory is not an
+     * encoding the CPU accepts. Accepting one here is worse than refusing it,
+     * because the emitter would re-emit the same ModRM on the host and the
+     * translated block would die on an illegal instruction instead of the
+     * guest seeing a classification. The SSE form matrix
+     * (tests/test_pw_sse_matrix.py) found exactly that for
+     * "66 0f d7 03": sigill in the block, no guest-visible fault.
+     */
+    if (*kind == PW_SSE_MOVMSK && operand->mod != 3)
+        return PW_ERR_UNSUPPORTED;
     return PW_OK;
 }
 

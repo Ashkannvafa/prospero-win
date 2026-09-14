@@ -1085,6 +1085,28 @@ static void sse_and_scan_tests(void)
     assert(pw_x86_translate(mmx_movq,sizeof(mmx_movq),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(movq_reg,sizeof(movq_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(movss_reg,sizeof(movss_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+    /*
+     * PMOVMSKB's r/m operand is always an XMM register - the ISA has no memory
+     * form - so a ModRM that names memory has to be refused rather than
+     * re-emitted. The SSE form matrix (tests/test_pw_sse_matrix.py) found the
+     * accepted version as a sigill inside the translated block, with no
+     * guest-visible fault; the register form keeps working and keeps its
+     * lane-to-bit order.
+     */
+    {
+        const uint8_t pmovmskb_reg[]={0x66,0x0f,0xd7,0xd3};
+        const uint8_t pmovmskb_mem[]={0x66,0x0f,0xd7,0x03};
+        static const uint8_t lanes[16]={0x80,0x01,0xff,0x00,0x00,0x80,0x7f,0x80,
+                                        0x00,0x00,0x00,0x00,0x81,0x02,0x03,0x80};
+
+        memcpy(state.fp.xmm[3],lanes,sizeof(lanes));
+        state.gpr[2]=0;
+        assert(run(pmovmskb_reg,sizeof(pmovmskb_reg),0x8400)==0);
+        assert(state.gpr[2]==0x90a5u);
+        assert(pw_x86_translate(pmovmskb_mem,sizeof(pmovmskb_mem),0,scratch,
+                                sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
+        assert(block.code_bytes==0);
+    }
     state.memory_count=0;
     state.gpr[0]=0x50000000;set_xmm(0,1,2,3,4);
     assert(run(movups_oob,sizeof(movups_oob),0x8300)==-1);
