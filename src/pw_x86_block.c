@@ -775,6 +775,70 @@ static int string_dispatch(PwX86State *state,unsigned opcode,unsigned width,unsi
     if(repeat)state->gpr[1]-=count;
     return PW_OK;
 }
+/*
+ * CMPXCHG r/m32, r32 for the memory form, with or without LOCK: the word is
+ * compared with the accumulator and the source register is stored into it when
+ * they are equal, with the flags of that comparison. The host performs the same
+ * operation - one compare-and-swap, which is what "lock" means and what a
+ * load/compare/store approximation could not give - and the value the guest
+ * then finds in its accumulator is the one the host actually saw.
+ *
+ * The block has already proved the address through the memory guard and spilled
+ * the guest's own register values, so this only performs the operation and
+ * leaves EAX and the arithmetic flags as i386 defines them.
+ */
+static int cmpxchg_dispatch(PwX86State *state, uint32_t *address, unsigned source)
+{
+    uint32_t accumulator, expected, result, flags;
+    unsigned parity = 0u;
+
+    if (!state || !address || source > 7u)
+        return PW_ERR_PRECONDITION;
+    accumulator = state->gpr[0];
+    expected = accumulator;
+    (void)__atomic_compare_exchange_n(address, &expected, state->gpr[source], 0,
+                                      __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    /*
+     * C11 leaves the value the word held in `expected` on either path: on
+     * success it is still the accumulator, and on failure it is the value the
+     * guest must now find in EAX.
+     */
+    state->gpr[0] = expected;
+    /*
+     * The flags are those of the accumulator minus the word, which is what a
+     * real i386 reports for this instruction: measured against native code in
+     * tests/test_pw_x86_reference.S, where an accumulator larger than the word
+     * leaves CF clear. Taking the subtraction the other way round gives the
+     * opposite CF and SF - the differential test caught exactly that.
+     */
+    result = accumulator - expected;
+    flags = (accumulator < expected ? 1u : 0u) |
+            (result == 0u ? 0x40u : 0u) |
+            (result & 0x80000000u ? 0x80u : 0u) |
+            ((accumulator ^ expected ^ result) & 0x10u) |
+            (((accumulator ^ expected) & (accumulator ^ result) & 0x80000000u)
+                 ? 0x800u : 0u);
+    for (unsigned bit = 0u; bit < 8u; ++bit)
+        parity ^= (result >> bit) & 1u;
+    if (!parity)
+        flags |= 4u;                              /* PF is the low byte's parity */
+    state->eflags = (state->eflags & ~0x8d5u) | (flags & 0x8d5u);
+    return PW_OK;
+}
+
+/* Calls cmpxchg_dispatch with the address the block computed (in RAX) and the
+ * index of the source register. */
+static void cmpxchg_call(Emitter *e, unsigned source)
+{
+    byte(e,0x48);byte(e,0x89);byte(e,0xc6);       /* mov rsi, rax */
+    byte(e,0xba);word(e,source);                  /* mov edx, source */
+    byte(e,0x57);byte(e,0x48);byte(e,0xb8);
+    uint64_t target=(uint64_t)(uintptr_t)&cmpxchg_dispatch;
+    word(e,(uint32_t)target);word(e,(uint32_t)(target>>32));
+    byte(e,0xff);byte(e,0xd0);byte(e,0x5f);       /* call rax; pop rdi */
+    byte(e,0x85);byte(e,0xc0);byte(e,0x74);byte(e,1);byte(e,0xc3);
+}
+
 static void string_call(Emitter *e,unsigned opcode,unsigned width,unsigned repeat)
 {
     byte(e,0xbe);word(e,opcode);byte(e,0xba);word(e,width);byte(e,0xb9);word(e,repeat);
@@ -856,6 +920,7 @@ typedef struct DecodedInst {
     unsigned short_imm;
     unsigned word_operand;
     unsigned lock_prefix;
+    unsigned cmpxchg;               /* 0f b1 to memory: compare with EAX */
     unsigned bit_op;                /* 1 bt, 2 bts, 3 btr, 4 btc; 0 none */
     unsigned bit_imm;               /* the bit index is an imm8 */
     unsigned cmov;                  /* 0f 40..4f: conditional move */
@@ -1130,7 +1195,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         size_t length = 0;
         Operand operand;
         memset(&operand, 0, sizeof(operand));
-        unsigned compare=0,alu=7,short_imm=0,word_operand=0,lock_prefix=0,conditional=0,extend=0,setcc=0;
+        unsigned compare=0,alu=7,short_imm=0,word_operand=0,lock_prefix=0,cmpxchg=0,conditional=0,extend=0,setcc=0;
         unsigned bit_op=0,bit_imm=0;
         unsigned cmov=0,cmov_condition=0;
         unsigned sse_kind=PW_SSE_NONE,sse_mem_bytes=0,sse_has_imm=0;
@@ -1417,6 +1482,24 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         } else if((op==0xf2 || op==0xf3) && bytes-cursor>=2 &&
                   source[cursor+1]==0x0f) {
             DECODE_FAIL(PW_ERR_TRUNCATED);
+        } else if(op==0xf0 && bytes-cursor>=3 && source[cursor+1]==0x0f &&
+                  source[cursor+2]==0xb1) {
+            /*
+             * LOCK CMPXCHG r/m32, r32: the locked compare-and-swap Wine's own
+             * atomics use. The memory form is the one the guest needs (the
+             * register form has no atom to lock and stays refused), and the
+             * emitter calls a helper that performs exactly one
+             * compare-and-swap, so the guest sees the host's atomicity.
+             */
+            int result=decode_operand(source+cursor+3,bytes-cursor-3,&operand);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            if(operand.mod==3)DECODE_FAIL(PW_ERR_UNSUPPORTED);
+            cmpxchg=1;lock_prefix=1;length=3+operand.bytes;can_fault=1;
+        } else if(op==0x0f && bytes-cursor>=2 && source[cursor+1]==0xb1) {
+            int result=decode_operand(source+cursor+2,bytes-cursor-2,&operand);
+            if(result!=PW_OK)DECODE_FAIL(result);
+            if(operand.mod==3)DECODE_FAIL(PW_ERR_UNSUPPORTED);
+            cmpxchg=1;length=2+operand.bytes;can_fault=1;
         } else if(op==0x66 || op==0xf0 || op==0x81 || op==0x83 || (op<=0x3d && (op&7)==5)) {
             size_t prefix=(op==0x66 || op==0xf0)?1:0;
             if(bytes-cursor<=prefix)DECODE_FAIL(PW_ERR_TRUNCATED);
@@ -1606,7 +1689,12 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         else if (op == 0x68) { length = 5; can_fault = 1; }
         else if (op == 0xe8) { length = 5; terminal = 1; can_fault = 1; }
         else if (op == 0xe9) { length = 5; terminal = 1; }
-        else if (op == 0xa1 || op == 0xa3) { length = 5; can_fault = 1; }
+        /* The accumulator forms with an absolute address: a1/a3 move the
+         * whole register, a0/a2 only its low byte, which is what ntdll's own
+         * locale code uses to publish the code page it selected. */
+        else if (op == 0xa0 || op == 0xa1 || op == 0xa2 || op == 0xa3) {
+            length = 5; can_fault = 1;
+        }
         else if (op >= 0xb8 && op <= 0xbf) length = 5;
         else if (op == 0xc2) { length = 3; terminal = 1; can_fault = 1; }
         else if (op == 0xc3) { length = 1; terminal = 1; can_fault = 1; }
@@ -1623,6 +1711,7 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         d->short_imm = short_imm;
         d->word_operand = word_operand;
         d->lock_prefix = lock_prefix;
+        d->cmpxchg = cmpxchg;
         d->bit_op = bit_op;
         d->bit_imm = bit_imm;
         d->cmov = cmov;
@@ -1674,7 +1763,8 @@ int pw_x86_translate_ext(const uint8_t *source, size_t bytes, uint32_t pc,
         if (op >= 0xb8 && op <= 0xbf) gpr_uses[op - 0xb8]++;
         if (op == 0x99) { gpr_uses[0]++; gpr_uses[2]++; }
         if (op == 0xc9) { gpr_uses[4] += 2; gpr_uses[5] += 2; }
-        if (op == 0xa1 || op == 0xa3) gpr_uses[0]++;
+        if (op == 0xa0 || op == 0xa1 || op == 0xa2 || op == 0xa3)
+            gpr_uses[0]++;
         if (op == 0x6a || op == 0x68 || op == 0xe8) gpr_uses[4] += 2;
         if (op == 0xc3 || op == 0xc2) gpr_uses[4] += 2;
         if (op == 0xd3) gpr_uses[1]++;
@@ -1761,6 +1851,7 @@ analyze_and_emit:
         unsigned short_imm = d->short_imm;
         unsigned word_operand = d->word_operand;
         unsigned lock_prefix = d->lock_prefix;
+        unsigned cmpxchg = d->cmpxchg;
         unsigned bit_op = d->bit_op;
         unsigned bit_imm = d->bit_imm;
         unsigned cmov = d->cmov;
@@ -1807,6 +1898,21 @@ analyze_and_emit:
              * so it is a descriptor ownership boundary. */
             emit_commit_flags(&e);
             string_call(&e,string_op,string_width,string_repeat);
+            emit_load_all_resident(&e, &block->exit_contract);
+        }
+        else if(cmpxchg) {
+            /*
+             * One compare-and-swap in the helper, so the boundary is the same
+             * as the string helpers': pending lazy flags are committed first
+             * (the helper writes the guest's EFLAGS itself, from the
+             * comparison it performs) and the resident registers are reloaded
+             * afterwards, because a C call clobbers the host registers that
+             * hold them.
+             */
+            emit_commit_flags(&e);
+            effective_address(&e,&operand,&block->exit_contract);
+            memory_address_width(&e,2,4);
+            cmpxchg_call(&e,operand.reg);
             emit_load_all_resident(&e, &block->exit_contract);
         }
         else if(byte_alu) {
@@ -2640,7 +2746,8 @@ analyze_and_emit:
                 effective_address(&e,&operand,&block->exit_contract);memory_address(&e,1);
                 byte(&e,0xc7);byte(&e,0x00);word(&e,value);
             }
-        } else if (op == 0x64 || op==0xa1 || op==0xa3) {
+        } else if (op == 0x64 || op==0xa0 || op==0xa1 || op==0xa2 ||
+                   op==0xa3) {
             if (fs_call) {
                 /*
                  * The FS-relative indirect call: the target comes from the
@@ -2672,10 +2779,28 @@ analyze_and_emit:
                     byte(&e,0x89); byte(&e,0x08);
                 }
             } else {
-                unsigned load=op==0xa1 || (op==0x64 && source[cursor+1]==0xa1);
+                unsigned load=op==0xa0 || op==0xa1 ||
+                              (op==0x64 && source[cursor+1]==0xa1);
+                unsigned byte_form=op==0xa0 || op==0xa2;
                 if(op==0x64)fs_address(&e,read32(source+cursor+2));
                 else {byte(&e,0xb8);word(&e,read32(source+cursor+1));memory_address(&e,!load);}
-                if (load) {
+                if (byte_form) {
+                    /*
+                     * Only the low byte of the accumulator changes, so the
+                     * address moves out of EAX first and the guest's own
+                     * accumulator is materialised before AL is replaced - the
+                     * same ownership the 16-bit forms keep for the upper
+                     * half.
+                     */
+                    byte(&e,0x89); byte(&e,0xc1);       /* mov ecx, eax */
+                    load_guest_reg(&e, &block->exit_contract, 0);
+                    if (load) {
+                        byte(&e,0x8a); byte(&e,0x01);   /* mov al, [rcx] */
+                        store_guest_reg(&e, &block->exit_contract, 0);
+                    } else {
+                        byte(&e,0x88); byte(&e,0x01);   /* mov [rcx], al */
+                    }
+                } else if (load) {
                     byte(&e,0x8b); byte(&e,0x00);
                     store_guest_reg(&e, &block->exit_contract, 0);
                 } else {

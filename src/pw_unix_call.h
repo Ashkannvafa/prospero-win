@@ -163,6 +163,9 @@ enum {
     /* What Wine's server returns when a thread enumeration reaches the end of
      * its list (server/thread.c:2329 get_next_thread). */
     PW_NT_NO_MORE_ENTRIES = 0x8000001au,
+    /* What Wine answers for the case map when it is asked with an id the
+     * section has no name for (dlls/ntdll/unix/env.c:183). */
+    PW_NT_UNSUCCESSFUL = 0xc0000001u,
 };
 
 #endif

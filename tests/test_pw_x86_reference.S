@@ -68,6 +68,64 @@ target:
     movl $4, %eax
     int $0x80
 /*
+ * LOCK CMPXCHG to memory: the word is compared with the accumulator and the
+ * source register is stored into it when they are equal. Two shapes, because
+ * they are different behaviour: one where they are equal (the word takes the
+ * source, EAX does not move and ZF is set) and one where they are not (the
+ * word keeps its value and EAX takes what was there). Each reports the word,
+ * the accumulator and the arithmetic flags, so an engine that got the store,
+ * the accumulator or the flags wrong differs here.
+ */
+    movl $0x11223344, cmpxchg_target
+    movl $0x11223344, %eax
+    movl $0xaabbccdd, %edx
+    lock cmpxchgl %edx, cmpxchg_target
+    pushfl
+    popl %ecx
+    andl $0x8d5, %ecx
+    pushl %ecx
+    pushl %eax
+    pushl cmpxchg_target
+    movl %esp, %ecx
+    movl $12, %edx
+    movl $1, %ebx
+    movl $4, %eax
+    int $0x80
+    addl $12, %esp
+    movl $0x11223344, cmpxchg_target
+    movl $0x55667788, %eax
+    movl $0x11111111, %edx
+    lock cmpxchgl %edx, cmpxchg_target
+    pushfl
+    popl %ecx
+    andl $0x8d5, %ecx
+    pushl %ecx
+    pushl %eax
+    pushl cmpxchg_target
+    movl %esp, %ecx
+    movl $12, %edx
+    movl $1, %ebx
+    movl $4, %eax
+    int $0x80
+    addl $12, %esp
+/*
+ * The accumulator's byte forms: "movb %al, target" stores only the low byte,
+ * and "movb target, %al" replaces only it. ntdll's own locale code publishes
+ * the code page it selected this way, so the value printed here is the
+ * architectural one to match: only AL moves, the upper 24 bits stay.
+ */
+    movl $0x112233aa, %eax
+    movb %al, byte_target
+    movl $0x55667700, %eax
+    movb byte_target, %al
+    pushl %eax
+    movl %esp, %ecx
+    movl $4, %edx
+    movl $1, %ebx
+    movl $4, %eax
+    int $0x80
+    addl $4, %esp
+/*
  * Bit test and conditional move: "btsl %ecx, %eax" sets a bit and reports
  * the previous one in CF, and "cmovel %esi, %edx" moves only when ZF is set.
  * Both are re-emitted by the translated engine, so these are the values to
@@ -128,6 +186,12 @@ tls_failed:
 .align 4
 lock_target:
     .long 5
+.align 4
+cmpxchg_target:
+    .long 0
+.align 4
+byte_target:
+    .long 0
 .align 16
 sse_in:
     .byte 0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08

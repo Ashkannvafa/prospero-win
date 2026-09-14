@@ -16,9 +16,12 @@ with tempfile.TemporaryDirectory(prefix="pw-x86-reference-") as directory:
                             capture_output=True, timeout=5).stdout
     translated = subprocess.run([str(root / "build/host/test_pw_x86_block"), "--emit"],
                                 check=True, capture_output=True, timeout=5).stdout
-    # 36 bytes of stack/FS/lock/bit-test values plus the 24 bytes of the SSE
-    # lane (16 stored bytes, the lane mask and the extracted word).
-    assert len(native) == 60 and translated == native, (native.hex(), translated.hex())
+    # 36 bytes of stack/FS/lock/bit-test values, the 24 bytes of the two
+    # LOCK CMPXCHG shapes (word, accumulator and flags each), the 4 bytes of
+    # the accumulator's byte forms and the 24 bytes of the SSE lane (16 stored
+    # bytes, the lane mask and the extracted word).
+    assert len(native) == 88 and translated == native, (native.hex(), translated.hex())
 print("x86 differential passed: stack/call semantics, 32-bit SIB address wrap, "
-      "FS-prefixed absolute operands, lock-prefixed read-modify-write, bit test, "
-      "conditional move and the SSE lane sequence")
+      "FS-prefixed absolute operands, lock-prefixed read-modify-write, lock "
+      "compare-and-swap to memory in both of its outcomes, the accumulator's "
+      "byte forms, bit test, conditional move and the SSE lane sequence")

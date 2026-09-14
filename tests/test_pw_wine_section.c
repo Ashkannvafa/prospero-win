@@ -65,6 +65,13 @@ enum {
     NLS_STATUS_RVA = DATA_RVA + 0x430,
     NLS_LCID_COPY_RVA = DATA_RVA + 0x434,
     NLS_HEAD_RVA = DATA_RVA + 0x438,        /* the file's first dword, as read */
+    LOCALE_LANGID_RVA = DATA_RVA + 0x440,   /* NtQueryDefaultUILanguage */
+    LOCALE_LCID_RVA = DATA_RVA + 0x444,     /* NtQueryDefaultLocale */
+    LOCALE_INSTALL_RVA = DATA_RVA + 0x448,  /* NtQueryInstallUILanguage */
+    LOCALE_PTR_RVA = DATA_RVA + 0x44C,      /* NtGetNlsSectionPtr outputs */
+    LOCALE_SIZE_RVA = DATA_RVA + 0x450,
+    LOCALE_STATUS_RVA = DATA_RVA + 0x460,   /* five statuses */
+    LOCALE_HEAD_RVA = DATA_RVA + 0x474,
     DIRECTORY_RVA = DATA_RVA + 0x280,       /* UNICODE_STRING of a directory */
     DIRECTORY_TEXT_RVA = DATA_RVA + 0x290,
     DIRECTORY_ATTRS_RVA = DATA_RVA + 0x2D0,
@@ -81,11 +88,17 @@ enum {
     STUB_MAP_RVA = TEXT_RVA + 0x460,        /* NtMapViewOfSection, 0x28 */
     STUB_PROTECT_RVA = TEXT_RVA + 0x470,    /* NtProtectVirtualMemory, 0x50 */
     STUB_NLS_RVA = TEXT_RVA + 0x480,        /* NtInitializeNlsFiles, 0xa4 */
+    STUB_LANGID_RVA = TEXT_RVA + 0x490,     /* NtQueryDefaultUILanguage, 0x44 */
+    STUB_LCID_RVA = TEXT_RVA + 0x4A0,       /* NtQueryDefaultLocale, 0x15 */
+    STUB_INSTALL_RVA = TEXT_RVA + 0x4B0,    /* NtQueryInstallUILanguage, 0xc7 */
+    STUB_NLSSEC_RVA = TEXT_RVA + 0x4C0,     /* NtGetNlsSectionPtr, 0xa1 */
     CALLER_RVA = TEXT_RVA,
     /* The shapes and classes the guest asks with. */
     SECTION_IMAGE_INFORMATION = 1u,
     SECTION_BASIC_INFORMATION = 0u,
     UNKNOWN_INFORMATION_CLASS = 9u,
+    /* Wine's NLS section types (dlls/ntdll/locale_private.h:52). */
+    NLS_CASEMAP = 10u,
     IMAGE_INFORMATION_BYTES = 48u,
     SHORT_BUFFER_BYTES = 32u,
     BASIC_INFORMATION_BYTES = 12u,
@@ -490,6 +503,44 @@ static size_t build_module(void)
     emit_call(STUB_QUERY_RVA);
     emit_store_eax(NLS_STATUS_RVA + 8u);
 
+    /*
+     * The locale questions and the case-map section. This run models one
+     * locale, so all three questions answer with the same language id the NLS
+     * mapping reports, and NtGetNlsSectionPtr maps the case map's own file
+     * (type 10, l_intl.nls) the way it maps locale.nls. The guest reads the
+     * mapped file's first dword through the address it was given, and its
+     * language id travels out through the refused query below.
+     */
+    emit_push_absolute(LOCALE_LANGID_RVA);
+    emit_call(STUB_LANGID_RVA);
+    emit_store_eax(LOCALE_STATUS_RVA);
+    emit_push_absolute(LOCALE_LCID_RVA);
+    emit_push_imm8(1);                            /* the user's locale */
+    emit_call(STUB_LCID_RVA);
+    emit_store_eax(LOCALE_STATUS_RVA + 4u);
+    emit_push_absolute(LOCALE_INSTALL_RVA);
+    emit_call(STUB_INSTALL_RVA);
+    emit_store_eax(LOCALE_STATUS_RVA + 8u);
+    emit_push_absolute(LOCALE_SIZE_RVA);
+    emit_push_absolute(LOCALE_PTR_RVA);
+    emit_push_imm8(0);                            /* unknown */
+    emit_push_imm8(0);                            /* id: the case map has one */
+    emit_push_imm8((uint8_t)NLS_CASEMAP);         /* type 10 */
+    emit_call(STUB_NLSSEC_RVA);
+    emit_store_eax(LOCALE_STATUS_RVA + 12u);
+    emit_load_eax(LOCALE_PTR_RVA);
+    emit_byte(0x8b); emit_byte(0x00);             /* mov eax, [eax] */
+    emit_store_eax(LOCALE_HEAD_RVA);
+    emit_push_imm8(0x00);                         /* ReturnLength */
+    emit_load_eax(LOCALE_HEAD_RVA);
+    emit_push_eax();                              /* length: the first dword */
+    emit_push_absolute(LOCALE_PTR_RVA);
+    emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
+    emit_load_eax(SECTION_HANDLE_RVA);
+    emit_push_eax();
+    emit_call(STUB_QUERY_RVA);
+    emit_store_eax(LOCALE_STATUS_RVA + 16u);
+
     /* The write that must now be refused: the page is read-only again. */
     emit_load_eax(PROTECT_BASE_RVA);
     emit_byte(0xc7); emit_byte(0x00);             /* mov dword [eax], imm32 */
@@ -506,7 +557,11 @@ static size_t build_module(void)
     emit_stub(STUB_ATTRS_RVA, 0x003du, 8u);     /* NtQueryAttributesFile */
     emit_stub(STUB_MAP_RVA, 0x0028u, 40u);      /* NtMapViewOfSection */
     emit_stub(STUB_PROTECT_RVA, 0x0050u, 20u);  /* NtProtectVirtualMemory */
-    emit_stub(STUB_NLS_RVA, 0x00a4u, 12u);      /* NtInitializeNlsFiles */
+    emit_stub(STUB_NLS_RVA, 0x00a4u, 12u);
+    emit_stub(STUB_LANGID_RVA, 0x0044u, 4u);
+    emit_stub(STUB_LCID_RVA, 0x0015u, 8u);
+    emit_stub(STUB_INSTALL_RVA, 0x00c7u, 4u);
+    emit_stub(STUB_NLSSEC_RVA, 0x00a1u, 20u);      /* NtInitializeNlsFiles */
     emit_byte(0xc3);
 
     emit_data_reloc(NAME_RVA + 4u);
@@ -574,6 +629,13 @@ static PwWineFileStatus fake_open(void *context, PwFileNamespace file_namespace,
     else if (file_namespace == PW_FILE_APPLICATION)
         file->application_opens++;
     memcpy(file->last_name, name, strlen(name) + 1u);
+    if (strcmp(name, "l_intl.nls") == 0) {
+        /* The case map's own data file, which the locale code asks for by
+         * type rather than by path. */
+        *size = 4u;
+        *token = file;
+        return PW_WINE_FILE_OK;
+    }
     if (strcmp(name, "locale.nls") == 0) {
         /* The distribution carries the NLS data, which is the case this bridge
          * answers with a status rather than a mapping. */
@@ -713,9 +775,9 @@ int main(void)
      * mapped once, with no refusal. */
     assert(report.section_creates == 1u);
     assert(report.section_queries == 4u);
-    /* The short buffer, the unknown class, the data section and the four
+    /* The short buffer, the unknown class, the data section and the five
      * unknown-class queries the guest uses to carry values out. */
-    assert(report.section_refusals == 8u);
+    assert(report.section_refusals == 9u);
     assert(report.section_views == 1u);
     assert(report.section_view_refusals == 0u);
     assert(report.calls.handled >= 10u);
@@ -807,8 +869,34 @@ int main(void)
         /* The size the gate wrote: one page, because the file is four bytes. */
         assert(record_with(&report, 20u)->args[3] == head);
     }
-    assert(report.nls_maps == 1u);
+    /* Two mappings in the end: locale.nls here and the case map below. */
+    assert(report.nls_maps == 2u);
     assert(report.nls_refusals == 0u);
+    /*
+     * The locale questions and the case-map section: three questions with one
+     * answer each (the id this run models), and NtGetNlsSectionPtr mapping
+     * l_intl.nls the same way the NLS call maps locale.nls. The guest read the
+     * mapped file's first dword through the address it was handed and carried
+     * it out, so the mapping is the file's bytes in its own memory.
+     */
+    assert(record_with(&report, 21u)->id == 0x0044u);
+    assert(record_with(&report, 21u)->status == PW_NT_SUCCESS);
+    assert(record_with(&report, 22u)->id == 0x0015u);
+    assert(record_with(&report, 22u)->status == PW_NT_SUCCESS);
+    assert(record_with(&report, 23u)->id == 0x00c7u);
+    assert(record_with(&report, 23u)->status == PW_NT_SUCCESS);
+    assert(record_with(&report, 24u)->id == 0x00a1u);
+    assert(record_with(&report, 24u)->status == PW_NT_SUCCESS);
+    assert(record_with(&report, 25u)->id == 0x0051u);
+    assert(record_with(&report, 25u)->args[2] ==
+           report.modules[0].base + LOCALE_PTR_RVA - 0);
+    {
+        uint32_t head = 0u;
+
+        memcpy(&head, image, 4u);
+        assert(record_with(&report, 25u)->args[3] == head);
+    }
+    assert(report.locale_queries == 3u);
     /*
      * And the run ends on the write that must be refused now: the page is
      * read-only again in the host mapping and in the dispatcher's view of it
@@ -826,29 +914,32 @@ int main(void)
      * the name it carries - and the section read it once to describe the image
      * and once more for the headers plus every section that has bytes on disk
      * when it placed the view. */
-    /* Three opens: the loader's, the section re-opening the file by name when
-     * the view is mapped, and the NLS data the run asks the namespace for. */
-    assert(file.opens == 3u);
+    /* Four opens: the loader's, the section re-opening the file by name when
+     * the view is mapped, and the two NLS files the run asks the namespace for
+     * (locale.nls for the locale mapping and l_intl.nls for the case map). */
+    assert(file.opens == 4u);
     /* The section's own reads (the headers plus every section with bytes on
      * disk, twice: once to describe the image and once to place the view) and
      * the one read that fills the NLS mapping with the file's bytes. */
-    assert(file.reads == 2u + expected.section_count + 1u);
+    assert(file.reads == 2u + expected.section_count + 2u);
     /* The section resolved its file through the service by the canonical name
      * the file handle carried, and the last thing the namespace was asked for
      * was the NLS data the run needs at this point of the boot. */
     assert(file.library_seen == 1u);
-    assert(strcmp(file.last_name, "locale.nls") == 0);
+    /* The last name the namespace was asked for is the case map's own file:
+     * the locale code asks for it after the locale tables are in place. */
+    assert(strcmp(file.last_name, "l_intl.nls") == 0);
     /*
      * Where each open came from: the module's own file is the application's
      * (its path names a component of C:), and the section re-opens that same
-     * file by name when it maps the view - so two of the three opens are the
-     * application's and one, the NLS data, is the runtime's. A run that lost
+     * file by name when it maps the view - so two of the four opens are the
+     * application's and two, the NLS data, are the runtime's. A run that lost
      * the root with the loader's file handle would ask the runtime for
      * test.dll, the service would answer that it does not have it, and the
      * mapping would fail before any of this.
      */
     assert(file.application_opens == 2u);
-    assert(file.runtime_opens == 1u);
+    assert(file.runtime_opens == 2u);
     assert(file.last_namespace == PW_FILE_RUNTIME);
     /* The DLL file and the gate-owned Windows directory. */
     assert(report.file_opens == 2u);

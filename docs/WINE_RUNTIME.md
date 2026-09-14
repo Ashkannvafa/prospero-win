@@ -684,6 +684,24 @@ NtQueryInformationThread      (0x0025) ThreadBasicInformation only:
                                        refused, and a buffer shorter than the
                                        structure is reported before anything is
                                        written
+NtQueryDefaultLocale          (0x0015) the user's locale or the system's, both
+                                       of them the one locale this run models
+                                       (MAKELANGID( LANG_ENGLISH,
+                                       SUBLANG_DEFAULT )), written through the
+                                       caller's pointer
+NtQueryDefaultUILanguage      (0x0044) the same language id, for the user
+                                       interface
+NtGetNlsSectionPtr            (0x00a1) the rest of the NLS tables by type and
+                                       id, the way Wine's own locale code asks
+                                       for them (dlls/ntdll/unix/env.c:93):
+                                       sort keys (9), the case map (10), the
+                                       codepage tables (11) and the
+                                       normalization forms (12), each mapped
+                                       out of the file the distribution
+                                       carries, with the open's own failure
+                                       for a file it does not
+NtQueryInstallUILanguage      (0x00c7) the installation's language, again the
+                                       one locale this run models
 NtTerminateProcess            (0x002c) the current process only; the run stops
                                        with a classified stop instead of
                                        pretending a terminated process runs on

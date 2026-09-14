@@ -1039,6 +1039,14 @@ static const PwNtHandler dispatch_table[] = {
       pw_wine_section_protect },
     { 0x00a4u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
       pw_wine_section_init_nls_files },
+    { 0x0044u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
+      pw_wine_section_query_default_ui_language },
+    { 0x0015u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
+      pw_wine_section_query_default_locale },
+    { 0x00c7u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
+      pw_wine_section_query_install_ui_language },
+    { 0x00a1u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
+      pw_wine_section_get_nls_section_ptr },
 };
 
 static const PwNtHandler *dispatch_find(uint32_t id)

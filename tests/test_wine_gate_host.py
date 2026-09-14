@@ -150,19 +150,20 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    # Moved deliberately in the commit that maps the distribution's NLS data:
-    # with residency off ntdll now receives the real locale.nls, parses it, and
-    # stops on the first instruction form this DBT does not implement - a
-    # `lock cmpxchg` to memory, the lock-prefixed read-modify-write the
-    # differential suite covers for the other forms. That is a named engine
-    # item rather than a refusal at a mapping. The fault address with residency
-    # on is unchanged while the faulting block stays the same (0x105c1aa7,
-    # 9 instructions, resident mask 0x43), which is the signature the private
-    # report records for it.
+    # Moved deliberately in the commit that serves the locale questions, the
+    # NLS section pointer and the accumulator's byte forms: with residency off
+    # the run now walks through ntdll's and kernelbase's locale initialisation
+    # - 119 calls serviced - and stops on a 16-bit read past the end of the
+    # guest's own stack (0x0f012524, 0x2524 bytes above the 64 KiB stack), a
+    # wild pointer in the middle of the code-page tables rather than a service
+    # this run does not have. That is the next piece of work. The fault address
+    # with residency on is unchanged while the faulting block stays the same
+    # (0x105c1aa7, 9 instructions, resident mask 0x43), which is the signature
+    # the private report records for it.
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "unsupported-instruction",
-                      "retired": "483088", "blocks": "1688"},
+    "residency_off": {"stop": "memory-bounds", "fault": "0x0f012524",
+                      "retired": "542606", "blocks": "2185"},
 }
 
 

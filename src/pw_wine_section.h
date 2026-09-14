@@ -55,6 +55,30 @@ enum {
     PW_WINE_SECTION_VIEW_UNMAP = 2u,
     PW_WINE_SECTION_PAGE_EXECUTE_READ = 0x20u,
     PW_WINE_SECTION_PAGE_READWRITE = 0x04u,
+    /*
+     * The locale this run models, and the one it answers every locale question
+     * with: MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT ), which is what Wine
+     * falls back to when the prefix names no locale of its own. One
+     * definition, because the NLS mapping and the two default-locale queries
+     * have to agree about it.
+     */
+    PW_WINE_LOCALE_SYSTEM_LCID = 0x0409u,
+    PW_WINE_LOCALE_USER_LCID = 0x0409u,
+    PW_WINE_LOCALE_LANGID_BYTES = 4u,
+    PW_WINE_LOCALE_LCID_BYTES = 4u,
+    /* The NLS section types Wine's own locale code uses
+     * (dlls/ntdll/locale_private.h:52). */
+    PW_WINE_NLS_SORTKEYS = 9u,
+    PW_WINE_NLS_CASEMAP = 10u,
+    PW_WINE_NLS_CODEPAGE = 11u,
+    PW_WINE_NLS_NORMALIZE = 12u,
+    /* The normalization forms of that last type, as the NLS file names use
+     * them (dlls/ntdll/unix/env.c:104). */
+    PW_WINE_NORMALIZATION_C = 1u,
+    PW_WINE_NORMALIZATION_D = 2u,
+    PW_WINE_NORMALIZATION_KC = 3u,
+    PW_WINE_NORMALIZATION_KD = 4u,
+    PW_WINE_NORMALIZATION_IDNA = 13u,
 };
 
 /* NtCreateSection (0x004a), SEC_IMAGE over an open file handle. */
@@ -91,4 +115,32 @@ int pw_wine_section_init_nls_files(struct PwWineCallContext *calls,
                                    const PwUnixCallFrame *frame,
                                    PwUnixCallAccess guest, void *context,
                                    uint32_t *status, uint32_t *argument_index);
+
+/* NtGetNlsSectionPtr (0x00a1): the rest of the NLS tables, by type and id. */
+int pw_wine_section_get_nls_section_ptr(struct PwWineCallContext *calls,
+                                        const PwUnixCallFrame *frame,
+                                        PwUnixCallAccess guest, void *context,
+                                        uint32_t *status,
+                                        uint32_t *argument_index);
+
+/* NtQueryDefaultUILanguage (0x0044): the language the user interface uses. */
+int pw_wine_section_query_default_ui_language(struct PwWineCallContext *calls,
+                                              const PwUnixCallFrame *frame,
+                                              PwUnixCallAccess guest,
+                                              void *context, uint32_t *status,
+                                              uint32_t *argument_index);
+
+/* NtQueryInstallUILanguage (0x00c7): the language the installation uses. */
+int pw_wine_section_query_install_ui_language(struct PwWineCallContext *calls,
+                                              const PwUnixCallFrame *frame,
+                                              PwUnixCallAccess guest,
+                                              void *context, uint32_t *status,
+                                              uint32_t *argument_index);
+
+/* NtQueryDefaultLocale (0x0015): the user's locale, or the system's. */
+int pw_wine_section_query_default_locale(struct PwWineCallContext *calls,
+                                         const PwUnixCallFrame *frame,
+                                         PwUnixCallAccess guest, void *context,
+                                         uint32_t *status,
+                                         uint32_t *argument_index);
 #endif /* PROSPERO_WIN_PW_WINE_SECTION_H */

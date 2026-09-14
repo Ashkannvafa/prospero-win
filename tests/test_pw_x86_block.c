@@ -1028,6 +1028,85 @@ static void lock_prefix_tests(void)
     assert(after==before);
     state.memory_count=0;
     state.stack_low=low;state.stack_high=high;
+
+    /*
+     * LOCK CMPXCHG to memory, the compare-and-swap Wine's own atomics use: the
+     * word is compared with the accumulator and the source register is stored
+     * into it when they are equal. Both outcomes are checked, because they are
+     * different instructions' worth of behaviour: on equality the accumulator
+     * is untouched and ZF is set, and on inequality the *old* word goes into
+     * the accumulator and the memory keeps its value.
+     */
+    {
+        const uint8_t lock_cmpxchg[]={0xf0,0x0f,0xb1,0x11}; /* [ecx], edx */
+        const uint8_t plain_cmpxchg[]={0x0f,0xb1,0x11};
+        const uint8_t cmpxchg_register[]={0xf0,0x0f,0xb1,0xd0};
+        const uint8_t cmpxchg_byte[]={0xf0,0x0f,0xb0,0x10};
+        uint32_t word=0;
+
+        state.memory_count=0;
+        state.stack_low=low;state.stack_high=high;
+        /* The address lives in ECX, because EAX is the accumulator this
+         * instruction compares with the word. */
+        state.gpr[1]=low;
+        state.gpr[2]=0xaabbccddu;
+        state.eflags=0x202;
+        word=0x11223344u;memcpy((void *)(uintptr_t)low,&word,4);
+        /* Equal: the source is stored and the accumulator does not move. */
+        state.gpr[0]=0x11223344u;
+        state.gpr[2]=0xaabbccddu;
+        assert(run(lock_cmpxchg,sizeof(lock_cmpxchg),0x7100)==0);
+        memcpy(&word,(void *)(uintptr_t)low,4);
+        assert(word==0xaabbccddu);
+        assert(state.gpr[0]==0x11223344u);
+        assert((state.eflags&0x40)!=0);                 /* ZF: they were equal */
+        /* The same instruction without LOCK: atomicity is the prefix's only
+         * promise, so the architectural result has to be identical. */
+        state.gpr[0]=0x11223344u;
+        state.gpr[2]=0x55667788u;
+        word=0x11223344u;memcpy((void *)(uintptr_t)low,&word,4);
+        state.eflags=0x202;
+        assert(run(plain_cmpxchg,sizeof(plain_cmpxchg),0x7110)==0);
+        memcpy(&word,(void *)(uintptr_t)low,4);
+        assert(word==0x55667788u);
+        assert(state.gpr[0]==0x11223344u && (state.eflags&0x40)!=0);
+        /* Not equal: the memory keeps its word and the accumulator takes it. */
+        state.gpr[0]=0x55667788u;
+        state.gpr[2]=0x11111111u;
+        word=0x11223344u;memcpy((void *)(uintptr_t)low,&word,4);
+        state.eflags=0x202;
+        assert(run(lock_cmpxchg,sizeof(lock_cmpxchg),0x7120)==0);
+        memcpy(&word,(void *)(uintptr_t)low,4);
+        assert(word==0x11223344u);
+        assert(state.gpr[0]==0x11223344u);
+        assert((state.eflags&0x40)==0);                 /* ZF: they differed */
+        /* The flags are those of the accumulator minus the word, which is
+         * what a real i386 reports here: the accumulator is the larger value,
+         * so nothing is borrowed and CF stays clear (the differential test
+         * against native code is what settled the direction). */
+        assert((state.eflags&0x1)==0);
+        /* The register form has no atom to lock and the byte and 16-bit forms
+         * are not implemented: all of them stay refused. */
+        uint8_t scratch2[4096];PwX86Block block2;
+        assert(pw_x86_translate(cmpxchg_register,sizeof(cmpxchg_register),0,
+                               scratch2,sizeof(scratch2),&block2)==PW_ERR_UNSUPPORTED);
+        assert(pw_x86_translate(cmpxchg_byte,sizeof(cmpxchg_byte),0,
+                               scratch2,sizeof(scratch2),&block2)==PW_ERR_UNSUPPORTED);
+        /* A locked compare-and-swap still requires write permission. */
+        state.stack_low=state.stack_high=0;
+        state.memory_count=1;
+        state.memory[0]=(PwX86Memory){low,high,PW_X86_READ};
+        state.gpr[1]=low;
+        state.gpr[0]=0x11223344u;
+        state.gpr[2]=0x11111111u;
+        word=0x11223344u;memcpy((void *)(uintptr_t)low,&word,4);
+        assert(run(lock_cmpxchg,sizeof(lock_cmpxchg),0x7130)==-1);
+        memcpy(&word,(void *)(uintptr_t)low,4);
+        assert(word==0x11223344u);
+        state.memory_count=0;
+        state.stack_low=low;
+        state.stack_high=high;
+    }
 }
 /* Fills one guest XMM register from a 4-dword pattern. */
 static void set_xmm(unsigned reg, uint32_t d0, uint32_t d1, uint32_t d2,
@@ -1704,6 +1783,87 @@ int main(int argc, char **argv)
         assert(result==5+1);
         if (argc==2 && strcmp(argv[1],"--emit")==0)
             assert(fwrite(&result,4,1,stdout)==1);
+    }
+    /*
+     * LOCK CMPXCHG to memory, the same two shapes the native reference in
+     * tests/test_pw_x86_reference.S executes: one where the word equals the
+     * accumulator (the word takes the source, EAX does not move, ZF is set)
+     * and one where it does not (the word keeps its value and EAX takes what
+     * was there). Each prints the word, the accumulator and the arithmetic
+     * flags, in the reference's order.
+     */
+    {
+        PwVmRegion slot;
+        const uint8_t equal_case[]={
+            0xb9,0x00,0x00,0x10,0x03,           /* mov ecx, 0x03100000 */
+            0xc7,0x01,0x44,0x33,0x22,0x11,      /* mov [ecx], 0x11223344 */
+            0xb8,0x44,0x33,0x22,0x11,           /* mov eax, 0x11223344 */
+            0xba,0xdd,0xcc,0xbb,0xaa,           /* mov edx, 0xaabbccdd */
+            0xf0,0x0f,0xb1,0x11,                /* lock cmpxchg [ecx], edx */
+        };
+        const uint8_t unequal_case[]={
+            0xc7,0x01,0x44,0x33,0x22,0x11,      /* mov [ecx], 0x11223344 */
+            0xb8,0x88,0x77,0x66,0x55,           /* mov eax, 0x55667788 */
+            0xba,0x11,0x11,0x11,0x11,           /* mov edx, 0x11111111 */
+            0xf0,0x0f,0xb1,0x11,                /* lock cmpxchg [ecx], edx */
+        };
+
+        assert(backend.reserve_at(NULL,0x03100000,4096,4096,&slot)==PW_OK);
+        assert(backend.commit(NULL,&slot,0,slot.bytes,
+                              PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+        state.memory_count=1;
+        state.memory[0]=(PwX86Memory){0x03100000,0x03101000,
+                                      PW_X86_READ|PW_X86_WRITE};
+        assert(run(equal_case,sizeof(equal_case),0x02100000)==0);
+        if (argc==2 && strcmp(argv[1],"--emit")==0) {
+            uint32_t word=0,accumulator=state.gpr[0];
+            uint32_t flags=state.eflags&0x8d5u;
+
+            memcpy(&word,(const void *)(uintptr_t)0x03100000,4);
+            assert(fwrite(&word,4,1,stdout)==1);
+            assert(fwrite(&accumulator,4,1,stdout)==1);
+            assert(fwrite(&flags,4,1,stdout)==1);
+        }
+        assert(run(unequal_case,sizeof(unequal_case),0x02200000)==0);
+        if (argc==2 && strcmp(argv[1],"--emit")==0) {
+            uint32_t word=0,accumulator=state.gpr[0];
+            uint32_t flags=state.eflags&0x8d5u;
+
+            memcpy(&word,(const void *)(uintptr_t)0x03100000,4);
+            assert(fwrite(&word,4,1,stdout)==1);
+            assert(fwrite(&accumulator,4,1,stdout)==1);
+            assert(fwrite(&flags,4,1,stdout)==1);
+        }
+        state.memory_count=0;
+        assert(backend.release(NULL,&slot)==PW_OK);
+    }
+    /*
+     * The accumulator's byte forms, the same shape the native reference
+     * executes: "mov [disp32], al" stores only the low byte and
+     * "mov al, [disp32]" replaces only it, so the upper 24 bits of the guest
+     * accumulator survive both.
+     */
+    {
+        PwVmRegion slot;
+        const uint8_t byte_forms[]={
+            0xb8,0xaa,0x33,0x22,0x11,      /* mov eax, 0x112233aa */
+            0xa2,0x00,0x00,0x20,0x03,      /* mov [0x03200000], al */
+            0xb8,0x00,0x77,0x66,0x55,      /* mov eax, 0x55667700 */
+            0xa0,0x00,0x00,0x20,0x03,      /* mov al, [0x03200000] */
+        };
+
+        assert(backend.reserve_at(NULL,0x03200000,4096,4096,&slot)==PW_OK);
+        assert(backend.commit(NULL,&slot,0,slot.bytes,
+                              PW_PROT_READ|PW_PROT_WRITE)==PW_OK);
+        state.memory_count=1;
+        state.memory[0]=(PwX86Memory){0x03200000,0x03201000,
+                                      PW_X86_READ|PW_X86_WRITE};
+        assert(run(byte_forms,sizeof(byte_forms),0x02300000)==0);
+        assert(state.gpr[0]==0x556677aau);
+        if (argc==2 && strcmp(argv[1],"--emit")==0)
+            assert(fwrite(&state.gpr[0],4,1,stdout)==1);
+        state.memory_count=0;
+        assert(backend.release(NULL,&slot)==PW_OK);
     }
     /* Bit test and conditional move, the same shape the native reference
      * executes with "btsl %ecx, %eax" and "cmovel %esi, %edx". */

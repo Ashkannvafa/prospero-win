@@ -423,123 +423,53 @@ int pw_wine_section_protect(PwWineCallContext *calls,
 }
 
 /*
- * NtInitializeNlsFiles: ntdll's own NLS initialization, which
- * RtlGetLocaleFileMappingAddress asks for exactly once
- * (dlls/ntdll/locale.c:605-621). Wine reads "<data dir>/nls/locale.nls" from
- * the Unix side, falls back to "<system dir>locale.nls" through NtOpenFile,
- * maps the file as a read-only SEC_COMMIT section and reports the system
- * language id - writing the id whether or not the mapping worked, because the
- * id comes from the locale settings and not from the file.
+ * The distribution's NLS data, mapped into the guest.
  *
- * This run serves the same flow out of the runtime namespace it owns: it looks
- * for "locale.nls" through the same path translation every other file call
- * uses, and answers with the NTSTATUS Wine's own fallback would answer when the
- * distribution does not carry the data. A distribution that does carry it needs
- * a file-backed data section, which this bridge does not have yet, so that case
- * is answered with STATUS_NOT_SUPPORTED rather than with a mapping of its own.
- * The id written back is the one Wine falls back to when the registry has no
- * locale of its own: MAKELANGID( LANG_ENGLISH, SUBLANG_DEFAULT ).
+ * NtInitializeNlsFiles is what ntdll's own initialization asks for once
+ * (RtlGetLocaleFileMappingAddress, dlls/ntdll/locale.c:605-621) and
+ * NtGetNlsSectionPtr is what the locale code asks for the rest of the tables
+ * (dlls/ntdll/unix/env.c:2207). Wine reads the file from the Unix side - its
+ * own data directory first, the Windows system directory as a fallback - maps
+ * it as a read-only SEC_COMMIT section and hands the guest the address and the
+ * size; the second call also publishes the section in the \NLS object
+ * directory, which is Wine's own cache and invisible to the guest either way.
+ *
+ * This run serves both out of the runtime namespace it owns, through the same
+ * path translation and file service every other file name goes through: the
+ * file's bytes are read into a fresh mapping below 4 GiB, page-rounded,
+ * declared readable and nothing else, and registered with the run so cleanup
+ * gives it back. A distribution that does not carry the file is answered with
+ * the failure Wine's own open would produce.
  */
-enum {
-    PW_WINE_NLS_SYSTEM_LCID = 0x0409u,
-};
-
-int pw_wine_section_init_nls_files(PwWineCallContext *calls,
-                                   const PwUnixCallFrame *frame,
-                                   PwUnixCallAccess guest, void *context,
-                                   uint32_t *status, uint32_t *argument_index)
+static int map_nls_data(PwWineCallContext *calls, PwX86State *state,
+                        const char *name, uint32_t *mapping, uint64_t *bytes)
 {
-    const uint32_t pointer = frame->args[0];
-    const uint32_t lcid_pointer = frame->args[1];
-    const uint32_t size_pointer = frame->args[2];
-    PwX86State *state = context;
     const PwVmBackend *backend = &calls->vm->base;
     PwVmRegion region;
-    uint32_t lcid = PW_WINE_NLS_SYSTEM_LCID;
-    uint64_t written_size = 0u;
-    uint32_t mapping = 0u;
-    char name[PW_NT_HANDLE_PATH_MAX + 1];
-    PwFileNamespace file_namespace = PW_FILE_RUNTIME;
     uint64_t size = 0u;
     void *token = NULL;
-    int is_directory = 0;
     uint32_t read_bytes = 0u;
-    uint32_t refused_status = PW_NT_OBJECT_NAME_NOT_FOUND;
-    int opened = 0;
+    uint32_t base = 0u;
 
-    if (pointer == 0u || lcid_pointer == 0u || size_pointer == 0u) {
-        *argument_index = 1u;
-        return PW_ERR_MALFORMED;
-    }
-    /*
-     * NtInitializeNlsFiles( void **ptr, LCID *lcid, LARGE_INTEGER *size ):
-     * the address of the mapped locale data, the system language id, and the
-     * mapping's size. Wine's own implementation writes the language id whether
-     * or not the mapping worked, because the id comes from the locale settings
-     * and not from the file (dlls/ntdll/unix/env.c:2247).
-     */
-    {
-        uint32_t probe = 0u;
-        uint64_t probe_size = 0u;
-
-        if (guest(context, pointer, &probe, 4u, 0) != PW_OK ||
-            guest(context, lcid_pointer, &probe, 4u, 0) != PW_OK ||
-            guest(context, size_pointer, &probe_size, 8u, 0) != PW_OK) {
-            *argument_index = 1u;
-            return PW_ERR_MALFORMED;
-        }
-    }
-    /*
-     * The same translation every file call goes through, so "locale.nls" here
-     * is the distribution's own file and never a host path the guest named.
-     */
-    if (pw_wine_path_runtime("\\??\\C:\\windows\\system32\\locale.nls", name,
-                             sizeof(name), &file_namespace, &is_directory,
-                             &refused_status) != PW_OK)
-        name[0] = '\0';
-    if (name[0] != '\0' && calls->config->files != NULL &&
-        !is_directory &&
-        calls->config->files->open(calls->config->files->context,
-                                   file_namespace, name, &size,
-                                   &token) == PW_WINE_FILE_OK)
-        opened = 1;
-    if (!opened) {
-        /* What Wine answers when the distribution has no locale.nls: the
-         * failure of the open it fell back to. The language id is written
-         * anyway, as Wine writes it. */
-        *status = PW_NT_OBJECT_NAME_NOT_FOUND;
-        calls->report->nls_refusals++;
-        if (guest(context, lcid_pointer, &lcid, 4u, 1) != PW_OK) {
-            *argument_index = 2u;
-            return PW_ERR_MALFORMED;
-        }
-        return PW_OK;
-    }
-    /*
-     * The mapping itself: as many pages as the file needs, committed, the
-     * file's own bytes read into them, and the whole thing declared readable
-     * and nothing else - which is what NtMapViewOfSection of a read-only
-     * SEC_COMMIT section gives a Windows process, and what Wine's map_section
-     * does for this call. The mapping belongs to the run like a view does, so
-     * cleanup gives it back.
-     */
+    if (!calls->config->files || !name || name[0] == '\0' ||
+        !mapping || !bytes)
+        return PW_ERR_NOT_FOUND;
+    if (calls->config->files->open(calls->config->files->context,
+                                   PW_FILE_RUNTIME, name, &size,
+                                   &token) != PW_WINE_FILE_OK)
+        return PW_ERR_NOT_FOUND;
     if (size == 0u || size > PW_WINE_NLS_MAX_BYTES ||
         calls->region_count >= PW_WINE_GATE_MAX_CALL_REGIONS ||
         state->memory_count >= PW_X86_MEMORY_REGIONS ||
-        backend->reserve == NULL || backend->commit == NULL ||
+        backend->reserve_at == NULL || backend->commit == NULL ||
         backend->protect == NULL || backend->release == NULL) {
         calls->config->files->close(calls->config->files->context, token);
-        *status = PW_NT_NOT_SUPPORTED;
-        calls->report->nls_refusals++;
-        return PW_OK;
+        return PW_ERR_LIMIT;
     }
     /*
      * The mapping has to land below 4 GiB, because the guest addresses it with
-     * a 32-bit pointer: the same window every other guest mapping in this run
-     * comes from, scanned for a free candidate rather than taken from the
-     * allocator's own address space. Measured: a plain reservation handed back
-     * an address above 4 GiB and the guest would have been given a pointer it
-     * cannot name.
+     * a 32-bit pointer, so it comes from the same window every other guest
+     * mapping in this run uses, scanned for a free candidate.
      */
     memset(&region, 0, sizeof(region));
     {
@@ -557,46 +487,102 @@ int pw_wine_section_init_nls_files(PwWineCallContext *calls,
         }
         if (reserved != PW_OK) {
             calls->config->files->close(calls->config->files->context, token);
-            *status = PW_NT_NOT_SUPPORTED;
-            calls->report->nls_refusals++;
-            return PW_OK;
+            return PW_ERR_VM;
         }
     }
     if ((uint64_t)(uintptr_t)region.exec_base + region.bytes >
-        0x100000000ull ||
+            0x100000000ull ||
         backend->commit(backend->context, &region, 0u, region.bytes,
                         PW_PROT_READ | PW_PROT_WRITE) != PW_OK) {
         (void)backend->release(backend->context, &region);
         calls->config->files->close(calls->config->files->context, token);
-        *status = PW_NT_NOT_SUPPORTED;
-        calls->report->nls_refusals++;
-        return PW_OK;
+        return PW_ERR_VM;
     }
-    mapping = (uint32_t)(uintptr_t)region.exec_base;
+    base = (uint32_t)(uintptr_t)region.exec_base;
     if (calls->config->files->read(calls->config->files->context, token, 0u,
-                                   (void *)(uintptr_t)mapping, (uint32_t)size,
+                                   (void *)(uintptr_t)base, (uint32_t)size,
                                    &read_bytes) != PW_WINE_FILE_OK ||
         read_bytes != (uint32_t)size ||
         backend->protect(backend->context, &region, 0u, region.bytes,
                          PW_PROT_READ) != PW_OK) {
         (void)backend->release(backend->context, &region);
         calls->config->files->close(calls->config->files->context, token);
-        *status = PW_NT_INVALID_IMAGE_FORMAT;
-        calls->report->nls_refusals++;
-        return PW_OK;
+        return PW_ERR_TRUNCATED;
     }
     calls->config->files->close(calls->config->files->context, token);
     state->memory[state->memory_count++] = (PwX86Memory){
-        .low = mapping,
-        .high = (uint64_t)mapping + region.bytes,
+        .low = base,
+        .high = (uint64_t)base + region.bytes,
         .permissions = PW_X86_READ,
     };
     calls->regions[calls->region_count] = region;
     calls->region_owned[calls->region_count] = 0u;
     calls->region_count++;
     calls->report->call_regions = calls->region_count;
+    *mapping = base;
+    *bytes = region.bytes;
+    return PW_OK;
+}
+
+int pw_wine_section_init_nls_files(PwWineCallContext *calls,
+                                   const PwUnixCallFrame *frame,
+                                   PwUnixCallAccess guest, void *context,
+                                   uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t pointer = frame->args[0];
+    const uint32_t lcid_pointer = frame->args[1];
+    const uint32_t size_pointer = frame->args[2];
+    PwX86State *state = context;
+    uint32_t lcid = PW_WINE_LOCALE_SYSTEM_LCID;
+    uint64_t written_size = 0u;
+    uint32_t mapping = 0u;
+    char name[PW_NT_HANDLE_PATH_MAX + 1];
+    PwFileNamespace file_namespace = PW_FILE_RUNTIME;
+    int is_directory = 0;
+    uint32_t refused_status = PW_NT_OBJECT_NAME_NOT_FOUND;
+    int result;
+
+    if (pointer == 0u || lcid_pointer == 0u || size_pointer == 0u) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    /*
+     * NtInitializeNlsFiles( void **ptr, LCID *lcid, LARGE_INTEGER *size ):
+     * the address of the mapped locale data, the system language id, and the
+     * mapping's size. Wine's own implementation writes the language id whether
+     * or not the mapping worked (dlls/ntdll/unix/env.c:2247), and this run does
+     * the same: the id comes from the locale settings, not from the file.
+     */
+    {
+        uint32_t probe = 0u;
+        uint64_t probe_size = 0u;
+
+        if (guest(context, pointer, &probe, 4u, 0) != PW_OK ||
+            guest(context, lcid_pointer, &probe, 4u, 0) != PW_OK ||
+            guest(context, size_pointer, &probe_size, 8u, 0) != PW_OK) {
+            *argument_index = 1u;
+            return PW_ERR_MALFORMED;
+        }
+    }
+    if (pw_wine_path_runtime("\\??\\C:\\windows\\system32\\locale.nls", name,
+                             sizeof(name), &file_namespace, &is_directory,
+                             &refused_status) != PW_OK)
+        name[0] = '\0';
+    if (is_directory)
+        name[0] = '\0';
+    result = map_nls_data(calls, state, name, &mapping, &written_size);
+    if (result != PW_OK) {
+        calls->report->nls_refusals++;
+        *status = (result == PW_ERR_NOT_FOUND) ? PW_NT_OBJECT_NAME_NOT_FOUND
+                 : (result == PW_ERR_LIMIT) ? PW_NT_NOT_SUPPORTED
+                                            : PW_NT_INVALID_IMAGE_FORMAT;
+        if (guest(context, lcid_pointer, &lcid, 4u, 1) != PW_OK) {
+            *argument_index = 2u;
+            return PW_ERR_MALFORMED;
+        }
+        return PW_OK;
+    }
     calls->report->nls_maps++;
-    written_size = region.bytes;
     if (guest(context, pointer, &mapping, 4u, 1) != PW_OK ||
         guest(context, size_pointer, &written_size, 8u, 1) != PW_OK ||
         guest(context, lcid_pointer, &lcid, 4u, 1) != PW_OK) {
@@ -606,6 +592,126 @@ int pw_wine_section_init_nls_files(PwWineCallContext *calls,
     *status = PW_NT_SUCCESS;
     return PW_OK;
 }
+
+/*
+ * NtGetNlsSectionPtr( ULONG type, ULONG id, void *unknown, void **ptr,
+ * SIZE_T *size ): the rest of the NLS tables, named by type and id rather than
+ * by path (dlls/ntdll/unix/env.c:93 get_nls_file_path, :172
+ * get_nls_section_name). Wine's types are the numbers its own locale code uses
+ * (dlls/ntdll/locale_private.h:52): 9 sort keys, 10 case map, 11 codepage
+ * tables, 12 normalization. The codepage files are c_%03u.nls and the
+ * normalization ones follow the form's own name; a file this distribution does
+ * not carry is answered with the failure of its open, exactly like Wine's
+ * fallback.
+ */
+int pw_wine_section_get_nls_section_ptr(PwWineCallContext *calls,
+                                        const PwUnixCallFrame *frame,
+                                        PwUnixCallAccess guest, void *context,
+                                        uint32_t *status,
+                                        uint32_t *argument_index)
+{
+    const uint32_t type = frame->args[0];
+    const uint32_t id = frame->args[1];
+    const uint32_t unknown = frame->args[2];
+    const uint32_t pointer = frame->args[3];
+    const uint32_t size_pointer = frame->args[4];
+    PwX86State *state = context;
+    char name[PW_NT_HANDLE_PATH_MAX + 1];
+    uint32_t mapping = 0u;
+    uint64_t mapping_bytes = 0u;
+    const char *file = NULL;
+    int result;
+
+    if (pointer == 0u || size_pointer == 0u) {
+        *argument_index = 4u;
+        return PW_ERR_MALFORMED;
+    }
+    /* Wine passes NULL here and answers STATUS_INVALID_PARAMETER_1 for a type
+     * it does not know; nothing in this run depends on the third argument. */
+    (void)unknown;
+    switch (type) {
+    case PW_WINE_NLS_SORTKEYS:
+        if (id != 0u) {
+            *status = PW_NT_INVALID_PARAMETER;
+            calls->report->nls_refusals++;
+            return PW_OK;
+        }
+        file = "sortdefault.nls";
+        break;
+    case PW_WINE_NLS_CASEMAP:
+        if (id != 0u) {
+            *status = PW_NT_UNSUCCESSFUL;
+            calls->report->nls_refusals++;
+            return PW_OK;
+        }
+        file = "l_intl.nls";
+        break;
+    case PW_WINE_NLS_CODEPAGE:
+        /*
+         * Wine names these files "c_%03u.nls" with the codepage's own decimal
+         * value (dlls/ntdll/unix/env.c:103) - four digits for 65001 and three
+         * for 437 - so the number is written by hand rather than through
+         * stdio, which the gate's own sources do not carry.
+         */
+        {
+            char digits[12];
+            unsigned value = id;
+            unsigned count = 0u;
+            char *out = name;
+
+            *out++ = 'c';
+            *out++ = '_';
+            if (value == 0u)
+                digits[count++] = '0';
+            while (value != 0u && count < sizeof(digits)) {
+                digits[count++] = (char)('0' + (value % 10u));
+                value /= 10u;
+            }
+            while (count != 0u)
+                *out++ = digits[--count];
+            *out++ = '.';
+            *out++ = 'n';
+            *out++ = 'l';
+            *out++ = 's';
+            *out = '\0';
+        }
+        file = name;
+        break;
+    case PW_WINE_NLS_NORMALIZE:
+        switch (id) {
+        case PW_WINE_NORMALIZATION_C: file = "normnfc.nls"; break;
+        case PW_WINE_NORMALIZATION_D: file = "normnfd.nls"; break;
+        case PW_WINE_NORMALIZATION_KC: file = "normnfkc.nls"; break;
+        case PW_WINE_NORMALIZATION_KD: file = "normnfkd.nls"; break;
+        case PW_WINE_NORMALIZATION_IDNA: file = "normidna.nls"; break;
+        default:
+            *status = PW_NT_OBJECT_NAME_NOT_FOUND;
+            calls->report->nls_refusals++;
+            return PW_OK;
+        }
+        break;
+    default:
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->nls_refusals++;
+        return PW_OK;
+    }
+    result = map_nls_data(calls, state, file, &mapping, &mapping_bytes);
+    if (result != PW_OK) {
+        calls->report->nls_refusals++;
+        *status = (result == PW_ERR_NOT_FOUND) ? PW_NT_OBJECT_NAME_NOT_FOUND
+                                                : PW_NT_NOT_SUPPORTED;
+        return PW_OK;
+    }
+    calls->report->nls_maps++;
+    if (guest(context, pointer, &mapping, 4u, 1) != PW_OK ||
+        guest(context, size_pointer, &mapping_bytes, 4u, 1) != PW_OK) {
+        *argument_index = 4u;
+        return PW_ERR_MALFORMED;
+    }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
 /*
  * NtQuerySection. SectionImageInformation is the class the loader asks for and
  * the one is_valid_binary reads: TransferAddress is the image's own base plus
@@ -1028,6 +1134,87 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
         *argument_index = 7u;
         return PW_ERR_MALFORMED;
     }
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
+ * NtQueryDefaultUILanguage and NtQueryDefaultLocale: the two questions a
+ * process asks about the locale it is running in, and the run's answer is the
+ * one locale it models. Wine answers the first from its user interface locale
+ * and the second from the user's or the system's (dlls/ntdll/unix/env.c:2280
+ * NtQueryDefaultLocale), both of which come from the prefix's registry; this
+ * prefix has no user locale of its own, so both are the language the NLS
+ * mapping and every other locale answer already use.
+ */
+/*
+ * The language-id half of the locale questions, which have the same shape:
+ * one output pointer, and the language this run models written through it.
+ */
+static int query_language(PwWineCallContext *calls,
+                          const PwUnixCallFrame *frame, PwUnixCallAccess guest,
+                          void *context, uint32_t *status,
+                          uint32_t *argument_index)
+{
+    const uint32_t pointer = frame->args[0];
+    uint32_t langid = PW_WINE_LOCALE_SYSTEM_LCID;
+
+    if (pointer == 0u) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    if (guest(context, pointer, &langid, PW_WINE_LOCALE_LANGID_BYTES, 1) !=
+        PW_OK) {
+        *argument_index = 1u;
+        return PW_ERR_MALFORMED;
+    }
+    calls->report->locale_queries++;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+int pw_wine_section_query_default_ui_language(PwWineCallContext *calls,
+                                              const PwUnixCallFrame *frame,
+                                              PwUnixCallAccess guest,
+                                              void *context, uint32_t *status,
+                                              uint32_t *argument_index)
+{
+    return query_language(calls, frame, guest, context, status,
+                          argument_index);
+}
+
+int pw_wine_section_query_install_ui_language(PwWineCallContext *calls,
+                                              const PwUnixCallFrame *frame,
+                                              PwUnixCallAccess guest,
+                                              void *context, uint32_t *status,
+                                              uint32_t *argument_index)
+{
+    return query_language(calls, frame, guest, context, status,
+                          argument_index);
+}
+
+int pw_wine_section_query_default_locale(PwWineCallContext *calls,
+                                         const PwUnixCallFrame *frame,
+                                         PwUnixCallAccess guest, void *context,
+                                         uint32_t *status,
+                                         uint32_t *argument_index)
+{
+    const uint32_t user = frame->args[0];
+    const uint32_t pointer = frame->args[1];
+    uint32_t lcid = user ? PW_WINE_LOCALE_USER_LCID
+                         : PW_WINE_LOCALE_SYSTEM_LCID;
+
+    /* Wine takes the boolean as a boolean: any non-zero value is the user's
+     * locale, which is how the guest's own TRUE travels. */
+    if (pointer == 0u) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (guest(context, pointer, &lcid, PW_WINE_LOCALE_LCID_BYTES, 1) != PW_OK) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    calls->report->locale_queries++;
     *status = PW_NT_SUCCESS;
     return PW_OK;
 }

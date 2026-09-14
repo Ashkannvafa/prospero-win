@@ -394,6 +394,8 @@ typedef struct PwWineGateReport {
      * refused. */
     uint64_t nls_maps;
     uint64_t nls_refusals;
+    /* NtQueryDefaultUILanguage and NtQueryDefaultLocale answers. */
+    uint64_t locale_queries;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t key_opens;
