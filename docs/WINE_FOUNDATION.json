@@ -38,12 +38,13 @@
       "depends_on": [
         "pe-loader"
       ],
-      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator also covers FS-prefixed absolute dword operands, LOCK-prefixed group-1 memory read-modify-write, BT/BTS/BTR/BTC, CMOVcc, the SSE data-movement/lane slice (movd/movq/movdqa/movdqu/movups/movaps/movss/movsd, punpck/packss, pshufd and friends, pextrw/pinsrw), BSF/BSR and the 16-bit shift group, each with architectural tests and residency/lazy-flag parity where the form allows it. With the Unix-call bridge and populated process environment, real ntdll initialization retires 32 544 instructions over 6 869 dispatches and 968 translated blocks, services 19 NT calls, and stops cleanly at the unpublished __wine_unix_call_dispatcher boundary.",
+      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. The Wine host gate adds FS-relative operands, atomic LOCK/CMPXCHG and memory XCHG, byte accumulators, BT/BTS/BTR/BTC, CMOVcc, the tested SSE lane slice, BSF/BSR and 16-bit shifts. A generated PE32 application reaches its own entry point and exits cleanly after 598404 retired instructions and 2981 blocks with register residency disabled. The residency-enabled path has a deterministic, pinned cross-block entry-state defect and is not claimed as passing.",
       "exit_criteria": [
         "wine-ntdll-instruction-closure",
         "sse2",
         "indirect-branch-cache",
-        "multi-thread-code-cache"
+        "multi-thread-code-cache",
+        "wine-residency-parity"
       ]
     },
     {
@@ -70,10 +71,13 @@
         "unix-call-bridge",
         "nt-process-thread"
       ],
-      "evidence": "The pinned revision 490f6d5d builds a reproducible i386 PE runtime (recorded in a validated manifest; the reproducibility claim is two forced rebuilds in one pinned build tree) and a bounded host gate maps it from PW_FILE_RUNTIME, binds kernelbase's 428 imports against ntdll's exports, services the first Unix calls behind a versioned table and executes real ntdll initialization: with the bridge enabled the run retires 32 544 instructions, services three NtAllocateVirtualMemory calls, opens the Windows directory, queries its FileFsDeviceInformation, releases the process-parameters block ntdll replaces during init_user_process_params, answers the Wine version class, opens the Session Manager registry key and reads its options, answers the process token's user SID, opens the user hive root with NtCreateKey, reads the version-init registry keys, opens the \\KnownDlls directory object, looks for a section in it, reaches the boundary through Wine's second stub shape (mov eax, id; call fs:[0xc0], the dispatcher the unix side publishes in TEB.WOW32Reserved), describes the process image out of the mapped module's own PE headers, and then stops with returned-to-caller at 0 because the loader's own debug message calls __wine_unix_call_dispatcher, the second dispatcher the gate does not publish yet. The gate also builds a minimal populated RTL_USER_PROCESS_PARAMETERS (current directory, DLL and image paths, command line, environment). No Windows process starts yet and no title uses it: the unix-call surface, NLS, threads and the rest of the loader remain.",
+      "evidence": "Wine revision 490f6d5d produces a manifest-validated i386 distribution containing ntdll, kernelbase, kernel32 and all 76 tracked NLS files. A bounded host gate publishes both dispatchers, maps runtime and application namespaces, builds the initial PEB/TEB/process parameters and CONTEXT, and services 32 NT call shapes. A generated PE32 executable plus two DLLs loads through Wine's own ntdll, reaches its transfer address, returns 1 and exits through NtTerminateThread after 598404 retired instructions and 2981 blocks with residency disabled. Loader-list identity and DllMain/TLS ordering are not yet independently validated, residency-on fails, the prefix is not persistent and no PS5 Wine launch is claimed.",
       "exit_criteria": [
-        "kernelbase-load",
-        "wine-process-startup",
+        "loader-graph-validation",
+        "dllmain-tls-order",
+        "wine-residency-parity",
+        "persistent-prefix",
+        "ps5-wine-process-startup",
         "wine-tests-smoke"
       ]
     },
@@ -84,11 +88,12 @@
         "ia32-dbt",
         "nt-process-thread"
       ],
-      "evidence": "The dispatcher boundary is located in the built image (exported __wine_syscall_dispatcher slot plus the single jmp-dword-ptr thunk that references it) and the call number is re-read from the issuing stub inside the mapped image; both stub shapes Wine's build emits are bridged, the 'mov edx, <thunk>' form and the 'call fs:[0xc0]' form whose target is the dispatcher the gate publishes in TEB.WOW32Reserved exactly as Wine's unix side does. A versioned table of the pinned i386 syscall numbers, names and argument widths is cross-checked against the Wine source - all 256 i386 entries - and the two-level stub frame is unwound correctly. Sixteen unique call handlers are implemented - fifteen in the dispatch registry plus the classified NtTerminateProcess stop - and the dynamic run services 19 calls through the registry: NtAllocateVirtualMemory, NtFreeVirtualMemory (whole-region MEM_RELEASE only), NtOpenFile, NtReadFile, NtQueryInformationFile, NtQueryVolumeInformationFile (FileFsDeviceInformation), NtOpenKey, NtCreateKey (create-or-open against the profile), NtQueryValueKey, NtQuerySystemInformation (the Wine version class), NtQueryInformationToken (TokenUser), NtOpenDirectoryObject, NtOpenSection, NtQueryInformationProcess (ProcessImageInformation), NtTerminateProcess (current process, a classified stop) and NtClose. The two VM calls preflight every output span before they reserve, commit, release or account anything, and their backend failures are injected and asserted, so those two commit completely or not at all. The run now stops with returned-to-caller at 0 because the loader's debug output calls __wine_unix_call_dispatcher, the second dispatcher this bridge does not publish yet. The bridge is split the way it is used: src/pw_wine_gate.c orchestrates the run and owns the virtual-memory calls, and the adapters are units with their own contracts - src/pw_wine_path.c (guest names turned into canonical strings for all three namespaces), src/pw_wine_handle.c (the run's side of the typed handle table), src/pw_wine_file.c, src/pw_wine_registry.c, src/pw_wine_object.c and src/pw_wine_query.c - each behind its own platform service or, for the queries, answering from host state. Remaining: the unix-call surface, the reserve/commit distinction, threads and NLS, and the same rollback guarantee for the handlers that are not the two VM calls.",
+      "evidence": "Both dispatcher slots are found in the built image and published through the TEB. The 256-entry i386 syscall table and eight-entry ntdll Unix-call table match the pinned Wine source, including frame layout and the debug-write parameter ABI. The handler ledger contains 32 serviced NT call shapes plus classified process/thread termination stops. Implemented families include virtual memory, files and identity, image sections and protections, registry open/create/query/set, object namespace, process/thread queries, NtContinue, NLS mappings and locale queries. Guest spans are preflighted and ownership is gate-local; refusals return explicit NTSTATUS instead of fabricated success.",
       "exit_criteria": [
         "nested-calls",
         "fault-atomicity",
-        "remaining-call-table-handlers"
+        "remaining-call-table-handlers",
+        "multi-thread-server-calls"
       ]
     },
     {
@@ -97,10 +102,10 @@
       "depends_on": [
         "virtual-memory"
       ],
-      "evidence": "One guest thread has isolated CPU/FP/FS state. PE32 TLS has a process/thread owner: stable module indices published through mapped guest memory, per-thread template-plus-zero-fill storage from a caller-owned arena, guest FS:[0x2C] lookup and deterministic attach/detach callback plans driven by the DBT's guest-callback mechanism, with two-thread and rollback coverage. The Wine gate owns a minimal guest TEB, PEB and populated RTL_USER_PROCESS_PARAMETERS sufficient for the current ntdll checkpoint. Full PEB_LDR_DATA construction, module entry-point ordering and native thread adapters remain.",
+      "evidence": "One Wine guest thread has isolated CPU/FP/FS state, a populated TEB/PEB/process-parameter page, image-sized stack, activation-context stack, client identity and initial I386_CONTEXT. NtGetNextThread, NtQueryInformationThread and NtContinue are host-tested; the generated application's first thread reaches its entry point and exits through NtTerminateThread. Wine owns PEB_LDR_DATA, but its lists and DllMain/TLS callback ordering still need read-back validation. Native multi-thread scheduling and general wait objects remain.",
       "exit_criteria": [
-        "peb32",
-        "teb32",
+        "loader-graph-validation",
+        "dllmain-tls-order",
         "native-thread-adapter",
         "orderly-thread-exit"
       ]
@@ -158,7 +163,7 @@
       "depends_on": [
         "nt-objects-waits"
       ],
-      "evidence": "Title-confined read/seek and INI access exist. For Wine, the Unix-call bridge now has a bounded file service: NtOpenFile, NtReadFile, NtQueryInformationFile (FileStandardInformation), NtQueryVolumeInformationFile (FileFsDeviceInformation) and NtClose are serviced behind a gate-owned handle table, with every guest pointer validated through the dispatcher's accessor and a path translation that accepts only single components under C:\\windows\\system32 or C:\\windows, so traversal is refused before the platform is consulted. The same handle table now carries registry keys (NtOpenKey, NtCreateKey, NtQueryValueKey against a host-supplied registry profile, absolute and relative, with a validated \\Registry\\Machine / \\Registry\\User namespace) and object-namespace directories and sections (NtOpenDirectoryObject, NtOpenSection against an object profile that declares \\KnownDlls and no sections, so the loader falls back to the file system the way it does on a prefix without known DLLs). The host side is a pluggable service, so the portable core still makes no file-system call and holds no registry or object content. The loader's first open is the Windows directory itself, which the gate answers as a gate-owned directory object with Directory = 1; a Wine prefix registry and object namespace, broader NT path semantics, sharing, directory enumeration and overlapped I/O remain.",
+      "evidence": "Title-confined read/seek and INI access exist. The Wine host gate separates runtime and application namespaces, canonicalizes DOS/NT names, rejects traversal and alternate streams, and services bounded open/read/query/close plus stable file identity. SEC_IMAGE sections can be described, mapped from file bytes and protected with one page-granular permission map shared by the host backend and guest guard. The portable core reaches storage only through injected services. Persistent drive_c storage, full DOS-device mapping, sharing, directory enumeration and overlapped I/O remain.",
       "exit_criteria": [
         "dos-device-map",
         "nt-path-normalization",
@@ -174,12 +179,12 @@
         "nt-process-thread",
         "filesystem-paths"
       ],
-      "evidence": "A bounded persistent registry and CP1252 bootstrap exist. The Wine gate now constructs a minimal populated process environment and answers the current registry profile; Wine-compatible registry views and broad Unicode/NLS data remain.",
+      "evidence": "The direct bootstrap has a bounded persistent registry and CP1252 support. The Wine distribution stages and hashes all 76 NLS files from the pinned revision; the gate maps locale/codepage data below 4 GiB, publishes a UTF-16 process environment and supports UTF-8 canonical registry names including surrogate pairs. Its create/query/set registry store is currently run-local. Crash-safe prefix persistence, registry views and two-run/two-prefix isolation remain.",
       "exit_criteria": [
         "unicode-core",
         "wow64-registry-view",
-        "locale-data",
-        "codepages"
+        "persistent-wine-registry",
+        "two-run-two-prefix-isolation"
       ]
     },
     {

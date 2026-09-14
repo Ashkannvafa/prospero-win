@@ -15,18 +15,18 @@ Wine 490f6d5dcbb2a5047345b8af88d114bbcaad69a8  (Wine version 11.17)
 ## Current capability (evidence checkpoint)
 
 The measured state of this work, reproducible with the commands below. It is a
-bounded host gate, not a running Windows process.
+bounded host gate, not a PS5 Wine-process launch.
 
 | Area | State |
 |---|---|
 | Runtime distribution | Three i386 PE modules (`ntdll`, `kernelbase`, `kernel32`) built reproducibly from the pinned revision plus every NLS data file that revision tracks (its whole `nls/*.nls` - the locale tables, the sort keys, the case map, the normalization tables and one file per codepage), each recorded with its own hash and folded into the distribution digest `a70042324ceb268a714936501add18de2cd0a4a6f3fd16b7a758e7893c186bb5` |
 | Module graph | `kernelbase`'s 428 imports bind against `ntdll`'s exports with zero failures, by name, ordinal and forwarder |
-| PE32 TLS | Parsed, with a process/thread owner and deterministic callback plans; the staged modules declare no TLS directory |
-| ntdll under the DBT | Real `LdrInitializeThunk` executes through the IA-32 translator: 32 544 retired instructions, 6869 dispatches, 968 translated blocks, `host_calls=0`, complete cleanup (`modules=2 mappings=7 translations=1`) |
-| Unix-call boundary | Found structurally (dispatcher slot plus its single `jmp dword ptr [slot]` thunk) and crossed: 19 calls serviced through 15 handlers, and both stub shapes Wine's build emits are bridged, including the `-syscall` ones that call through `TEB.WOW32Reserved` |
+| PE32 TLS | Parsed and relocated for the generated application graph; one process thread, its TEB and TLS traversal are modelled. Loader-list and callback-order validation remain. |
+| ntdll control | Real `LdrInitializeThunk` executes through the IA-32 translator: 33,118 retired instructions, 7,065 dispatches, 961 translated blocks, 19 calls serviced, `host_calls=0`, and complete cleanup. |
+| Unix-call boundary | Both Wine dispatcher slots are published. The syscall table has all 256 pinned i386 entries and the Unix-call table has all eight pinned entries; both match Wine source. The complete handler ledger currently contains 32 serviced NT call shapes plus two classified termination stops. |
 | Platform services | Files (open/read/query/close, one gate-owned directory object), image sections (`NtCreateSection`/`NtQuerySection`/`NtMapViewOfSection`/`NtProtectVirtualMemory`), NLS data (`NtInitializeNlsFiles`, `NtGetNlsSectionPtr` and the three locale queries), registry (open/create/query/set against a host profile), token (`TokenUser`), threads (`NtGetNextThread`, `NtQueryInformationThread`), object namespace (`\KnownDlls` plus section lookups), system information (the Wine version class) and process information (the process image, from the module's own headers) |
-| Where it stops | The bridged ntdll scenario services 19 calls and returns to its caller at 0, which is the end of a run whose entry is a stub the gate itself called. The **application-root** scenario - a generated PE32 executable, its two DLLs and their dependency diamond, loaded by the pinned runtime's own ntdll - runs the loader's start-up to its last call and stops there: `NtContinue (0x0043)`, which is what enters the thread the initialization context describes |
-| Not claimed | No Windows process starts, no application entry point runs, no console or hardware evidence, and the registry/object profiles are the distribution's own, not a Wine prefix |
+| Application checkpoint | A generated PE32 executable, two DLLs and their dependency diamond load through Wine's own ntdll. With residency disabled, the application reaches its transfer address, returns `1`, and exits through `NtTerminateThread` after 598,404 retired instructions and 2,981 blocks. |
+| Not claimed | The residency-enabled application path still ends in a deterministic DBT entry-contract fault. Wine's loader lists and DllMain/TLS ordering are not independently validated; the registry is run-local rather than a persistent prefix; no console or hardware Wine evidence exists. |
 
 Reproduce it:
 
@@ -1129,7 +1129,7 @@ name; then opens the registry root and a key relative to it; closes every
 handle; and hands what it read back to a call with no handler, so the
 recorded arguments are the guest's own memory.
 
-### The process image, and the second dispatcher
+### Historical checkpoint: the process image and second dispatcher
 
 The ntdll initialization path then asks a different question, and the answer is
 honest rather than convenient. `build_main_module` calls
@@ -1162,14 +1162,15 @@ alongside - and it is the honest next step rather than one more syscall:
 Wine's PE modules reach the host through it for debug output, server calls and
 the rest of the unixlib surface.
 
-Measured on the same pinned runtime with `--bridge 1`:
+At that earlier checkpoint, measured on the same pinned runtime with
+`--bridge 1`:
 
 ```text
 retired 32544 instructions over 6869 dispatches and 968 translated blocks
 19 calls handled; the last is NtQueryInformationProcess ProcessImageInformation
   -> SUCCESS with image_characteristics=0x2106 (kernelbase's own)
 cleanup modules=2 pending_modules=0 pending_pages=0 pending_regions=0 mappings=7 translations=1 pending_translations=0 failures=0 status=ok
-stop: returned-to-caller at 0 - the unix-call dispatcher is not published
+stop: returned-to-caller at 0 - the unix-call dispatcher was not yet published
 ```
 
 ### The loader's own start-up, and the argument it takes
@@ -1230,11 +1231,19 @@ Measured on the pinned runtime with the generated diamond:
 | configuration | stop | retired | blocks |
 | --- | --- | --- | --- |
 | control | returned-to-caller at 0 | 33 118 | 961 |
-| residency off | `unix-call-unimplemented`, NtContinue (0x0043) | 593 688 | 2 902 |
+| residency off | `process-terminated`, `NtTerminateThread (0x0053)`, status `1` | 598 404 | 2 981 |
 | residency on | memory-bounds (engine defect, block `0x105c1aa7`) | 56 825 | 1 223 |
 
-The stop is now a *named missing service* rather than a fault or a budget, and
-it is the last call of the loader's own start-up: `NtContinue(context, TRUE)`,
-which is what enters the thread the context describes. Serving it - applying
-that context to the guest state, which is the application entry point - is the
-next piece of work.
+`NtContinue(context, TRUE)` installs the guest's integer/control state without
+applying the dispatcher's synthesized return. Wine's `RtlUserThreadStart` then
+calls the generated application's transfer address. The entry returns `1`,
+kernel32 passes that value into `RtlExitUserThread`, and the process ends through
+`NtTerminateThread` with the same status. `tests/test_pw_wine_continue.c` pins
+context validation, state installation and the termination path; the host gate
+pins the complete application result above.
+
+This does not close the Wine-process milestone. Before hardware staging, the
+Wine-owned loader graph must be read back and validated, DllMain/TLS callback
+ordering must become evidence, and the residency-on DBT fault must be repaired
+rather than bypassed. General thread/object/wait semantics and persistent
+prefix storage remain later roadmap items.

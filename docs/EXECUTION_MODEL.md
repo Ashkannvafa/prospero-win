@@ -1,9 +1,11 @@
 # Execution model
 
-PE32/i386 and PE32+/AMD64 applications are in scope. A complete PE32 game now
-runs through the IA-32 DBT and the bootstrap Win32 surface; a Wine-based broad
-Windows subsystem is not yet demonstrated. PE64 mapping and a synthetic
-integer bridge exist, but a complete PE64 Windows application does not yet run.
+PE32/i386 and PE32+/AMD64 applications are in scope. A complete PE32 game runs
+through the IA-32 DBT and the bootstrap Win32 surface. Separately, a generated
+PE32 application now reaches its own entry point and exits through Wine's
+loader in a bounded host gate; this is a Wine bring-up result, not broad
+compatibility or a PS5 Wine boot. PE64 mapping and a synthetic integer bridge
+exist, but a complete PE64 Windows application does not yet run.
 
 ## Execution and containment
 
@@ -104,11 +106,13 @@ next coverage set; Pinball is no longer the sole oracle. Per-thread TEB/FS and
 CPU state, SSE/SSE2, indirect-branch prediction, exception precision and
 thread-safe immutable translated-code reuse remain required.
 
-The pinned real-Wine checkpoint currently retires 32,544 guest instructions in
-6,869 dispatches and 968 translated blocks, services 19 NT calls, then stops
-cleanly when `ntdll` reaches the unpublished `__wine_unix_call_dispatcher`
-boundary. This bounded host gate expands the DBT oracle beyond Pinball, but it
-does not yet demonstrate a Wine process or a PS5 runtime boot.
+The pinned real-Wine control retires 33,118 guest instructions in 7,065
+dispatches and 961 translated blocks while servicing 19 NT calls. The generated
+application gate exercises 32 serviced NT call shapes and, with residency
+disabled, reaches its own entry point and exits cleanly after 598,404 retired
+instructions and 2,981 blocks. With residency enabled it instead reaches a
+pinned DBT state-contract fault. These bounded host gates expand the oracle
+beyond Pinball; they do not establish a PS5 Wine runtime boot.
 
 ## Measured memory facts
 

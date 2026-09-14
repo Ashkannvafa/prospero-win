@@ -30,19 +30,26 @@ hardware runs also reach video, audio and input teardown cleanly. These results
 establish correctness and no observed regression; they do not yet establish a
 percentage performance gain.
 
-The reusable Wine path has progressed beyond static loading. A pinned i386
-Wine runtime is built reproducibly and recorded in a validated manifest. The
-loader maps its real `ntdll`/`kernelbase` graph, binds exports by name and
-ordinal, resolves bounded forwarders, and constructs PE32 TLS plus minimal
-process state. Under the DBT, real `ntdll` initialization now retires 32,544
-guest instructions over 6,869 dispatches and 968 translated blocks while
-servicing 19 NT calls. It stops at a defined frontier: Wine calls
-`__wine_unix_call_dispatcher`, the second dispatcher that prospero-win has not
-published yet. Cleanup is complete and validator-enforced.
+The reusable Wine path now has an executable host checkpoint. A pinned i386
+Wine distribution contains `ntdll`, `kernelbase`, `kernel32` and the revision's
+76 NLS data files, all covered by a validated manifest. prospero-win publishes
+Wine's syscall and Unix-call dispatchers, services 32 NT call shapes, maps
+runtime and application-local images from separate namespaces, and constructs
+the initial PE32 process/thread state.
 
-This is not yet a booting Wine process or broad Windows compatibility. Pinball
-still uses the direct bootstrap, PE64 application execution is incomplete, and
-Direct3D awaits DXVK over `ps5-vulkan`.
+A generated public PE32 executable with two DLLs and a dependency diamond now
+runs through Wine's own loader, reaches its own entry point under the DBT,
+returns `1`, and exits through `NtTerminateThread`. The accepted host run uses
+register residency disabled and retires 598,404 guest instructions over 2,981
+translated blocks. The optimized residency path still has a deterministic
+cross-block state-contract defect and is retained as a pinned negative
+frontier, not presented as a success.
+
+This is not yet a Wine boot on PS5 or broad Windows compatibility. Wine's
+loader lists and attach ordering still need independent validation, the prefix
+is not persistent, and general threads, objects and waits remain incomplete.
+Pinball still uses the hardware-validated direct bootstrap, PE64 application
+execution is incomplete, and Direct3D awaits DXVK over `ps5-vulkan`.
 
 ## Isolation model
 

@@ -54,12 +54,14 @@ defined Unix-call/platform boundary instead of expanding title-specific
 wrappers. See [WINE_INTEGRATION.md](WINE_INTEGRATION.md).
 
 The real Wine gate is now an executable checkpoint rather than a loader-only
-claim. With the pinned i386 runtime it retires 32,544 guest instructions across
-6,869 dispatches and 968 translated blocks, services 19 NT calls, and performs
-complete cleanup. It stops when Wine invokes `__wine_unix_call_dispatcher`, a
-second Unix-side dispatcher not yet published by prospero-win. This is host
-evidence for the integration boundary; it is not yet a Wine process boot on
-PS5.
+claim. The syscall and Unix-call boundaries are both published. A generated
+PE32 application and two local DLLs load through the pinned i386 Wine runtime;
+with register residency disabled the application reaches its own entry point,
+returns `1`, and exits through `NtTerminateThread` after 598,404 retired guest
+instructions and 2,981 translated blocks. This is host evidence. The residency
+path still has a pinned DBT entry-contract defect, Wine's loader lists and
+attach ordering are not independently validated, and no Wine process boot on
+PS5 is claimed.
 
 ## Isolation boundaries
 

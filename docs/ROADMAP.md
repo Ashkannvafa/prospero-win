@@ -35,36 +35,43 @@ not a promise of dates or a list of internal experiments.
   follows bounded forwarders, and owns PE32 TLS plus minimal PEB, TEB and
   process-parameter state.
 - All 256 pinned i386 Wine syscall IDs are cross-checked against source.
-- A versioned Unix-call registry currently services 19 dynamic NT calls with
-  validated guest spans and typed, monotonic handles.
-- Real `ntdll` initialization retires exactly 32,544 guest instructions over
-  6,869 dispatches and 968 translated blocks, then returns cleanly to the host
-  gate. Sanitizer and cleanup validators pass.
+- Wine's syscall and Unix-call dispatchers are published from versioned tables
+  cross-checked against the pinned source. The gate services 32 NT call shapes
+  with validated guest spans and typed, monotonic handles.
+- A generated PE32 executable plus two DLLs loads from the application
+  namespace through Wine's own `ntdll`, reaches its own entry point, returns
+  `1`, and exits cleanly through `NtTerminateThread`. With register residency
+  disabled, that host run retires 598,404 guest instructions over 2,981 blocks.
+- The smaller ntdll control remains independently pinned at 33,118 retired
+  instructions, 7,065 dispatches, 961 blocks and 19 serviced calls. Normal,
+  sanitizer, pinned-source and cleanup gates pass.
 
-That Wine result is a bounded host checkpoint. It does not yet mean that a Wine
-process boots inside the PS5 title or that Pinball has migrated away from the
-direct Win32 bootstrap.
+Those Wine results are bounded host checkpoints. They do not yet mean that a
+Wine process boots inside the PS5 title or that Pinball has migrated away from
+the direct Win32 bootstrap.
 
 ## Current frontier
 
-Wine's loader debug path calls `__wine_unix_call_dispatcher`. This is distinct
-from the syscall dispatcher already published through `TEB.WOW32Reserved`.
-prospero-win deliberately stops at that unimplemented boundary instead of
-inventing a return value or continuing with corrupt runtime state.
+The successful application checkpoint deliberately disables cross-block
+register residency. With residency enabled the same deterministic run stops in
+Wine's module-tree insertion with a classified bounds fault caused by an
+incorrect DBT entry-state contract. The loader graph and its load/memory/init
+lists also still need to be read back and validated, and DllMain/TLS attach
+ordering is not yet evidence. The current registry is run-local rather than a
+persistent Wine prefix.
 
 ## Next compatibility release
 
-1. Publish the pinned, versioned `__wine_unix_call_dispatcher` boundary and
-   implement the first required unixlib calls with validated arguments,
-   deterministic errors and rollback-safe ownership.
-2. Complete loader process state: `PEB_LDR_DATA`, module lists, kernelbase
-   initialization and Wine-compatible process/thread attach ordering.
+1. Repair the DBT residency entry contract and require the generated Wine
+   application to finish identically with optimization on and off.
+2. Validate Wine-owned `PEB_LDR_DATA`, all loader lists and module identity,
+   then prove dependency, DllMain and TLS attach/detach ordering.
 3. Expand native process, thread, object and wait services: thread creation and
    exit, events, mutexes, semaphores, wait-any/wait-all, timeouts and abandoned
    ownership.
-4. Complete the prefix-facing foundation: Unicode/NLS data, environment,
-   registry views, DOS-device/NT path normalization, sharing and directory
-   enumeration.
+4. Complete the persistent prefix: `drive_c`, environment, registry views and
+   crash-safe storage, DOS-device/NT path normalization, sharing and directory
+   enumeration; prove two runs and two isolated prefixes.
 5. Stage the pinned Wine distribution in the native title, boot the first Wine
    process on hardware and require structured identity, lifecycle and cleanup
    evidence.

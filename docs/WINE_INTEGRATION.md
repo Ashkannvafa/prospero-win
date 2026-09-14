@@ -56,14 +56,16 @@ configured runtime directory; an unconfigured runtime fails as unsupported and
 never falls back silently to the application directory. The i386 runtime is
 now built and staged reproducibly. A bounded host gate maps it, binds the real
 module graph, constructs the PE32 TLS and minimal process environment, and
-executes real `ntdll` initialization under the DBT. The current exact run
-retires 32,544 guest instructions in 6,869 dispatches and 968 translated
-blocks, services 19 NT calls, and returns cleanly to the gate when Wine's debug
-path invokes `__wine_unix_call_dispatcher`. That is a second dispatcher, not
-the syscall dispatcher already published through `TEB.WOW32Reserved`; it is
-the next defined integration boundary. See [WINE_RUNTIME.md](WINE_RUNTIME.md).
+executes real `ntdll` initialization under the DBT. Both Wine dispatcher
+boundaries are now published and checked against the pinned source. A generated
+PE32 executable, two local DLLs and their dependency diamond load through that
+runtime; with register residency disabled, the application's own entry point
+returns `1` and the process exits through `NtTerminateThread` after 598,404
+retired instructions and 2,981 translated blocks. The residency-enabled path
+still exposes a deterministic DBT entry-contract defect, and loader-list plus
+attach-order validation remains. See [WINE_RUNTIME.md](WINE_RUNTIME.md).
 Staging the runtime inside the title and booting a Wine process remain separate
-acceptance gates.
+hardware acceptance gates.
 
 DXVK DLLs use the same runtime-distribution mechanism. Per-application DLL
 overrides will be an explicit policy entry, not an accidental filename search
