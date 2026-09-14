@@ -143,22 +143,20 @@ static int populate_parameters(uint8_t *page, uint32_t page_bytes,
  * is refused before anything is committed, and a page whose commit fails is
  * given straight back, so the unit never leaves a reservation behind.
  */
-static int map_page(const PwGuestProcessConfig *config, uint32_t base,
-                    PwVmRegion *region, uint32_t *address)
+static int map_region(const PwGuestProcessConfig *config, uint32_t base,
+                      uint32_t bytes, PwVmRegion *region, uint32_t *address)
 {
     const PwVmBackend *backend = config->backend;
     int status;
 
-    if (!backend || !backend->reserve || !backend->commit)
+    if (!backend || !backend->reserve || !backend->commit || bytes == 0u)
         return PW_ERR_PRECONDITION;
     status = PW_ERR_VM;
     if ((backend->capabilities & PW_VM_CAP_EXACT_ADDRESS) != 0u)
-        status = backend->reserve_at(backend->context, base,
-                                     PW_GUEST_PROCESS_PAGE_BYTES,
+        status = backend->reserve_at(backend->context, base, (size_t)bytes,
                                      backend->page_bytes, region);
     if (status != PW_OK)
-        status = backend->reserve(backend->context,
-                                  PW_GUEST_PROCESS_PAGE_BYTES,
+        status = backend->reserve(backend->context, (size_t)bytes,
                                   backend->page_bytes, region);
     if (status != PW_OK)
         return status;
@@ -218,27 +216,45 @@ int pw_guest_process_create(PwGuestProcess *process,
     memset(process, 0, sizeof(*process));
     stack_base = config->stack_base != 0u ? config->stack_base
                                           : PW_GUEST_PROCESS_STACK_BASE;
+    /*
+     * The stack's size, in the order Windows and Wine decide it: what the
+     * caller asked for, then what the process's own image asks for in its
+     * headers, then the 1 MiB a linker that emits nothing leaves. Measured:
+     * the pinned runtime's own locale and registry startup needs more than the
+     * 64 KiB this unit used to map and died on a push at the stack's lower
+     * bound.
+     */
     stack_bytes = config->stack_bytes != 0u ? config->stack_bytes
-                                            : PW_GUEST_PROCESS_PAGE_BYTES;
+                 : config->stack_reserve != 0u
+                     ? (config->stack_reserve > PW_GUEST_PROCESS_STACK_MAX_BYTES
+                            ? PW_GUEST_PROCESS_STACK_MAX_BYTES
+                            : config->stack_reserve)
+                     : PW_GUEST_PROCESS_STACK_DEFAULT_BYTES;
+    if ((stack_bytes & ((uint32_t)config->backend->page_bytes - 1u)) != 0u)
+        stack_bytes = (stack_bytes + (uint32_t)config->backend->page_bytes) &
+                      ~((uint32_t)config->backend->page_bytes - 1u);
 
-    if (map_page(config, stack_base, &process->pages[0],
-                 &process->layout.stack_base) != PW_OK)
+    if (map_region(config, stack_base, stack_bytes, &process->pages[0],
+                   &process->layout.stack_base) != PW_OK)
         return PW_ERR_VM;
     process->mapped = 1u;
     process->layout.stack_bytes = (uint32_t)process->pages[0].bytes;
     if (process->layout.stack_bytes < stack_bytes)
         goto failed;
-    if (map_page(config, PW_GUEST_PROCESS_TEB_BASE, &process->pages[1],
-                 &process->layout.teb_base) != PW_OK)
+    if (map_region(config, PW_GUEST_PROCESS_TEB_BASE,
+                   PW_GUEST_PROCESS_PAGE_BYTES, &process->pages[1],
+                   &process->layout.teb_base) != PW_OK)
         goto failed;
     process->mapped = 2u;
     process->layout.teb_bytes = (uint32_t)process->pages[1].bytes;
-    if (map_page(config, PW_GUEST_PROCESS_PEB_BASE, &process->pages[2],
-                 &process->layout.peb_base) != PW_OK)
+    if (map_region(config, PW_GUEST_PROCESS_PEB_BASE,
+                   PW_GUEST_PROCESS_PAGE_BYTES, &process->pages[2],
+                   &process->layout.peb_base) != PW_OK)
         goto failed;
     process->mapped = 3u;
-    if (map_page(config, PW_GUEST_PROCESS_PARAMETERS_BASE, &process->pages[3],
-                 &process->layout.parameters_base) != PW_OK)
+    if (map_region(config, PW_GUEST_PROCESS_PARAMETERS_BASE,
+                   PW_GUEST_PROCESS_PAGE_BYTES, &process->pages[3],
+                   &process->layout.parameters_base) != PW_OK)
         goto failed;
     process->mapped = 4u;
     process->layout.parameters_bytes = (uint32_t)process->pages[3].bytes;

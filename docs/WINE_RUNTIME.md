@@ -463,6 +463,14 @@ memory) and the stop address is inside ntdll. Nothing about it is reported as
 acceptance: the verdict still says the run did not reach the Unix-call
 boundary.
 
+The stack is the size the process's own image asks for. Windows and Wine size
+a process's stack from the PE header's `SizeOfStackReserve`, and a linker that
+emits no value leaves 1 MiB; this unit publishes exactly that, rounded up to
+the backend's page size and bounded by what the run will honour. Measured: with
+the 64 KiB page it used to map, the pinned runtime's own registry startup died
+pushing a frame at the stack's lower bound, and with the real size it walks on
+through hundreds of thousands of instructions.
+
 ### A populated process environment, and the first I/O call
 
 The null `CurrentDirectory.Buffer` was the binding constraint, so the gate now
@@ -632,6 +640,11 @@ NtFreeVirtualMemory           (0x001e) returns a whole guest block that this
 NtOpenKey                     (0x0012) OBJECT_ATTRIBUTES + UNICODE_STRING key
                                        path, absolute inside the registry
                                        namespace or relative to a key handle
+NtOpenKeyEx                   (0x00b6) the same open as NtOpenKey with the
+                                       extended form's open options, which
+                                       Wine only warns about: REG_OPTION_OPEN_LINK
+                                       asks for a link object rather than the
+                                       key, and this profile carries none
 NtQueryValueKey               (0x0017) KeyValuePartialInformation only
 NtQuerySystemInformation      (0x0036) SystemWineVersionInformation (1000) only
 NtCreateKey                   (0x001d) create-or-open against the same profile;

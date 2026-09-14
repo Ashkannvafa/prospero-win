@@ -21,6 +21,15 @@ enum {
     PW_GUEST_PROCESS_PEB_BASE = 0x0d000000u,
     PW_GUEST_PROCESS_PARAMETERS_BASE = 0x0c000000u,
     PW_GUEST_PROCESS_PAGE_BYTES = 64u * 1024u,
+    /*
+     * The stack a process gets when its own image does not ask for one. Windows
+     * and Wine both give a PE image its OptionalHeader SizeOfStackReserve, and
+     * a linker that emits no value leaves 1 MiB, which is what this unit
+     * publishes then. The bound is what keeps an image that asks for a
+     * preposterous reserve from taking the whole address space.
+     */
+    PW_GUEST_PROCESS_STACK_DEFAULT_BYTES = 1024u * 1024u,
+    PW_GUEST_PROCESS_STACK_MAX_BYTES = 8u * 1024u * 1024u,
     PW_GUEST_PROCESS_PAGES = 4u,
     /* Where the i386 TEB keeps its embedded ACTIVATION_CONTEXT_STACK. A real
      * thread's TEB points at this field rather than at a page of its own:
@@ -54,7 +63,10 @@ typedef struct PwGuestProcessLayout {
 typedef struct PwGuestProcessConfig {
     const PwVmBackend *backend;     /* the real backend: this unit maps pages */
     uint32_t stack_base;            /* 0 selects the default above */
-    uint32_t stack_bytes;           /* 0 selects the default above */
+    uint32_t stack_bytes;           /* 0 selects the default below */
+    /* The reserve the root module's own headers ask for; 0 means the image
+     * says nothing and the process gets the default above. */
+    uint32_t stack_reserve;
     uint32_t image_base;            /* PEB->ImageBaseAddress */
     /* Wine publishes its syscall dispatcher in TEB.WOW32Reserved, and the
      * stubs declared with -syscall=<id> call through it; 0 leaves it zero. */

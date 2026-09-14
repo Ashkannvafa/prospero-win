@@ -105,7 +105,16 @@ int pw_wine_registry_resolve(PwWineCallContext *calls,
 }
 
 /*
- * NtOpenKey. A key the profile does not declare answers
+ * NtOpenKey and NtOpenKeyEx. The two take the same first three arguments -
+ * the handle slot, the access mask and the OBJECT_ATTRIBUTES - and the
+ * extended form adds the open options (dlls/ntdll/unix/registry.c:133). Wine's
+ * own NtOpenKey is defined as NtOpenKeyEx with no options, and the only option
+ * it defines is REG_OPTION_OPEN_LINK, which asks for a link object rather than
+ * the key it points at: this profile carries no links, and Wine only warns
+ * about an option outside that mask and opens the key anyway, so both shapes
+ * answer out of the same path here.
+ *
+ * A key the profile does not declare answers
  * STATUS_OBJECT_NAME_NOT_FOUND, so ntdll keeps its own defaults instead of
  * being handed invented content, and the canonical path is remembered with the
  * handle because that is what a later relative open resolves against.

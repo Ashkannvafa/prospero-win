@@ -1007,6 +1007,8 @@ static const PwNtHandler dispatch_table[] = {
       pw_wine_query_system_information },
     { 0x0012u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
       pw_wine_registry_open },
+    { 0x00b6u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
+      pw_wine_registry_open },
     { 0x001du, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
       pw_wine_registry_create },
     { 0x0017u, { 2u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_registry.c",
@@ -1661,6 +1663,11 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         const PwGuestProcessConfig process_config = {
             .backend = config->backend,
             .stack_base = config->stack_base,
+            /* The stack the process's own image asks for, when its headers ask
+             * for one: the same field Windows and Wine size a process's stack
+             * from (SizeOfStackReserve). */
+            .stack_reserve = root_module_loaded
+                ? root_module_loaded->image.stack_reserve : 0u,
             .image_base = root_module_loaded
                 ? (uint32_t)root_module_loaded->mapped.actual_base : 0u,
             .dispatcher_thunk = report->boundary_thunk_va,

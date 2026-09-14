@@ -53,16 +53,28 @@ static uintptr_t memory_range_pointer(PwX86State *state,uint32_t address,unsigne
 {
     uint64_t end=(uint64_t)address+width;
     unsigned permission=write==2?(PW_X86_READ|PW_X86_WRITE):write?PW_X86_WRITE:PW_X86_READ;
-    state->fault_address=address;state->fault_width=(uint32_t)width;
-    state->fault_write=write;
+    /*
+     * The record is written when the access is *refused*, not when it is
+     * checked. Writing it at entry made the report name the last access the
+     * guard looked at rather than the one that failed - and the guard is
+     * called for accesses that then succeed, and the inline fast paths do not
+     * call it at all - so a run that stopped on a fault could report an
+     * address that was fine a moment earlier. The record is read by the gate's
+     * evidence and by tests that pin a running frontier, so it has to be the
+     * failing access.
+     */
     if (!address || !width || end>0x100000000ull || state->memory_count>PW_X86_MEMORY_REGIONS)
-        return 0;
+        goto refused;
     if(address>=state->stack_low && end<=state->stack_high)return address;
     for(unsigned i=0;i<state->memory_count;i++) {
         const PwX86Memory *m=&state->memory[i];
         if(m->high<=0x100000000ull && address>=m->low && end<=m->high &&
            (m->permissions&permission)==permission)return address;
     }
+refused:
+    state->fault_address=address;
+    state->fault_width=(uint32_t)width;
+    state->fault_write=write;
     return 0;
 }
 static uintptr_t memory_pointer(PwX86State *state,uint32_t address,unsigned write,unsigned width)

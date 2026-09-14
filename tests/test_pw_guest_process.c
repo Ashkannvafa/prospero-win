@@ -165,11 +165,18 @@ int main(void)
         assert(process.mapped == 0u);
     }
 
-    /* The layout: four pages at the documented bases. */
+    /*
+     * The layout: the stack, the TEB, the PEB and the parameters page at the
+     * documented bases. The stack is the size Windows gives a process whose
+     * image names no reserve - 1 MiB - because the pinned runtime's own
+     * startup needs more than the single 64 KiB page this unit used to map and
+     * died on a push at the stack's lower bound.
+     */
     assert(pw_guest_process_create(&process, &config) == PW_OK);
     assert(process.mapped == PW_GUEST_PROCESS_PAGES);
     assert(process.layout.stack_base == PW_GUEST_PROCESS_STACK_BASE);
-    assert(process.layout.stack_bytes == PW_GUEST_PROCESS_PAGE_BYTES);
+    assert(process.layout.stack_bytes == PW_GUEST_PROCESS_STACK_DEFAULT_BYTES);
+    assert(process.pages[0].bytes >= PW_GUEST_PROCESS_STACK_DEFAULT_BYTES);
     assert(process.layout.teb_base == PW_GUEST_PROCESS_TEB_BASE);
     assert(process.layout.peb_base == PW_GUEST_PROCESS_PEB_BASE);
     assert(process.layout.parameters_base == PW_GUEST_PROCESS_PARAMETERS_BASE);
@@ -178,7 +185,8 @@ int main(void)
     /* The TEB: the NT fields ntdll reads through FS, and the dispatcher. */
     teb = process.pages[1].write_base;
     memcpy(&value, teb + 0x04u, 4u);
-    assert(value == PW_GUEST_PROCESS_STACK_BASE + PW_GUEST_PROCESS_PAGE_BYTES);
+    assert(value == PW_GUEST_PROCESS_STACK_BASE +
+                     PW_GUEST_PROCESS_STACK_DEFAULT_BYTES);
     memcpy(&value, teb + 0x08u, 4u);
     assert(value == PW_GUEST_PROCESS_STACK_BASE);
     memcpy(&value, teb + 0x18u, 4u);
@@ -285,6 +293,9 @@ int main(void)
     assert(process.released == 3u && process.mapped == 0u);
     assert(pw_guest_process_release(&process, &backend) == PW_OK);
     assert(process.released == 0u);
+    /* The parameters page is the guest's, so the unit leaves it mapped; the
+     * scenarios below build more processes, so this one gives it back here. */
+    assert(backend.release(backend.context, &process.pages[3]) == PW_OK);
 
     /* A commit that fails leaves nothing mapped: the reservation goes back. */
     {
@@ -295,6 +306,34 @@ int main(void)
         assert(process.mapped == 0u);
         assert(faults.releases == before + 1u);
         faults.fail_commit = 0u;
+    }
+    /*
+     * A process whose image asks for its own stack gets one: SizeOfStackReserve
+     * is the field Windows and Wine size a process's stack from, and this unit
+     * rounds it up to the backend's page size and bounds it. The TEB's
+     * StackBase follows the stack the process actually got.
+     */
+    {
+        PwGuestProcessConfig reserved_config = config;
+        uint32_t reserved;
+
+        reserved_config.stack_reserve = 2u * 1024u * 1024u + 1u;
+        assert(pw_guest_process_create(&process, &reserved_config) == PW_OK);
+        assert(process.layout.stack_bytes >= 2u * 1024u * 1024u + 1u);
+        assert((process.layout.stack_bytes % backend.page_bytes) == 0u);
+        memcpy(&reserved, process.pages[1].write_base + 0x04u, 4u);
+        assert(reserved == PW_GUEST_PROCESS_STACK_BASE +
+                           process.layout.stack_bytes);
+        assert(pw_guest_process_release(&process, &backend) == PW_OK);
+        /* The parameters page belongs to the guest, so a second process needs
+         * it given back before the next create maps its own. */
+        assert(backend.release(backend.context, &process.pages[3]) == PW_OK);
+        /* A reserve past this run's bound is clamped rather than honoured. */
+        reserved_config.stack_reserve = 64u * 1024u * 1024u;
+        assert(pw_guest_process_create(&process, &reserved_config) == PW_OK);
+        assert(process.layout.stack_bytes == PW_GUEST_PROCESS_STACK_MAX_BYTES);
+        assert(pw_guest_process_release(&process, &backend) == PW_OK);
+        assert(backend.release(backend.context, &process.pages[3]) == PW_OK);
     }
     return 0;
 }
