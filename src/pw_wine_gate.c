@@ -843,6 +843,8 @@ static const PwNtHandler dispatch_table[] = {
       "tests/test_pw_wine_section.c", pw_wine_section_create },
     { 0x0051u, { 0u, 1u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
       pw_wine_section_query },
+    { 0x0028u, { 0x00000020u, PW_NT_CLASS_NONE },
+      "tests/test_pw_wine_section.c", pw_wine_section_map_view },
 };
 
 static const PwNtHandler *dispatch_find(uint32_t id)

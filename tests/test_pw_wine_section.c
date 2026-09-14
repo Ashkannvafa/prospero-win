@@ -47,16 +47,21 @@ enum {
     MACHINE_COPY_RVA = DATA_RVA + 0x238,    /* Machine the guest read */
     FILESIZE_COPY_RVA = DATA_RVA + 0x23C,   /* ImageFileSize it read */
     SIZE_COPY_RVA = DATA_RVA + 0x240,       /* BasicInformation.Size */
+    VIEW_BASE_RVA = DATA_RVA + 0x244,       /* the base the view was mapped at */
+    VIEW_SIZE_RVA = DATA_RVA + 0x248,       /* the view size it reported */
+    MAPPED_HEAD_RVA = DATA_RVA + 0x24C,     /* the image's first bytes, read at
+                                             * the base the gate returned */
     DIRECTORY_RVA = DATA_RVA + 0x250,       /* UNICODE_STRING of a directory */
     DIRECTORY_TEXT_RVA = DATA_RVA + 0x260,
     DIRECTORY_ATTRS_RVA = DATA_RVA + 0x2A0,
     DIRECTORY_HANDLE_RVA = DATA_RVA + 0x2C0,
-    THUNK_RVA = TEXT_RVA + 0x200,
-    STUB_OPEN_RVA = TEXT_RVA + 0x210,       /* NtOpenFile, 0x33 */
-    STUB_CREATE_RVA = TEXT_RVA + 0x220,     /* NtCreateSection, 0x4a */
-    STUB_QUERY_RVA = TEXT_RVA + 0x230,      /* NtQuerySection, 0x51 */
-    STUB_CLOSE_RVA = TEXT_RVA + 0x240,      /* NtClose, 0x0f */
-    STUB_ATTRS_RVA = TEXT_RVA + 0x250,      /* NtQueryAttributesFile: none */
+    THUNK_RVA = TEXT_RVA + 0x300,
+    STUB_OPEN_RVA = TEXT_RVA + 0x310,       /* NtOpenFile, 0x33 */
+    STUB_CREATE_RVA = TEXT_RVA + 0x320,     /* NtCreateSection, 0x4a */
+    STUB_QUERY_RVA = TEXT_RVA + 0x330,      /* NtQuerySection, 0x51 */
+    STUB_CLOSE_RVA = TEXT_RVA + 0x340,      /* NtClose, 0x0f */
+    STUB_ATTRS_RVA = TEXT_RVA + 0x350,      /* NtQueryAttributesFile: none */
+    STUB_MAP_RVA = TEXT_RVA + 0x360,        /* NtMapViewOfSection, 0x28 */
     CALLER_RVA = TEXT_RVA,
     /* The shapes and classes the guest asks with. */
     SECTION_IMAGE_INFORMATION = 1u,
@@ -77,7 +82,7 @@ static uint8_t image[64 * 1024];
 static uint8_t text[1024];
 static uint32_t text_bytes;
 static uint8_t data[0x800];
-static PeFixtureReloc relocs[64];
+static PeFixtureReloc relocs[128];
 static uint32_t reloc_count;
 
 static void emit_byte(uint8_t value)
@@ -204,6 +209,25 @@ static void emit_create(uint32_t file_handle_rva, uint32_t section_handle_rva,
 
 /* NtQuerySection(section, class, buffer, length, NULL) with the section handle
  * taken from a slot. */
+/* NtMapViewOfSection(section, -1, &base, 0, 0, NULL, &size, ViewShare, 0,
+ * PAGE_EXECUTE_READ), which is the shape the loader asks with. */
+static void emit_map_view(uint32_t section_handle_rva, uint32_t status_rva)
+{
+    emit_push_imm32(PAGE_EXECUTE_READ);       /* Win32Protect */
+    emit_push_imm8(0x00);                     /* AllocationType */
+    emit_push_imm8(0x01);                     /* InheritDisposition: ViewShare */
+    emit_push_absolute(VIEW_SIZE_RVA);        /* ViewSize */
+    emit_push_imm8(0x00);                     /* SectionOffset */
+    emit_push_imm8(0x00);                     /* CommitSize */
+    emit_push_imm8(0x00);                     /* ZeroBits */
+    emit_push_absolute(VIEW_BASE_RVA);        /* BaseAddress */
+    emit_push_imm8(0xff);                     /* this process */
+    emit_load_eax(section_handle_rva);
+    emit_push_eax();
+    emit_call(STUB_MAP_RVA);
+    emit_store_eax(status_rva);
+}
+
 static void emit_query(uint32_t section_handle_rva, uint32_t class_id,
                        uint32_t buffer_rva, uint32_t length, uint32_t status_rva)
 {
@@ -304,14 +328,34 @@ static size_t build_module(void)
     emit_push_eax();                          /* the value as a handle */
     emit_call(STUB_QUERY_RVA);
     emit_store_eax(STATUS_RVA + 44u);
-    /* And end with the two values the loader reads: a call this bridge has no
-     * handler for carries them, so the run stops with them on the record. */
-    emit_load_eax(FILESIZE_COPY_RVA);
+    /*
+     * The view: mapped where this run can place it, holding the image the file
+     * holds. The guest reads the image's first bytes *at the base the gate
+     * returned*, so the transcript carries proof that the mapping is the file.
+     */
+    emit_map_view(SECTION_HANDLE_RVA, STATUS_RVA + 48u);
+    emit_load_eax(VIEW_BASE_RVA);
+    emit_byte(0x8b); emit_byte(0x00);         /* mov eax, [eax] */
+    emit_store_eax(MAPPED_HEAD_RVA);
+    /* The view size the guest read, as the class of one more query. */
+    emit_push_imm8(0x00);
+    emit_push_imm32(IMAGE_INFORMATION_BYTES);
+    emit_load_eax(VIEW_SIZE_RVA);
+    emit_push_eax();
+    emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
+    emit_load_eax(SECTION_HANDLE_RVA);
+    emit_push_eax();
+    emit_call(STUB_QUERY_RVA);
+    emit_store_eax(STATUS_RVA + 52u);
+    /* And end with two values the loader reads: the image's own bytes and the
+     * base they were mapped at, on a call this bridge has no handler for, so
+     * the run stops with them on the record. */
+    emit_load_eax(VIEW_BASE_RVA);
     emit_push_eax();                          /* second argument */
-    emit_load_eax(MACHINE_COPY_RVA);
+    emit_load_eax(MAPPED_HEAD_RVA);
     emit_push_eax();                          /* first argument */
     emit_call(STUB_ATTRS_RVA);
-    emit_store_eax(STATUS_RVA + 48u);
+    emit_store_eax(STATUS_RVA + 56u);
 
     while (text_bytes < THUNK_RVA - TEXT_RVA)
         emit_byte(0x90);
@@ -322,6 +366,7 @@ static size_t build_module(void)
     emit_stub(STUB_QUERY_RVA, 0x0051u, 20u);    /* NtQuerySection */
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);     /* NtClose */
     emit_stub(STUB_ATTRS_RVA, 0x003du, 8u);     /* NtQueryAttributesFile */
+    emit_stub(STUB_MAP_RVA, 0x0028u, 40u);      /* NtMapViewOfSection */
     emit_byte(0xc3);
 
     emit_data_reloc(NAME_RVA + 4u);
@@ -467,7 +512,6 @@ int main(void)
     const char *modules[] = {"ntdll.dll"};
     const size_t size = build_module();
     PeImage expected;
-    const PwUnixCallRecord *last = NULL;
 
     assert(size != 0u);
     /* The file the section describes is this fixture's own image, so the
@@ -498,13 +542,17 @@ int main(void)
 
     (void)pw_wine_gate_run(&config, &report);
 
-    /* The section was described once and asked four times; of the refusals,
-     * three are answers the section service gives (the short buffer, the
-     * unknown class and the data section) and the fourth is the handle that
-     * names a directory rather than a file. */
+    /* The section was described once and asked four times, and of the
+     * refusals four are answers the section service gives (the short buffer,
+     * the unknown class, the data section, and the unknown class the guest
+     * uses to carry the view size) while the handle that names a directory
+     * rather than a file is refused by the handle table. The view itself was
+     * mapped once, with no refusal. */
     assert(report.section_creates == 1u);
     assert(report.section_queries == 4u);
-    assert(report.section_refusals == 3u);
+    assert(report.section_refusals == 4u);
+    assert(report.section_views == 1u);
+    assert(report.section_view_refusals == 0u);
     assert(report.calls.handled >= 10u);
     assert(report.calls.rejected == 0u && report.calls.unknown == 0u);
 
@@ -538,17 +586,31 @@ int main(void)
      * the buffer: the size the section reported. */
     assert(record_with(&report, 11u)->args[0] == expected.size_of_image);
 
-    /* The run ends on the call this bridge has no handler for, carrying the
-     * machine type and the file size the guest read out of the section. */
-    last = record_with(&report, 12u);
-    assert(last->id == 0x003du);
-    assert(last->outcome == PW_UNIX_CALL_UNIMPLEMENTED);
-    assert(last->args[0] == expected.machine);
-    assert(last->args[1] == size);
-    /* The file was opened once and read once: the section read the headers
-     * through the service while the file handle was still open. */
-    assert(file.opens == 1u);
-    assert(file.reads == 1u);
+    /* The view was mapped, and the guest read the image's own first bytes at
+     * the base the gate returned. */
+    assert(record_with(&report, 12u)->id == 0x0028u);
+    assert(record_with(&report, 12u)->status == PW_NT_SUCCESS);
+    assert(record_with(&report, 14u)->id == 0x003du);
+    assert(record_with(&report, 14u)->outcome == PW_UNIX_CALL_UNIMPLEMENTED);
+    {
+        uint32_t head = 0u;
+
+        memcpy(&head, image, 4u);
+        assert(record_with(&report, 14u)->args[0] == head);
+        assert(record_with(&report, 14u)->args[1] != 0u);
+        assert((record_with(&report, 14u)->args[1] & 0xfffu) == 0u);
+    }
+    /* The view size the guest read back is the image's own size. */
+    assert(record_with(&report, 13u)->id == 0x0051u);
+    assert(record_with(&report, 13u)->status == PW_NT_INVALID_INFO_CLASS);
+    assert(record_with(&report, 13u)->args[2] == expected.size_of_image);
+    /* The service was asked for the file twice - once by the loader's open and
+     * once when the view was mapped, because the section re-opens the file by
+     * the name it carries - and the section read it once to describe the image
+     * and once more for the headers plus every section that has bytes on disk
+     * when it placed the view. */
+    assert(file.opens == 2u);
+    assert(file.reads == 2u + expected.section_count);
     /* The section resolved its file through the service by the canonical name
      * the file handle carried. */
     assert(strcmp(file.last_name, "test.dll") == 0);

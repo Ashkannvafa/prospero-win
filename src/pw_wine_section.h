@@ -38,6 +38,18 @@ enum {
      * below 4 GiB. Nothing else applies to a native i386 PE. */
     PW_WINE_IMAGE_FLAG_DYNAMICALLY_RELOCATED = 0x04u,
     PW_WINE_IMAGE_FLAG_BASE_BELOW_4GB = 0x10u,
+    /* How much of a file is read to describe the image it holds: the DOS and
+     * NT headers and the section table, which is everything a description and
+     * a view mapping need from the file itself. */
+    PW_WINE_SECTION_HEADER_BYTES = 4096u,
+    PW_WINE_SECTION_PAGE_BYTES = 0x1000u,
+    /* The one view shape a loader asks for, and the one protection it asks
+     * for: NtMapViewOfSection(mapping, NtCurrentProcess(), &module, 0, 0,
+     * NULL, &len, ViewShare, 0, PAGE_EXECUTE_READ). */
+    PW_WINE_SECTION_VIEW_SHARE = 1u,
+    PW_WINE_SECTION_VIEW_UNMAP = 2u,
+    PW_WINE_SECTION_PAGE_EXECUTE_READ = 0x20u,
+    PW_WINE_SECTION_PAGE_READWRITE = 0x04u,
 };
 
 /* NtCreateSection (0x004a), SEC_IMAGE over an open file handle. */
@@ -52,5 +64,12 @@ int pw_wine_section_query(struct PwWineCallContext *calls,
                           const PwUnixCallFrame *frame, PwUnixCallAccess guest,
                           void *context, uint32_t *status,
                           uint32_t *argument_index);
+
+/* NtMapViewOfSection (0x0028): the view a loader maps an image section into,
+ * placed per the image's own section table and described to the guest. */
+int pw_wine_section_map_view(struct PwWineCallContext *calls,
+                             const PwUnixCallFrame *frame,
+                             PwUnixCallAccess guest, void *context,
+                             uint32_t *status, uint32_t *argument_index);
 
 #endif /* PROSPERO_WIN_PW_WINE_SECTION_H */

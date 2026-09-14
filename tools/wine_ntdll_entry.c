@@ -703,7 +703,7 @@ int main(int argc, char **argv)
                "allocated_bytes=%u "
                "regions=%u files=%u opens=%llu reads=%llu bytes=%llu closes=%llu "
                "directories=%llu refusals=%llu fs_controls=%llu "
-               "sections=%llu section_queries=%llu last=%s "
+               "sections=%llu section_queries=%llu views=%llu last=%s "
                "registry=%u key_opens=%llu key_queries=%llu key_values=%llu "
                "key_creates=%llu key_refusals=%llu tokens=%llu last_key=%s "
                "objects=%u object_opens=%llu object_refusals=%llu "
@@ -724,6 +724,7 @@ int main(int argc, char **argv)
                (unsigned long long)report.file_fs_controls,
                (unsigned long long)report.section_creates,
                (unsigned long long)report.section_queries,
+               (unsigned long long)report.section_views,
                recorded_path(report.last_file[0] ? report.last_file : "-",
                              file_path, sizeof(file_path)),
                report.registry_configured,

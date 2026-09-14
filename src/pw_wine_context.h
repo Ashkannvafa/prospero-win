@@ -22,10 +22,16 @@
 #include "pw_loader.h"
 #include "pw_nt_handle.h"
 #include "pw_wine_gate.h"
+#include "pw_wine_section.h"
+#include "pe_image.h"
 
 /*
  * One image section: what NtQuerySection answers from, and the canonical name
  * the view mapping re-opens the file by once the file handle is closed.
+ *
+ * The headers are kept, and parsed once, because the view mapping needs the
+ * section table and re-reading the file for it would describe the same image a
+ * second time. The parse points into those bytes, so the section owns both.
  */
 typedef struct PwWineSection {
     char name[PW_NT_HANDLE_PATH_MAX + 1];
@@ -33,21 +39,8 @@ typedef struct PwWineSection {
     uint64_t image_base;
     uint32_t protection;
     uint32_t attributes;
-    uint32_t image_size;
-    uint32_t entry_point;
-    uint32_t stack_reserve;
-    uint32_t stack_commit;
-    uint32_t checksum;
-    uint32_t subsystem;
-    uint16_t subsystem_version_minor;
-    uint16_t subsystem_version_major;
-    uint16_t os_version_major;
-    uint16_t os_version_minor;
-    uint16_t characteristics;
-    uint16_t dll_characteristics;
-    uint16_t machine;
-    uint8_t contains_code;
-    uint8_t image_flags;
+    uint8_t headers[PW_WINE_SECTION_HEADER_BYTES];
+    PeImage image;
 } PwWineSection;
 
 typedef struct PwWineCallContext {

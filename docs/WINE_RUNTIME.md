@@ -514,6 +514,17 @@ NtReadFile                    (0x0006) handle, IO status, buffer, length,
                                        offset; a directory handle is refused
 NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
                                        and Directory for a directory object)
+NtMapViewOfSection            (0x0028) the one view a loader maps: the
+                                       section placed at its preferred base
+                                       when this run can put it there and
+                                       elsewhere when it cannot, the file's
+                                       headers and each section's raw bytes
+                                       where the image's own section table says
+                                       they belong, the protections the section
+                                       table implies, and the whole view
+                                       declared to the guest - nothing is
+                                       relocated here, because a SEC_IMAGE view
+                                       is the image as the file holds it
 NtCreateSection               (0x004a) an unnamed SEC_IMAGE section over an
                                        open file handle, described from the
                                        file's own headers; the section keeps
