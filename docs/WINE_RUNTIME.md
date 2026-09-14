@@ -25,7 +25,7 @@ bounded host gate, not a running Windows process.
 | ntdll under the DBT | Real `LdrInitializeThunk` executes through the IA-32 translator: 32 544 retired instructions, 6869 dispatches, 968 translated blocks, `host_calls=0`, complete cleanup (`modules=2 mappings=7 translations=1`) |
 | Unix-call boundary | Found structurally (dispatcher slot plus its single `jmp dword ptr [slot]` thunk) and crossed: 19 calls serviced through 15 handlers, and both stub shapes Wine's build emits are bridged, including the `-syscall` ones that call through `TEB.WOW32Reserved` |
 | Platform services | Files (open/read/query/close, one gate-owned directory object), registry (open/create/query against a host profile), token (`TokenUser`), object namespace (`\KnownDlls` plus section lookups), system information (the Wine version class) and process information (the process image, from the module's own headers) |
-| Where it stops | The loader's own debug message calls `__wine_unix_call_dispatcher`, the **unix-call** dispatcher the gate does not publish yet, so the run ends with a classified null jump |
+| Where it stops | The loader's own debug message calls `__wine_unix_call_dispatcher`, the **unix-call** dispatcher the gate does not publish yet, so the validated run ends as `returned-to-caller` at address zero (the classified null jump) |
 | Not claimed | No Windows process starts, no application runs, no console or hardware evidence, and the registry/object profiles are the distribution's own, not a Wine prefix |
 
 Reproduce it:

@@ -67,7 +67,7 @@ assert by_id["dxvk"]["depends_on"] == [
     "wine-pe-runtime", "nt-objects-waits", "ps5-vulkan"
 ]
 assert by_id["runtime-module-policy"]["status"] == "implemented"
-assert by_id["wine-pe-runtime"]["status"] == "planned"
+assert by_id["wine-pe-runtime"]["status"] == "partial"
 assert by_id["ps5-vulkan"]["status"] == "external-wip"
 
 print(f"Wine foundation ledger passed: {len(components)} components")

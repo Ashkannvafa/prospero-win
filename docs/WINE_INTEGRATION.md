@@ -54,10 +54,16 @@ The loader now has an explicit `PW_MODULE_RUNTIME` origin and
 modules from that namespace. Both host and PS5 providers accept an independently
 configured runtime directory; an unconfigured runtime fails as unsupported and
 never falls back silently to the application directory. The i386 runtime is
-now built and staged reproducibly, and a bounded host gate maps it, binds the
-real module graph and reaches ntdll's Unix-call boundary under the DBT; see
-[WINE_RUNTIME.md](WINE_RUNTIME.md). Staging the runtime inside the title and
-booting a Wine process remain separate acceptance gates.
+now built and staged reproducibly. A bounded host gate maps it, binds the real
+module graph, constructs the PE32 TLS and minimal process environment, and
+executes real `ntdll` initialization under the DBT. The current exact run
+retires 32,544 guest instructions in 6,869 dispatches and 968 translated
+blocks, services 19 NT calls, and returns cleanly to the gate when Wine's debug
+path invokes `__wine_unix_call_dispatcher`. That is a second dispatcher, not
+the syscall dispatcher already published through `TEB.WOW32Reserved`; it is
+the next defined integration boundary. See [WINE_RUNTIME.md](WINE_RUNTIME.md).
+Staging the runtime inside the title and booting a Wine process remain separate
+acceptance gates.
 
 DXVK DLLs use the same runtime-distribution mechanism. Per-application DLL
 overrides will be an explicit policy entry, not an accidental filename search
@@ -83,6 +89,23 @@ The first implementation may embed the object service in the title process.
 Its API must preserve Wine/NT object semantics so a separate wineserver-style
 transport can be introduced later without changing PE modules or guest ABI.
 Multi-process compatibility is not claimed by the embedded service.
+
+## Title sandbox and guest boundary
+
+PS5 packages already execute in a title-scoped process and filesystem context.
+prospero-win benefits from that outer isolation without reproducing the Android
+`proot` layer used by projects such as Winlator. It does not, however, gain a
+general facility for creating one kernel jail per Windows program. A single
+prospero-win title hosting several programs would place them in the same outer
+sandbox.
+
+The reusable runtime must consequently enforce its own guest boundary at the
+interfaces it controls: validated guest spans, W^X translated-code
+publication, typed non-reissued handles, canonical path namespaces, bounded
+resource ownership, and capability-limited Unix-call services. Native PS5
+debugging or deployment facilities stay outside that surface. PE32 gets this
+mediation naturally through the DBT; future native PE64 execution shares the
+host address space and requires a separate trust or containment decision.
 
 ## Performance architecture
 

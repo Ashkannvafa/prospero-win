@@ -7,14 +7,15 @@ are deliberately kept outside the standalone project.
 
 ## Start here
 
-- [Architecture](ARCHITECTURE.md): component boundaries, memory ownership and
-  failure rules.
+- [Architecture](ARCHITECTURE.md): component boundaries, title/guest isolation,
+  memory ownership and failure rules.
 - [Wine integration](WINE_INTEGRATION.md): Windows subsystem boundary, CPU
   execution choices and the DXVK-to-ps5-vulkan graphics path.
 - [Wine foundation ledger](WINE_FOUNDATION.json): machine-readable component
   status, dependencies and exit criteria.
 - [Development](DEVELOPMENT.md): required gates and native build workflow.
-- [Compatibility roadmap](ROADMAP.md): public milestones and current scope.
+- [Compatibility roadmap](ROADMAP.md): validated baseline, current Wine
+  frontier and the next compatibility milestones.
 - [Hardware validation](HARDWARE_VALIDATION.md): accepted claims and evidence
   rules.
 - [Execution model](EXECUTION_MODEL.md) and

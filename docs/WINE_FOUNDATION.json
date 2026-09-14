@@ -29,7 +29,6 @@
       "evidence": "Wine modules have an explicit runtime origin; POSIX and PS5 providers keep independently configured application/runtime roots, covered by host tests.",
       "exit_criteria": [
         "ps5-runtime-provider-hardware-evidence",
-        "wine-runtime-manifest",
         "override-policy-fixtures"
       ]
     },
@@ -39,7 +38,7 @@
       "depends_on": [
         "pe-loader"
       ],
-      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator now also covers FS-prefixed absolute dword operands, LOCK-prefixed group-1 memory read-modify-write, BT/BTS/BTR/BTC, CMOVcc, the SSE data-movement/lane slice (movd/movq/movdqa/movdqu/movups/movaps/movss/movsd, punpck/packss, pshufd and friends, pextrw/pinsrw), BSF/BSR and the 16-bit shift group, each with architectural tests and residency/lazy-flag parity where the form allows it. With the Unix-call bridge enabled, real ntdll initialization runs 8582 instructions, services three NtAllocateVirtualMemory calls and maps 88 KiB of guest memory before it needs a populated process environment (CurrentDirectory.Buffer is null in the gate's zeroed process-parameters page).",
+      "evidence": "The first PE32 title is playable on FW 12.02 with exact host parity and bounded hardware evidence. For Wine, the translator also covers FS-prefixed absolute dword operands, LOCK-prefixed group-1 memory read-modify-write, BT/BTS/BTR/BTC, CMOVcc, the SSE data-movement/lane slice (movd/movq/movdqa/movdqu/movups/movaps/movss/movsd, punpck/packss, pshufd and friends, pextrw/pinsrw), BSF/BSR and the 16-bit shift group, each with architectural tests and residency/lazy-flag parity where the form allows it. With the Unix-call bridge and populated process environment, real ntdll initialization retires 32 544 instructions over 6 869 dispatches and 968 translated blocks, services 19 NT calls, and stops cleanly at the unpublished __wine_unix_call_dispatcher boundary.",
       "exit_criteria": [
         "wine-ntdll-instruction-closure",
         "sse2",
@@ -64,7 +63,7 @@
     },
     {
       "id": "wine-pe-runtime",
-      "status": "planned",
+      "status": "partial",
       "depends_on": [
         "runtime-module-policy",
         "ia32-dbt",
@@ -98,7 +97,7 @@
       "depends_on": [
         "virtual-memory"
       ],
-      "evidence": "One guest thread has isolated CPU/FP/FS state. PE32 TLS now has a process/thread owner: stable module indices published through mapped guest memory, per-thread template-plus-zero-fill storage from a caller-owned arena, guest FS:[0x2C] lookup and deterministic attach/detach callback plans driven by the DBT's guest-callback mechanism, with two-thread and rollback coverage. The Wine gate additionally owns a minimal guest TEB (FS base, StackBase, StackLimit, Self, ProcessEnvironmentBlock) and a zeroed PEB so real ntdll initialization can run. Real PEB/PEB_LDR_DATA construction, module entry-point ordering and native thread adapters remain.",
+      "evidence": "One guest thread has isolated CPU/FP/FS state. PE32 TLS has a process/thread owner: stable module indices published through mapped guest memory, per-thread template-plus-zero-fill storage from a caller-owned arena, guest FS:[0x2C] lookup and deterministic attach/detach callback plans driven by the DBT's guest-callback mechanism, with two-thread and rollback coverage. The Wine gate owns a minimal guest TEB, PEB and populated RTL_USER_PROCESS_PARAMETERS sufficient for the current ntdll checkpoint. Full PEB_LDR_DATA construction, module entry-point ordering and native thread adapters remain.",
       "exit_criteria": [
         "peb32",
         "teb32",
@@ -108,13 +107,12 @@
     },
     {
       "id": "nt-objects-waits",
-      "status": "planned",
+      "status": "partial",
       "depends_on": [
         "nt-process-thread"
       ],
-      "evidence": "No general Wine-compatible object/handle or WaitForMultipleObjects service is claimed.",
+      "evidence": "The Wine gate has a typed monotonic handle table plus bounded file, registry, directory-object and section-object profiles. General Wine-compatible events, mutexes, semaphores and waits are not yet implemented.",
       "exit_criteria": [
-        "handle-values-never-reissue",
         "events",
         "mutexes",
         "semaphores",
@@ -164,7 +162,6 @@
       "exit_criteria": [
         "dos-device-map",
         "nt-path-normalization",
-        "file-handles",
         "sharing",
         "directory-enumeration",
         "overlapped-io"
@@ -177,10 +174,9 @@
         "nt-process-thread",
         "filesystem-paths"
       ],
-      "evidence": "A bounded persistent registry and CP1252 bootstrap exist; Wine registry views, environment and Unicode/NLS remain.",
+      "evidence": "A bounded persistent registry and CP1252 bootstrap exist. The Wine gate now constructs a minimal populated process environment and answers the current registry profile; Wine-compatible registry views and broad Unicode/NLS data remain.",
       "exit_criteria": [
         "unicode-core",
-        "environment-block",
         "wow64-registry-view",
         "locale-data",
         "codepages"

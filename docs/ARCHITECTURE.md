@@ -10,6 +10,7 @@ Windows application and application-local PE modules
   -> Wine PE runtime (ntdll, kernelbase, user32, gdi32, ...)
      -> prospero-win DBT / ABI bridge, Unix-call and NT service boundary
         -> native PS5 adapters
+           -> PS5 title sandbox and kernel services
 
 DXVK PE modules -> ps5-vulkan -> AGC / VideoOut / gfx1013
 
@@ -51,6 +52,43 @@ and remains a useful reference harness. It is not the broad-compatibility
 architecture: new applications should converge on Wine PE DLLs plus the
 defined Unix-call/platform boundary instead of expanding title-specific
 wrappers. See [WINE_INTEGRATION.md](WINE_INTEGRATION.md).
+
+The real Wine gate is now an executable checkpoint rather than a loader-only
+claim. With the pinned i386 runtime it retires 32,544 guest instructions across
+6,869 dispatches and 968 translated blocks, services 19 NT calls, and performs
+complete cleanup. It stops when Wine invokes `__wine_unix_call_dispatcher`, a
+second Unix-side dispatcher not yet published by prospero-win. This is host
+evidence for the integration boundary; it is not yet a Wine process boot on
+PS5.
+
+## Isolation boundaries
+
+The packaged homebrew title supplies the outer process and filesystem
+boundary. `/app0` is the immutable application image and title-owned writable
+storage is exposed through explicit platform adapters. This is materially
+useful isolation, but it should not be described as Linux-style container
+creation or nested jails: if one title hosts several Windows applications,
+they share that title's outer sandbox.
+
+prospero-win therefore enforces a second, logical guest boundary:
+
+- every guest pointer and range is validated before a native service uses it;
+- translated code is writable only while being built and executable only
+  after publication;
+- typed handles are monotonic and do not expose native descriptors or
+  pointers;
+- DOS/NT paths are canonicalized into explicit application, runtime and
+  title-storage namespaces with traversal rejected;
+- quotas and capabilities belong at the Unix-call and platform-service
+  boundary; and
+- deployment facilities such as debuggers, mount refreshers and telemetry
+  control are never guest-visible Windows capabilities.
+
+PE32 execution passes through the DBT and therefore offers a natural point for
+memory, instruction and syscall mediation. Future PE64 execution can run host
+x86-64 instructions directly and shares the title process address space, so it
+must be limited to trusted inputs until a stronger isolation design is proven.
+Native speed is not itself an isolation boundary.
 
 ## Why the core imports almost nothing
 

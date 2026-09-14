@@ -5,6 +5,22 @@ runs through the IA-32 DBT and the bootstrap Win32 surface; a Wine-based broad
 Windows subsystem is not yet demonstrated. PE64 mapping and a synthetic
 integer bridge exist, but a complete PE64 Windows application does not yet run.
 
+## Execution and containment
+
+The PS5 launches prospero-win as one native title process. The title sandbox is
+the outer security and filesystem boundary; prospero-win does not assume
+`proot`, arbitrary child containers, unrestricted `execve`, host `dlopen`, or
+Linux namespaces. Wine PE modules are mapped into this process and Windows
+threads are intended to use native threads with separate guest CPU, TEB/FS and
+object state.
+
+PE32 adds an inner mediation layer because every guest instruction and native
+service transition passes through the DBT. Guest spans, handles, paths and
+executable publication can therefore be checked centrally. PE64 can eventually
+execute directly on the x86-64 CPU, but then the PS5 title sandbox is the only
+hard process boundary and the Windows/SysV bridge is not a sandbox. Native PE64
+inputs need an explicit trust policy or a separately proven containment model.
+
 ## Native AMD64 and ABI bridges
 
 AMD64 guest instructions can execute on the PS5 CPU. Crossings into native
@@ -87,6 +103,12 @@ Every added instruction family must retain differential tests against native
 next coverage set; Pinball is no longer the sole oracle. Per-thread TEB/FS and
 CPU state, SSE/SSE2, indirect-branch prediction, exception precision and
 thread-safe immutable translated-code reuse remain required.
+
+The pinned real-Wine checkpoint currently retires 32,544 guest instructions in
+6,869 dispatches and 968 translated blocks, services 19 NT calls, then stops
+cleanly when `ntdll` reaches the unpublished `__wine_unix_call_dispatcher`
+boundary. This bounded host gate expands the DBT oracle beyond Pinball, but it
+does not yet demonstrate a Wine process or a PS5 runtime boot.
 
 ## Measured memory facts
 

@@ -13,7 +13,8 @@ drivers and distribution of proprietary game files are out of scope.
 
 ## Current status
 
-On an owned PS5 running firmware 12.02, Pinball is the first playable title:
+On an owned PS5 running firmware 12.02, the direct Win32 bootstrap makes
+Pinball the first playable title:
 
 - the PE32 image executes through the IA-32 dynamic binary translator;
 - GDI output is composed and presented at 1920x1080 through AGC and VideoOut;
@@ -29,11 +30,31 @@ hardware runs also reach video, audio and input teardown cleanly. These results
 establish correctness and no observed regression; they do not yet establish a
 percentage performance gain.
 
-This is not yet broad Windows compatibility. The validated path is currently
-PE32/IA-32 with the Win32, GDI and WinMM services required by the first target.
-Those direct bindings remain a bootstrap/reference implementation while Wine
-PE modules, their Unix-call bridge and reusable NT services are integrated.
-PE64 and Direct3D are not implemented.
+The reusable Wine path has progressed beyond static loading. A pinned i386
+Wine runtime is built reproducibly and recorded in a validated manifest. The
+loader maps its real `ntdll`/`kernelbase` graph, binds exports by name and
+ordinal, resolves bounded forwarders, and constructs PE32 TLS plus minimal
+process state. Under the DBT, real `ntdll` initialization now retires 32,544
+guest instructions over 6,869 dispatches and 968 translated blocks while
+servicing 19 NT calls. It stops at a defined frontier: Wine calls
+`__wine_unix_call_dispatcher`, the second dispatcher that prospero-win has not
+published yet. Cleanup is complete and validator-enforced.
+
+This is not yet a booting Wine process or broad Windows compatibility. Pinball
+still uses the direct bootstrap, PE64 application execution is incomplete, and
+Direct3D awaits DXVK over `ps5-vulkan`.
+
+## Isolation model
+
+Each native PS5 build runs inside the console's title process and title-owned
+filesystem boundary. That is a useful outer sandbox, but it is not an API for
+creating arbitrary nested jails: applications hosted by one prospero-win title
+would share that title boundary. The runtime therefore also validates guest
+memory, publishes translated code W^X, uses typed non-reissued handles,
+canonicalizes guest paths into explicit namespaces, and keeps deployment or
+debug services outside the guest capability surface. PE64 native execution
+will require an explicit trust model because it has less mediation than PE32
+DBT execution. See [Architecture](docs/ARCHITECTURE.md#isolation-boundaries).
 
 ## Build and test
 
