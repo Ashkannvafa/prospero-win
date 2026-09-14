@@ -1086,6 +1086,40 @@ static void sse_and_scan_tests(void)
     assert(pw_x86_translate(movq_reg,sizeof(movq_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     assert(pw_x86_translate(movss_reg,sizeof(movss_reg),0,scratch,sizeof(scratch),&block)==PW_ERR_UNSUPPORTED);
     /*
+     * "bt [ebx], eax": the bit index and the guard's address register are the
+     * same guest register, so the block has to keep the guest's index and the
+     * validated address in different host registers. The index lives in EAX
+     * here, which is also where memory_address_width() computes the address,
+     * so this encoding is the one that would break if the two were confused.
+     */
+    {
+        const uint8_t bt_mem[]={0x0f,0xa3,0x03};      /* bt dword [ebx], eax */
+        const uint32_t window=0x03000800u;
+        const PwX86Memory saved_memory=state.memory[0];
+        const uint32_t saved_count=state.memory_count;
+
+        state.memory_count=1;
+        state.memory[0]=(PwX86Memory){state.stack_low,state.stack_high,
+                                      PW_X86_READ|PW_X86_WRITE};
+        *(uint32_t *)(uintptr_t)window=0x00000004u;
+        for(unsigned mode=0;mode<4;mode++) {
+            /* The matrix's own initial state: every GPR carries a distinct
+             * pattern, including a guest ESP the block must not need. */
+            for(unsigned reg=0;reg<8;reg++)
+                state.gpr[reg]=reg==3u?window:0x11111111u*(reg+1u);
+            state.gpr[0]=2u;                 /* eax: bit 2 is set */
+            state.eflags=0x202u;
+            assert(run_mode(bt_mem,sizeof(bt_mem),0x9600,mode&1u,mode>>1)==0);
+            assert((state.eflags&0x1u)!=0u);
+            state.gpr[0]=3u;                 /* eax: bit 3 is clear */
+            state.eflags=0x202u;
+            assert(run_mode(bt_mem,sizeof(bt_mem),0x9600,mode&1u,mode>>1)==0);
+            assert((state.eflags&0x1u)==0u);
+        }
+        state.memory[0]=saved_memory;
+        state.memory_count=saved_count;
+    }
+    /*
      * PMOVMSKB's r/m operand is always an XMM register - the ISA has no memory
      * form - so a ModRM that names memory has to be refused rather than
      * re-emitted. The SSE form matrix (tests/test_pw_sse_matrix.py) found the
