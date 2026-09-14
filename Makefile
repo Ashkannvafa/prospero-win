@@ -73,6 +73,7 @@ $(eval $(call test_rule,test_pw_wine_gate,tests/test_pw_wine_gate.c $(WINE_GATE)
 $(eval $(call test_rule,test_pw_guest_vm,tests/test_pw_guest_vm.c src/pw_guest_vm.c,))
 $(eval $(call test_rule,test_pw_guest_process,tests/test_pw_guest_process.c src/pw_guest_process.c src/pw_vm.c src/pw_vm_posix.c src/pw_result.c,))
 $(eval $(call test_rule,test_pw_nt_handle,tests/test_pw_nt_handle.c src/pw_nt_handle.c,))
+$(eval $(call test_rule,test_pw_unixlib,tests/test_pw_unixlib.c src/pw_unixlib.c,))
 $(eval $(call test_rule,test_pw_wine_handle,tests/test_pw_wine_handle.c src/pw_wine_handle.c src/pw_nt_handle.c,))
 $(eval $(call test_rule,test_pw_wine_path,tests/test_pw_wine_path.c src/pw_wine_path.c,))
 $(eval $(call test_rule,test_pw_wine_gate_bridge,tests/test_pw_wine_gate_bridge.c $(WINE_GATE) $(CORE),))
@@ -103,7 +104,7 @@ $(eval $(call test_rule,wine_ntdll_entry,tools/wine_ntdll_entry.c $(WINE_GATE) s
 TESTS := test_pw_guest_heap test_pw_registry test_pw_registry_store test_pw_ini test_pw_gdi test_pw_gdi_abi test_pw_crt_format test_pw_user32 test_pw_pad test_pe_resource test_pw_time test_pw_guest_args test_pw_initterm test_pw_window test_pw_guest_fp test_pe_image test_pe_layout test_pe_reloc test_pe_import \
 	test_pe_export \
 	test_pw_module_name test_pw_file_posix test_pw_file_ps5 test_pw_vm test_pw_map test_pw_loader \
-	test_pw_segment test_pw_compat32 test_pw_guest_vm test_pw_guest_process test_pw_nt_handle test_pw_wine_handle test_pw_wine_path test_pw_gate test_pw_win64 test_pw_x86_block test_pw_x86_cache test_pw_x86_engine test_pw_x86_chaining test_pw_x86_residency test_pw_x86_lazyflags test_pw_guest_call test_pw_tls test_pw_import_bind test_pw_export test_pw_wine_gate test_pw_wine_gate_bridge test_pw_wine_file_service test_pw_wine_registry test_pw_wine_objects test_pw_wine_process_info test_pw_wine_vm_transactions test_pw_wine_teardown test_pw_win32 test_pw_x87 test_pw_audio_ps5 test_pw_agc_submit_lifecycle test_pw_pad_ps5 test_pw_state_ps5
+	test_pw_segment test_pw_compat32 test_pw_guest_vm test_pw_guest_process test_pw_nt_handle test_pw_unixlib test_pw_wine_handle test_pw_wine_path test_pw_gate test_pw_win64 test_pw_x86_block test_pw_x86_cache test_pw_x86_engine test_pw_x86_chaining test_pw_x86_residency test_pw_x86_lazyflags test_pw_guest_call test_pw_tls test_pw_import_bind test_pw_export test_pw_wine_gate test_pw_wine_gate_bridge test_pw_wine_file_service test_pw_wine_registry test_pw_wine_objects test_pw_wine_process_info test_pw_wine_vm_transactions test_pw_wine_teardown test_pw_win32 test_pw_x87 test_pw_audio_ps5 test_pw_agc_submit_lifecycle test_pw_pad_ps5 test_pw_state_ps5
 
 # The Python suites drive the built binaries: the evidence validator is
 # tested against a transcript the real gate produced, and the Python PE
@@ -124,6 +125,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_wine_runtime_manifest.py
 	python3 tests/test_wine_ntdll_evidence.py
 	python3 tests/test_unix_call_table.py
+	python3 tests/test_unixlib_table.py
 	python3 tests/test_nt_handler_ledger.py
 	python3 tests/test_reentrancy_contract.py
 	python3 tests/test_test_reachability.py
@@ -147,6 +149,7 @@ wine-check: test
 	@test -f "$(WINE_SOURCE)/dlls/ntdll/ntsyscalls.h" || \
 		{ echo "wine-check: no pinned Wine source at $(WINE_SOURCE)" >&2; exit 2; }
 	PROSPERO_WINE_SOURCE="$(WINE_SOURCE)" python3 tests/test_unix_call_table.py
+	PROSPERO_WINE_SOURCE="$(WINE_SOURCE)" python3 tests/test_unixlib_table.py
 	@test -f .deps/wine-runtime/lib/i386-windows/ntdll.dll || \
 		{ echo "wine-check: no staged runtime (tools/build_wine_runtime.sh)" >&2; exit 2; }
 	python3 tests/test_wine_runtime_manifest.py

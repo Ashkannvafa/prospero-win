@@ -220,6 +220,8 @@ src/pw_guest_process.c
 src/pw_nt_dispatch.h
 src/pw_nt_handle.c
 src/pw_nt_handle.h
+src/pw_unixlib.c
+src/pw_unixlib.h
 src/pw_guest_process.h
 src/pw_guest_vm.c
 src/pw_guest_vm.h
@@ -252,6 +254,7 @@ docs/WINE_RUNTIME_MANIFEST.schema.json
 tests/test_wine_gate_host.py
 tests/test_pw_guest_process.c
 tests/test_pw_nt_handle.c
+tests/test_pw_unixlib.c
 tests/test_pw_wine_handle.c
 tests/test_pw_wine_path.c
 tests/test_pw_wine_teardown.c
@@ -265,6 +268,7 @@ tests/test_nt_handler_ledger.py
 tests/test_reentrancy_contract.py
 tests/test_test_reachability.py
 tests/test_unix_call_table.py
+tests/test_unixlib_table.py
 tests/test_pw_wine_file_service.c
 tests/test_pw_wine_registry.c
 tests/pw_unhandled_call.h

@@ -147,6 +147,7 @@ sources=(
     src/pw_guest_vm.c
     src/pw_guest_process.c
     src/pw_nt_handle.c
+    src/pw_unixlib.c
     src/pw_wine_path.c
     src/pw_wine_handle.c
     src/pw_wine_file.c
