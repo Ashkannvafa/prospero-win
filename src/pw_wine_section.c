@@ -823,6 +823,30 @@ int pw_wine_section_query(PwWineCallContext *calls,
  * actually got, and the whole view joins the run's regions so an unmap or a
  * cleanup gives back exactly what was mapped.
  */
+/* Appends [low, high) with these permissions to a view's permission map,
+ * joining it to the range before it when the two touch and agree, so adjacent
+ * pages with the same permissions cost one declared region. The new count
+ * comes back, or zero when the map is full - a page whose permissions this run
+ * cannot state is a view it refuses rather than one it declares loosely. */
+static uint32_t append_permission(PwX86Memory *map, uint32_t count,
+                                  uint32_t capacity, uint64_t low,
+                                  uint64_t high, unsigned permissions)
+{
+    if (low >= high)
+        return count;
+    if (count != 0u && map[count - 1u].high == low &&
+        map[count - 1u].permissions == permissions) {
+        map[count - 1u].high = high;
+        return count;
+    }
+    if (count >= capacity)
+        return 0u;
+    map[count].low = low;
+    map[count].high = high;
+    map[count].permissions = permissions;
+    return count + 1u;
+}
+
 int pw_wine_section_map_view(PwWineCallContext *calls,
                              const PwUnixCallFrame *frame,
                              PwUnixCallAccess guest, void *context,
@@ -849,10 +873,6 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
     uint32_t hint = 0u;
     uint32_t view_size = 0u;
     uint32_t bytes = 0u;
-    uint32_t writable_low = 0u;
-    uint32_t writable_high = 0u;
-    uint32_t code_low = 0u;
-    uint32_t code_high = 0u;
     void *span_handle = NULL;
     uint64_t span_size = 0u;
     uint32_t read_bytes = 0u;
@@ -924,33 +944,6 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
             *status = PW_NT_INVALID_IMAGE_FORMAT;
             calls->report->section_view_refusals++;
             return PW_OK;
-        }
-        if ((entry->characteristics & PE_SCN_MEM_WRITE) != 0u &&
-            entry->raw_size != 0u) {
-            const uint32_t low = entry->virtual_address;
-            const uint32_t high = low + (uint32_t)span;
-
-            if (writable_low == 0u || low < writable_low)
-                writable_low = low;
-            if (high > writable_high)
-                writable_high = high;
-        }
-        /*
-         * The executable union too: the guest jumps into the image it mapped
-         * itself once the loader has fixed it up - kernelbase's own entry
-         * points are the first such jump - and the dispatcher refuses to
-         * fetch an instruction from a page it was not told is code. Measured:
-         * with a view declared readable only, the run stopped as non-code at
-         * kernelbase's view.
-         */
-        if ((entry->characteristics & PE_SCN_MEM_EXECUTE) != 0u) {
-            const uint32_t low = entry->virtual_address;
-            const uint32_t high = low + (uint32_t)span;
-
-            if (code_low == 0u || low < code_low)
-                code_low = low;
-            if (high > code_high)
-                code_high = high;
         }
     }
     if (calls->region_count >= PW_WINE_GATE_MAX_CALL_REGIONS ||
@@ -1042,74 +1035,82 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
         return PW_OK;
     }
     /*
-     * The load-time protections, section by section, from the characteristics
-     * the section table carries: they are the host's side of the same rule the
-     * declared regions express - code readable and executable, data readable
-     * and writable, and the page the headers live on readable.
+     * One permission map for both sides of the boundary, at the granularity
+     * the two of them share: whole pages.
+     *
+     * Each page of the view gets what the image's own section table says about
+     * it - readable always, plus writable and/or executable when a section
+     * overlapping that page says so, which is the union rule the guard itself
+     * applies when two sections share a page. The map is then applied to the
+     * host mapping through the backend and declared to the dispatcher range
+     * for range, unchanged, so the two cannot disagree about what a page
+     * allows.
+     *
+     * Pages and not sections, because a section boundary is where the linker
+     * put it and not a page boundary, while the host's protection moves in
+     * whole pages: a section-granular map asks the backend to protect at an
+     * offset it cannot, which is a refusal this test measures (the fixture's
+     * text section ends at 0x1600). And a coarse union instead - one interval
+     * spanning every writable section - declares a page writable whenever a
+     * writable section lies above it, so the guard allows a store the host
+     * mapping refuses: a host fault rather than a classified stop.
      */
-    if (backend->protect(backend->context, &region, 0u, header_bytes,
-                         PW_PROT_READ) != PW_OK) {
-        (void)backend->release(backend->context, &region);
-        *status = PW_NT_INVALID_PARAMETER;
-        calls->report->section_view_refusals++;
-        return PW_OK;
-    }
-    for (uint32_t index = 0u; index < image->section_count; ++index) {
-        const PeSection *entry = &image->sections[index];
-        const uint64_t span = entry->virtual_size > entry->raw_size
-            ? entry->virtual_size : entry->raw_size;
-        int derived = 0;
-        unsigned protection;
+    {
+        PwX86Memory map[PW_X86_MEMORY_REGIONS];
+        uint32_t entries = 0u;
+        const uint64_t view_high = (uint64_t)base + bytes;
+        const uint64_t page = backend->page_bytes != 0u
+            ? backend->page_bytes : PW_WINE_SECTION_PAGE_BYTES;
 
-        if (span == 0u ||
-            (uint64_t)entry->virtual_address + span > image->size_of_image)
-            continue;
-        protection = pe_layout_protection(entry->characteristics, &derived);
-        if (protection == 0u)
-            continue;
-        if (backend->protect(backend->context, &region,
-                             entry->virtual_address, (size_t)span,
-                             protection) != PW_OK) {
+        for (uint64_t low = base; low < view_high; low += page) {
+            const uint64_t high =
+                low + page < view_high ? low + page : view_high;
+            unsigned permissions = PW_X86_READ;
+
+            for (uint32_t index = 0u; index < image->section_count; ++index) {
+                const PeSection *entry = &image->sections[index];
+                const uint64_t span = entry->virtual_size > entry->raw_size
+                    ? entry->virtual_size : entry->raw_size;
+                const uint64_t section_low =
+                    (uint64_t)base + entry->virtual_address;
+                const uint64_t section_high = section_low + span;
+
+                if (span == 0u || section_high <= low || section_low >= high)
+                    continue;
+                if ((entry->characteristics & PE_SCN_MEM_EXECUTE) != 0u)
+                    permissions |= PW_X86_EXEC;
+                if ((entry->characteristics & PE_SCN_MEM_WRITE) != 0u)
+                    permissions |= PW_X86_WRITE;
+            }
+            entries = append_permission(map, entries, PW_X86_MEMORY_REGIONS,
+                                        low, high, permissions);
+            if (entries == 0u)
+                break;
+        }
+        if (entries == 0u ||
+            state->memory_count + entries > PW_X86_MEMORY_REGIONS) {
             (void)backend->release(backend->context, &region);
             *status = PW_NT_INVALID_PARAMETER;
             calls->report->section_view_refusals++;
             return PW_OK;
         }
-    }
-    /*
-     * The guest's view of the same mapping: the whole image is readable, and
-     * the unions of its executable and writable sections carry those
-     * permissions - the same shape the process graph's own modules are
-     * declared by, and the union rule the guard applies: an access is allowed
-     * when any declared region covering it grants the permission, so three
-     * regions describe an image whatever its section count is. A page becomes
-     * writable, or stops being executable, when NtProtectVirtualMemory says
-     * so.
-     */
-    if (state->memory_count + 3u > PW_X86_MEMORY_REGIONS) {
-        (void)backend->release(backend->context, &region);
-        *status = PW_NT_INVALID_PARAMETER;
-        calls->report->section_view_refusals++;
-        return PW_OK;
-    }
-    state->memory[state->memory_count++] = (PwX86Memory){
-        .low = base,
-        .high = (uint64_t)base + bytes,
-        .permissions = PW_X86_READ,
-    };
-    if (code_low != 0u && code_low < code_high) {
-        state->memory[state->memory_count++] = (PwX86Memory){
-            .low = base + code_low,
-            .high = (uint64_t)base + code_high,
-            .permissions = PW_X86_READ | PW_X86_EXEC,
-        };
-    }
-    if (writable_low != 0u && writable_low < writable_high) {
-        state->memory[state->memory_count++] = (PwX86Memory){
-            .low = base + writable_low,
-            .high = (uint64_t)base + writable_high,
-            .permissions = PW_X86_READ | PW_X86_WRITE,
-        };
+        for (uint32_t index = 0u; index < entries; ++index) {
+            const PwX86Memory *range = &map[index];
+            const unsigned protection =
+                host_protection_from_permissions(range->permissions);
+
+            if (protection == 0u ||
+                backend->protect(backend->context, &region,
+                                 (size_t)(range->low - base),
+                                 (size_t)(range->high - range->low),
+                                 protection) != PW_OK) {
+                (void)backend->release(backend->context, &region);
+                *status = PW_NT_INVALID_PARAMETER;
+                calls->report->section_view_refusals++;
+                return PW_OK;
+            }
+            state->memory[state->memory_count++] = *range;
+        }
     }
     calls->regions[calls->region_count] = region;
     calls->region_owned[calls->region_count] = 0u;

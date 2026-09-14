@@ -89,8 +89,14 @@ static void memory_address_width(Emitter *e,unsigned write,unsigned width)
      * inline path.  In particular, a corrupt registry must not make even the
      * otherwise-valid stack path executable, and guest NULL is never a valid
      * identity-mapped pointer. */
-    byte(e, 0x83); byte(e, 0x7f); byte(e, offsetof(PwX86State, memory_count));
-    byte(e, PW_X86_MEMORY_REGIONS); /* cmp dword [rdi + memory_count], max */
+    /*
+     * The bound is a 32-bit immediate, not the imm8 this used to encode: the
+     * table is compared against a count that a process with several mapped
+     * images pushes past 127, and an imm8 there would sign-extend to a
+     * negative bound and classify every access as out of bounds.
+     */
+    byte(e, 0x81); byte(e, 0x7f); byte(e, offsetof(PwX86State, memory_count));
+    word(e, PW_X86_MEMORY_REGIONS); /* cmp dword [rdi + memory_count], max */
     byte(e, 0x77); /* ja to slow_path */
     size_t patch_ja_count = e->n++;
     byte(e, 0x85); byte(e, 0xc0); /* test eax, eax */

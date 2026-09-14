@@ -839,7 +839,16 @@ int main(void)
     assert(record_with(&report, 15u)->status == PW_NT_SUCCESS);
     assert(record_with(&report, 16u)->id == 0x0051u);
     assert(record_with(&report, 16u)->args[2] == MARKER_WRITTEN);
-    assert(record_with(&report, 16u)->args[3] == PAGE_READONLY);
+    /*
+     * The protection the guest replaced, which is now what the page it
+     * protected really carried: the view is declared page by page from the
+     * image's own section table, so the page holding the text section is
+     * executable-read - not the read-only a coarse "the image is readable"
+     * region covering it reported before. That value is what the loader puts
+     * back after a relocation, so getting it wrong is what let it restore a
+     * read-only page over a writable one.
+     */
+    assert(record_with(&report, 16u)->args[3] == PAGE_EXECUTE_READ);
     assert(record_with(&report, 17u)->id == 0x0051u);
     assert(record_with(&report, 17u)->args[2] == PAGE_READWRITE);
     assert(record_with(&report, 17u)->args[3] != 0u);

@@ -29,9 +29,11 @@ int pw_wine_path_registry_root(const char *canonical, const char *root)
 
 /*
  * \Registry\Machine\... and \Registry\User\... become one canonical
- * lower-case path whose components are all validated: printable ASCII with no
- * separator, no colon and no "." or ".." component, so nothing the guest
- * writes can turn into a different path inside the host's registry profile.
+ * lower-case path whose components are all validated: no control character
+ * and no separator, no colon and no "." or ".." component, so nothing the
+ * guest writes can turn into a different path inside the host's registry
+ * profile. Units outside ASCII arrive as their UTF-8 encoding and are carried
+ * through unchanged.
  */
 int pw_wine_path_registry(const char *path, char *out, size_t out_bytes,
                                    uint32_t *status)
@@ -66,7 +68,7 @@ int pw_wine_path_registry(const char *path, char *out, size_t out_bytes,
         while (rest[component] != '\0' && rest[component] != '\\') {
             const unsigned char character = (unsigned char)rest[component];
 
-            if (character < 0x20u || character > 0x7eu || character == '/' ||
+            if (character < 0x20u || character == 0x7fu || character == '/' ||
                 character == ':') {
                 *status = PW_NT_OBJECT_NAME_INVALID;
                 return PW_ERR_MALFORMED;
@@ -286,7 +288,55 @@ int pw_wine_path_runtime(const char *path, char *out, size_t out_bytes,
     return PW_OK;
 }
 
-/* Reads a guest UNICODE_STRING and converts it to ASCII. */
+/* How many bytes this code point takes in UTF-8. */
+static unsigned utf8_bytes(uint32_t code)
+{
+    if (code < 0x80u)
+        return 1u;
+    if (code < 0x800u)
+        return 2u;
+    if (code < 0x10000u)
+        return 3u;
+    return 4u;
+}
+
+/* Writes one code point as UTF-8 and reports how many bytes it took. */
+static unsigned write_utf8(uint32_t code, char *out)
+{
+    if (code < 0x80u) {
+        out[0] = (char)code;
+        return 1u;
+    }
+    if (code < 0x800u) {
+        out[0] = (char)(0xc0u | (code >> 6));
+        out[1] = (char)(0x80u | (code & 0x3fu));
+        return 2u;
+    }
+    if (code < 0x10000u) {
+        out[0] = (char)(0xe0u | (code >> 12));
+        out[1] = (char)(0x80u | ((code >> 6) & 0x3fu));
+        out[2] = (char)(0x80u | (code & 0x3fu));
+        return 3u;
+    }
+    out[0] = (char)(0xf0u | (code >> 18));
+    out[1] = (char)(0x80u | ((code >> 12) & 0x3fu));
+    out[2] = (char)(0x80u | ((code >> 6) & 0x3fu));
+    out[3] = (char)(0x80u | (code & 0x3fu));
+    return 4u;
+}
+
+/*
+ * Reads a guest UNICODE_STRING and converts it to a canonical UTF-8 string.
+ *
+ * The runtime's own names are not ASCII: kernelbase keeps its locale cache in
+ * a subkey literally named the emoji sequence dlls/kernelbase/locale.c:54
+ * calls world_subkey, and a name this translation cannot carry is a key the
+ * runtime cannot create. Units below 0x80 are one byte, the rest of the BMP
+ * two or three, and a surrogate pair combines into the single code point it
+ * stands for. A lone low surrogate, an unpaired high one, or a destination
+ * without room for the encoded name is refused rather than folded into
+ * something the guest did not write.
+ */
 int pw_wine_path_read_unicode(PwUnixCallAccess guest, void *context,
                               uint32_t address, char *out, size_t out_bytes)
 {
@@ -303,16 +353,41 @@ int pw_wine_path_read_unicode(PwUnixCallAccess guest, void *context,
     if (length == 0u || (length & 1u) != 0u || buffer == 0u ||
         length / 2u + 1u > out_bytes)
         return PW_ERR_MALFORMED;
-    for (uint32_t index = 0; index < length / 2u; ++index) {
-        uint16_t unit = 0u;
+    {
+        const uint32_t units = length / 2u;
+        size_t used = 0u;
 
-        if (guest(context, buffer + index * 2u, &unit, 2u, 0) != PW_OK)
-            return PW_ERR_MALFORMED;
-        if (unit > 0x7fu)
-            return PW_ERR_UNSUPPORTED;   /* the runtime paths are ASCII */
-        out[index] = (char)unit;
+        for (uint32_t index = 0u; index < units; ++index) {
+            uint16_t unit = 0u;
+            uint32_t code;
+            unsigned bytes;
+
+            if (guest(context, buffer + (uint32_t)index * 2u, &unit, 2u, 0) !=
+                PW_OK)
+                return PW_ERR_MALFORMED;
+            if (unit >= 0xd800u && unit <= 0xdbffu) {
+                uint16_t low = 0u;
+
+                if (index + 1u >= units ||
+                    guest(context, buffer + (uint32_t)(index + 1u) * 2u, &low,
+                          2u, 0) != PW_OK || low < 0xdc00u || low > 0xdfffu)
+                    return PW_ERR_MALFORMED;
+                code = 0x10000u + (((uint32_t)unit - 0xd800u) << 10) +
+                       ((uint32_t)low - 0xdc00u);
+                index++;
+            } else if (unit >= 0xdc00u && unit <= 0xdfffu) {
+                /* A low surrogate with nothing before it is not a name. */
+                return PW_ERR_MALFORMED;
+            } else {
+                code = unit;
+            }
+            bytes = utf8_bytes(code);
+            if (used + bytes + 1u > out_bytes)
+                return PW_ERR_MALFORMED;
+            used += write_utf8(code, out + used);
+        }
+        out[used] = '\0';
     }
-    out[length / 2u] = '\0';
     return PW_OK;
 }
 

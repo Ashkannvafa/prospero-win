@@ -24,9 +24,9 @@ bounded host gate, not a running Windows process.
 | PE32 TLS | Parsed, with a process/thread owner and deterministic callback plans; the staged modules declare no TLS directory |
 | ntdll under the DBT | Real `LdrInitializeThunk` executes through the IA-32 translator: 32 544 retired instructions, 6869 dispatches, 968 translated blocks, `host_calls=0`, complete cleanup (`modules=2 mappings=7 translations=1`) |
 | Unix-call boundary | Found structurally (dispatcher slot plus its single `jmp dword ptr [slot]` thunk) and crossed: 19 calls serviced through 15 handlers, and both stub shapes Wine's build emits are bridged, including the `-syscall` ones that call through `TEB.WOW32Reserved` |
-| Platform services | Files (open/read/query/close, one gate-owned directory object), registry (open/create/query against a host profile), token (`TokenUser`), object namespace (`\KnownDlls` plus section lookups), system information (the Wine version class) and process information (the process image, from the module's own headers) |
-| Where it stops | The loader's own debug message calls `__wine_unix_call_dispatcher`, the **unix-call** dispatcher the gate does not publish yet, so the validated run ends as `returned-to-caller` at address zero (the classified null jump) |
-| Not claimed | No Windows process starts, no application runs, no console or hardware evidence, and the registry/object profiles are the distribution's own, not a Wine prefix |
+| Platform services | Files (open/read/query/close, one gate-owned directory object), image sections (`NtCreateSection`/`NtQuerySection`/`NtMapViewOfSection`/`NtProtectVirtualMemory`), NLS data (`NtInitializeNlsFiles`, `NtGetNlsSectionPtr` and the three locale queries), registry (open/create/query/set against a host profile), token (`TokenUser`), threads (`NtGetNextThread`, `NtQueryInformationThread`), object namespace (`\KnownDlls` plus section lookups), system information (the Wine version class) and process information (the process image, from the module's own headers) |
+| Where it stops | The bridged ntdll scenario services 19 calls and returns to its caller at 0, which is the end of a run whose entry is a stub the gate itself called. The **application-root** scenario - a generated PE32 executable, its two DLLs and their dependency diamond, loaded by the pinned runtime's own ntdll - runs the loader's start-up to its last call and stops there: `NtContinue (0x0043)`, which is what enters the thread the initialization context describes |
+| Not claimed | No Windows process starts, no application entry point runs, no console or hardware evidence, and the registry/object profiles are the distribution's own, not a Wine prefix |
 
 Reproduce it:
 
@@ -235,7 +235,16 @@ guest thread block, all of which are now implemented and host-tested:
 - A **minimal guest TEB and PEB** owned by the gate: the TEB is what FS points
   at, with the documented NT offsets for `StackBase` (0x04), `StackLimit`
   (0x08), `Self` (0x18) and `ProcessEnvironmentBlock` (0x30), and the PEB is
-  handed to ntdll's initialization entry as its first argument.
+  what the process parameters hang off.
+  The initialization entry's first argument is not the PEB but the register
+  *context* the kernel builds at the top of a thread's initial stack
+  (`winnt.h`'s `I386_CONTEXT`, 0x2cc bytes, `Eax` at 0xb0): the gate fills one
+  in there with `ContextFlags = CONTEXT_FULL`, the user CS/SS and an `Eflags`,
+  leaves `Eax` null so `loader_init` publishes the process image's own entry
+  point through it (`dlls/ntdll/loader.c:4527`) and `Ebx` null as the argument
+  of a first thread, and passes its address. That is what makes
+  `signal_start_thread` (`dlls/ntdll/signal_i386.c:514`) clear the 0xf000
+  bytes of stack *below* itself instead of below the PEB.
   `ThreadLocalStoragePointer` (0x2C) stays zero because no module of this
   distribution declares a TLS directory.
 - **BT/BTS/BTR/BTC**, both the register-index encodings (`0f a3/ab/b3/bb`) and
@@ -580,33 +589,45 @@ NtProtectVirtualMemory        (0x0050) a range this run mapped - an NT
                                        STATUS_INVALID_PARAMETER. The protection
                                        it reports as the old one is the *union*
                                        of the regions covering the range's first
-                                       page - what the guard actually allowed -
-                                       because the loader relocates an image by
-                                       protecting pages and putting that value
-                                       back, and answering with the first region
-                                       it happened to find restored read-only
-                                       over a page that was writable
+                                       page, which is what the guard actually
+                                       allowed there. With a view declared page
+                                       by page that union is exactly the page's
+                                       own protection, while a coarse view
+                                       declaration made it overlap two regions
+                                       and answer "read-only" for a page the
+                                       guard allowed writes on - and the loader
+                                       relocates an image by protecting pages and
+                                       putting that value back, so it then
+                                       restored read-only over a writable page
 NtMapViewOfSection            (0x0028) the one view a loader maps: the
                                        section placed at its preferred base
                                        when this run can put it there and
                                        elsewhere when it cannot, the file's
                                        headers and each section's raw bytes
                                        where the image's own section table says
-                                       they belong, the protections the section
-                                       table implies, and the whole view
-                                       declared to the guest as three regions -
-                                       the image readable, the union of its
-                                       executable sections executable and the
-                                       union of its writable sections writable,
-                                       which is how the loader's own module
-                                       graph is declared and what the guard's
-                                       union rule makes exact: the guest jumps
-                                       into a view it mapped itself (kernelbase's
-                                       entry points are the first such jump) and
-                                       writes into that image's data (the TLS
-                                       slot index). Nothing is relocated here,
-                                       because a SEC_IMAGE view is the image as
-                                       the file holds it
+                                       they belong, and the protections the
+                                       section table implies, declared *page by
+                                       page* and applied to the host mapping
+                                       from the same map: every page of the
+                                       view is readable, plus writable and/or
+                                       executable when a section overlapping it
+                                       says so (the guard's union rule for the
+                                       page two sections share), and a page no
+                                       section claims is readable and nothing
+                                       else. One map, so the host mapping and
+                                       the dispatcher's view of it cannot
+                                       disagree about what a page allows: the
+                                       guest jumps into a view it mapped itself
+                                       (kernelbase's entry points are the first
+                                       such jump) and writes into that image's
+                                       data (the TLS slot index), and a page the
+                                       map calls writable is one the host really
+                                       did protect that way. Pages and not
+                                       sections, because a section boundary is
+                                       where the linker put it and the host
+                                       protects whole pages. Nothing is
+                                       relocated here, because a SEC_IMAGE view
+                                       is the image as the file holds it
 NtCreateSection               (0x004a) an unnamed SEC_IMAGE section over an
                                        open file handle, described from the
                                        file's own headers; the section keeps
@@ -1009,8 +1030,15 @@ Rules the gate enforces before the service is asked anything:
 
 - the accepted namespace is exactly `\Registry\Machine` and `\Registry\User`;
   anything else is `STATUS_OBJECT_NAME_INVALID`;
-- every component is printable ASCII with no separator, no colon and no `.`
-  or `..` component, so a traversal cannot name a different key;
+- every component is a name a canonical string can carry - no control
+  character, no separator, no colon and no `.` or `..` component, so a
+  traversal cannot name a different key. Units outside ASCII are carried as
+  their UTF-8 encoding, with surrogate pairs combined, because a registry name
+  in Wine is whatever the guest wrote: kernelbase keeps its locale cache in a
+  subkey literally named 🌎🌏🌍 (`dlls/kernelbase/locale.c:54`, `world_subkey`),
+  and a name this gate could not represent was a key the runtime could not
+  create. A lone surrogate, an unpaired unit or a name too long for the
+  destination is `STATUS_OBJECT_NAME_INVALID`;
 - a relative name is resolved against the canonical path stored with the key
   handle and then revalidated as a whole, which is how `RtlOpenCurrentUser`'s
   handle plus `Software\Wine` becomes one canonical path;
@@ -1105,3 +1133,70 @@ retired 32544 instructions over 6869 dispatches and 968 translated blocks
 cleanup modules=2 pending_modules=0 pending_pages=0 pending_regions=0 mappings=7 translations=1 pending_translations=0 failures=0 status=ok
 stop: returned-to-caller at 0 - the unix-call dispatcher is not published
 ```
+
+### The loader's own start-up, and the argument it takes
+
+The application-root scenario - a generated PE32 executable with two DLLs and
+their dependency diamond, loaded by the pinned runtime's own ntdll - now runs
+the loader's start-up to its end. Four things had to be right for that, and
+each one is named by the stop that preceded it.
+
+**Registry names outside ASCII.** The stop was a *rejected* `NtCreateKey`:
+kernelbase keeps its locale cache in the subkey named 🌎🌏🌍, the gate's
+registry names were ASCII, and a name it could not represent was a key the
+runtime could not create. Non-ASCII units are carried as UTF-8 now, with
+surrogate pairs combined, so that call is served - and the name rules above
+are stated for what a name may be rather than for one character set.
+
+**One permission map, per page.** A section view was declared to the guest as
+three regions - the image readable, the union of its executable sections
+executable and the union of its writable sections writable - while the host
+mapping was protected section by section. The two disagreed, and the
+disagreement was a host crash rather than a classified stop: with a writable
+section above it, a read-only page was declared writable, and the guard let a
+store through that the host mapping refused. The view is declared *page by
+page* from the image's own section table now - read, plus write and/or execute
+for a section overlapping the page, which is the guard's own union rule for a
+shared page - and the same map is what the backend is asked to protect, so the
+two cannot disagree. Pages and not sections, because a section boundary is
+where the linker put it (the fixtures' text section ends at 0x1600) while the
+host protects whole pages. The declared region table grew with it: 256 entries
+rather than 64, and the generated guard compares the count against that bound
+with a 32-bit immediate, because the signed imm8 it used to emit would have
+made a bound above 127 negative and every access out of bounds.
+
+**The context the initialization entry takes.** `LdrInitializeThunk` receives
+a `CONTEXT*` - the register state the kernel builds at the top of the thread's
+initial stack - not a PEB. It hands it to `loader_init`, which uses a *null*
+start routine to publish the process image's own entry point into it
+(`dlls/ntdll/loader.c:4527`, which is how Wine starts its first thread), and
+then to `signal_start_thread`, which clears the 0xf000 bytes of stack below it
+and enters the thread through `NtContinue`
+(`dlls/ntdll/signal_i386.c:514`). Passing the PEB made the loader write the
+entry point into the middle of the PEB and made that clear run down from
+0x0d000000 into memory nothing had mapped - a bounds fault at the last
+instructions of ntdll's own start-up, with nothing left to blame it on. The
+gate builds the context now, one page below the stack's top so the entry's own
+argument frame keeps the bytes it uses.
+
+**The fixture's TLS callback entries.** A PE image's callback array holds
+virtual addresses the loader *calls*, so a real linker relocates each entry.
+The generator relocated the directory's `AddressOfIndex` and
+`AddressOfCallBacks` fields but not the entries themselves, so a run placed
+away from the preferred base took a.dll's own preferred-base address
+(0x10101010) as a function pointer and stopped as `non-code` at an address no
+mapping covered.
+
+Measured on the pinned runtime with the generated diamond:
+
+| configuration | stop | retired | blocks |
+| --- | --- | --- | --- |
+| control | returned-to-caller at 0 | 33 118 | 961 |
+| residency off | `unix-call-unimplemented`, NtContinue (0x0043) | 593 688 | 2 902 |
+| residency on | memory-bounds (engine defect, block `0x105c1aa7`) | 56 825 | 1 223 |
+
+The stop is now a *named missing service* rather than a fault or a budget, and
+it is the last call of the loader's own start-up: `NtContinue(context, TRUE)`,
+which is what enters the thread the context describes. Serving it - applying
+that context to the guest state, which is the application entry point - is the
+next piece of work.

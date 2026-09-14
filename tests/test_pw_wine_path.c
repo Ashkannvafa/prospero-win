@@ -316,18 +316,40 @@ static void test_guest_strings(void)
     assert(out[0] == '\0');
     assert(pw_wine_path_read_unicode(fake_access, &guest, 0u, out,
                                      sizeof(out)) == PW_ERR_MALFORMED);
-    /* A non-ASCII unit is refused rather than folded into a host name: the
-     * runtime's own locale cache asks for a subkey named with an emoji
-     * sequence (dlls/kernelbase/locale.c:54 world_subkey), which is the case
-     * the gate cannot represent yet and reports as a refused call. */
-    put_string(&guest, 2u, 16u, "");
+    /*
+     * A unit outside ASCII is carried as UTF-8: the runtime's own locale cache
+     * keeps its values under a subkey named with an emoji sequence
+     * (dlls/kernelbase/locale.c:54 world_subkey), so a name the gate cannot
+     * represent is a key the runtime cannot create. The units below are that
+     * subkey's own - two surrogate pairs and one accented letter - and the
+     * expected bytes are their UTF-8 encoding, the pairs combined into one code
+     * point each.
+     */
+    put_string(&guest, 6u, 16u, "");
     {
-        const uint16_t unit = 0x00e9u;
+        const uint16_t units[3] = { 0xd83cu, 0xdf0eu, 0x00e9u };
+
+        memcpy(&guest.bytes[16], units, sizeof(units));
+    }
+    assert(pw_wine_path_read_unicode(fake_access, &guest, 0u, out,
+                                     sizeof(out)) == PW_OK);
+    assert(strcmp(out, "\xf0\x9f\x8c\x8e\xc3\xa9") == 0);
+    /* A lone surrogate is not a name, and neither is a destination that
+     * cannot hold the encoded bytes. */
+    {
+        const uint16_t unit = 0xdc00u;
 
         memcpy(&guest.bytes[16], &unit, 2u);
     }
     assert(pw_wine_path_read_unicode(fake_access, &guest, 0u, out,
-                                     sizeof(out)) == PW_ERR_UNSUPPORTED);
+                                     sizeof(out)) == PW_ERR_MALFORMED);
+    {
+        const uint16_t units[3] = { 0xd83cu, 0xdf0eu, 0x00e9u };
+
+        memcpy(&guest.bytes[16], units, sizeof(units));
+    }
+    assert(pw_wine_path_read_unicode(fake_access, &guest, 0u, out, 6u) ==
+           PW_ERR_MALFORMED);
     /* A buffer outside the guest window, and a destination too small to hold
      * the name with its terminator. */
     put_string(&guest, 14u, 200u, "FOO.dll");

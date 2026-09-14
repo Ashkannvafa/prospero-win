@@ -39,12 +39,13 @@ _Static_assert(PW_X86_MEMORY_REGIONS >= PW_WINE_GATE_MAX_MODULES * 2u + 4u +
                "region table must hold the module graph and the NT regions");
 
 /*
- * The generated guard compares memory_count against the table bound as a
- * signed imm8, so a table that grew past 127 would be guarded by a negative
- * bound and every access would be classified as out of bounds.
+ * The guard compares the declared count against the table bound with a 32-bit
+ * immediate, so the bound can grow past the 127 a signed imm8 could carry -
+ * which it had to, because a process with several mapped images declares one
+ * region per section of each and passed 64 the moment this run mapped four.
  */
-_Static_assert(PW_X86_MEMORY_REGIONS <= 127,
-               "guard encodes the region table bound as a signed imm8");
+_Static_assert(PW_X86_MEMORY_REGIONS <= 4096,
+               "the region table is a bounded array in the guest state");
 
 static void copy_text(char *out, size_t out_bytes, const char *text)
 {
@@ -687,6 +688,23 @@ enum {
     PW_WINE_PAGE_READWRITE = 0x04u,
     PW_WINE_PAGE_EXECUTE_READ = 0x20u,
     PW_WINE_PAGE_SIZE = 0x1000u,
+    /*
+     * The register context the kernel places at the top of a thread's initial
+     * stack and ntdll's initialization entry receives as its first argument
+     * (winnt.h's I386_CONTEXT: 0x2cc bytes, Eax at 0xb0).
+     */
+    PW_WINE_CONTEXT_BYTES = 0x2ccu,
+    PW_WINE_CONTEXT_OFFSET_FLAGS = 0x00u,
+    PW_WINE_CONTEXT_OFFSET_EBX = 0xa4u,
+    PW_WINE_CONTEXT_OFFSET_EAX = 0xb0u,
+    PW_WINE_CONTEXT_OFFSET_CS = 0xbcu,
+    PW_WINE_CONTEXT_OFFSET_EFLAGS = 0xc0u,
+    PW_WINE_CONTEXT_OFFSET_ESP = 0xc4u,
+    PW_WINE_CONTEXT_OFFSET_SS = 0xc8u,
+    PW_WINE_CONTEXT_FULL = 0x00010007u,   /* CONTEXT_i386 | control|int|seg */
+    PW_WINE_CONTEXT_USER_CS = 0x1bu,
+    PW_WINE_CONTEXT_USER_SS = 0x23u,
+    PW_WINE_CONTEXT_EFLAGS = 0x202u,
 };
 
 static void put_le32(uint8_t *out, uint32_t offset, uint32_t value)
@@ -1856,8 +1874,48 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     status = pw_guest_call_begin(&call, &state, PW_GUEST_STDCALL, 4u, 0);
     if (status != PW_OK)
         goto done;
-    /* ntdll's initialization entry takes the PEB as its first argument. */
-    memcpy((void *)(uintptr_t)(state.gpr[4] + 4u), &report->peb_base, 4u);
+    /*
+     * ntdll's initialization entry takes a register *context*, and the kernel
+     * builds it at the top of the thread's initial stack: LdrInitializeThunk
+     * hands it to loader_init, which uses a null start routine to name the
+     * process's own entry point (dlls/ntdll/loader.c:4527 - that is how Wine
+     * starts its first thread), and then to signal_start_thread, which clears
+     * the 0xf000 bytes of stack *below* it before entering the thread through
+     * NtContinue (dlls/ntdll/signal_i386.c:514-524).
+     *
+     * Measured, this run passed the PEB instead: the loader wrote the image's
+     * entry point into the middle of the PEB, and the clear ran down from
+     * 0x0d000000 - the PEB - into memory nothing had mapped, so the run ended
+     * on the guard's classified bounds fault at the last instructions of
+     * ntdll's own start-up. The context sits one page below the stack's top
+     * because the entry's own argument frame lives in the top sixteen bytes.
+     */
+    {
+        uint8_t context[PW_WINE_CONTEXT_BYTES];
+        const uint32_t stack_high = report->stack_base + report->stack_bytes;
+        const uint32_t context_va =
+            (stack_high - PW_WINE_PAGE_SIZE - PW_WINE_CONTEXT_BYTES) & ~15u;
+
+        if (context_va < report->stack_base) {
+            stage = "context";
+            status = PW_ERR_LIMIT;
+            goto done;
+        }
+        memset(context, 0, sizeof(context));
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_FLAGS, PW_WINE_CONTEXT_FULL);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_CS, PW_WINE_CONTEXT_USER_CS);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_EFLAGS,
+                 PW_WINE_CONTEXT_EFLAGS);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_ESP, stack_high);
+        put_le32(context, PW_WINE_CONTEXT_OFFSET_SS, PW_WINE_CONTEXT_USER_SS);
+        /*
+         * Eax stays null, so loader_init publishes the image's own entry point
+         * there, and Ebx - the argument a thread is started with - is null for
+         * the first thread, which is what the kernel passes.
+         */
+        memcpy((void *)(uintptr_t)context_va, context, sizeof(context));
+        memcpy((void *)(uintptr_t)(state.gpr[4] + 4u), &context_va, 4u);
+    }
 
     report->first_eip = state.eip;
     report->stop = PW_WINE_STOP_STEP_BUDGET;

@@ -18,7 +18,7 @@
 /* PW_X86_EXEC is carried so a region can remember the protection it was given
  * through NtProtectVirtualMemory and report it back as the old protection; the
  * access guard itself only ever asks for read and write. */
-enum { PW_X86_MEMORY_REGIONS=64, PW_X86_READ=1, PW_X86_WRITE=2, PW_X86_EXEC=4,
+enum { PW_X86_MEMORY_REGIONS=256, PW_X86_READ=1, PW_X86_WRITE=2, PW_X86_EXEC=4,
        PW_X86_MAX_HOST_REGS=3 };
 typedef struct PwX86Memory {
     uint32_t low;

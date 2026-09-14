@@ -150,22 +150,52 @@ def validate_transcript(text: str, expect_entry: str) -> str:
 # application, its two DLLs and the dependency diamond into a temporary
 # directory the run is pointed at.
 APPLICATION_PINNED = {
-    # Moved deliberately in the commit that serves NtSetValueKey and stops
-    # reporting a refused argument as an unimplemented service: with a writable
-    # value store the runtime writes the values it created keys for, and the
-    # next thing it does is create a key *named* by kernelbase's own locale
-    # cache sentinel - the emoji subkey dlls/kernelbase/locale.c:54 calls
-    # world_subkey. This gate's registry names are ASCII, so that call is
-    # refused, and the run now stops as a *rejected* call naming the argument
-    # (its OBJECT_ATTRIBUTES) instead of claiming the service does not exist.
-    # Non-ASCII names are the next piece of work. The fault address with
-    # residency on is unchanged while the faulting block stays the same
-    # (0x105c1aa7, 9 instructions, resident mask 0x43), which is the signature
-    # the private report records for it.
+    # Moved deliberately in the commit that lets the loader's own start-up
+    # finish, and the four things that had to be right for it to get there are
+    # the reason the numbers moved:
+    #
+    # (1) Registry names outside ASCII. The stop recorded here before this
+    # commit was a *rejected* NtCreateKey - kernelbase keeps its locale cache
+    # in a subkey literally named the emoji sequence dlls/kernelbase/locale.c:54
+    # calls world_subkey, and a name this gate could not represent was a key
+    # the runtime could not create. The translation now encodes non-ASCII units
+    # as UTF-8 (surrogate pairs combined), so that call is served.
+    #
+    # (2) The view's permissions are declared per *page* now, from the image's
+    # own section table, and the same map protects the host mapping. Two things
+    # were wrong before: the coarse "the image is readable, plus the union of
+    # its writable sections" declared pages writable that the host had mapped
+    # read-only (a host fault, not a classified stop), and the old protection
+    # NtProtectVirtualMemory reported came from that coarse map. The declared
+    # region table therefore had to grow past the 64 entries that union needed
+    # (now 256, and the guard compares against it with a 32-bit immediate
+    # rather than the signed imm8 that would have made a 128-entry table
+    # negative).
+    #
+    # (3) The generated application's TLS callback *entries* are relocated.
+    # They are virtual addresses the loader calls; unrelocated, a run placed
+    # away from the preferred base took a.dll's own preferred-base address
+    # (0x10101010) as a function pointer and stopped as non-code.
+    #
+    # (4) The initialization entry's first argument is the register context the
+    # kernel builds at the top of the thread's stack, not the PEB. Passing the
+    # PEB made loader_init write the image's entry point into the middle of the
+    # PEB and made ntdll's signal_start_thread clear 0xf000 bytes of stack
+    # below the PEB - memory nothing had mapped - which is the bounds fault
+    # this scenario stopped on before.
+    #
+    # With all four in place the loader's own start-up completes and the run
+    # reaches the *next service it does not have*: NtContinue (syscall 0x43),
+    # which is what signal_start_thread calls last to enter the thread
+    # (dlls/ntdll/signal_i386.c:524) with the context this gate now builds.
+    # That is the next piece of work, and it is also the application entry
+    # point. The fault address with residency on is unchanged while the
+    # faulting block stays the same (0x105c1aa7, 9 instructions, resident mask
+    # 0x43), which is the signature the private report records for it.
     "residency_on": {"stop": "memory-bounds", "fault": "0x61905fd0",
                      "retired": "56825", "blocks": "1223"},
-    "residency_off": {"stop": "unix-call-rejected", "retired": "570878",
-                      "blocks": "2507"},
+    "residency_off": {"stop": "unix-call-unimplemented", "retired": "593688",
+                      "blocks": "2902"},
 }
 
 

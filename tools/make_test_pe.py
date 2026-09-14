@@ -400,8 +400,17 @@ def build_pe(spec: Spec) -> bytes:
             # application's a.dll mapped away from its preferred base, ntdll's
             # store to AddressOfIndex landed outside every mapping this run
             # owns and the run stopped on the guard's classified write fault.
+            # The callback array's entries are virtual addresses too, and the
+            # loader *calls* each one: measured, with the entries left
+            # unrelocated a run placed away from the preferred base took the
+            # preferred-base address - a.dll's own callback, still encoded as
+            # 0x10101010 - as a function pointer and the run stopped as
+            # non-code at an address no mapping covers. A real linker
+            # relocates each entry, so this encoder does the same.
             targets.append((tls_rva + 8, kind))
             targets.append((tls_rva + 12, kind))
+            for index in range(len(spec.tls.callbacks)):
+                targets.append((tls_rva + 24 + 4 * index, kind))
         blob = _build_reloc_blob(targets, spec.section_alignment)
         placed.append({
             "name": ".reloc",
