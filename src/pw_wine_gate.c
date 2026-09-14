@@ -1066,6 +1066,42 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         if (status != PW_OK)
             goto done;
     }
+    /*
+     * The process's own system modules. A Wine process always has ntdll, and
+     * the module that carries the boundary must be in the graph because the
+     * process needs it - not because the application happens to import it. An
+     * application root therefore gets the configured system modules loaded
+     * explicitly, from the runtime namespace only, in configuration order and
+     * each one once; a module already pulled in as a dependency is left as it
+     * is, which is what keeps the Wine-runtime control identical.
+     */
+    for (uint32_t index = 0u; index < config->module_count; ++index) {
+        char system_canonical[PW_MODULE_NAME_MAX + 1];
+        PwFileSpan span;
+
+        if (index == 0u)
+            continue;                        /* the root was loaded above */
+        status = pw_module_name_canonical(system_canonical,
+                                          sizeof(system_canonical),
+                                          config->modules[index]);
+        if (status != PW_OK)
+            goto done;
+        if (!pw_module_is_system(system_canonical))
+            continue;                        /* a local module is an import */
+        if (pw_loader_find(&runner->loader, system_canonical) >= 0)
+            continue;                        /* already in the graph */
+        memset(&span, 0, sizeof(span));
+        status = config->provider->open_namespace(config->provider->context,
+                                                  PW_FILE_RUNTIME,
+                                                  system_canonical, &span);
+        if (status != PW_OK)
+            goto done;
+        status = pw_loader_load(&runner->loader, span.bytes, span.size,
+                                system_canonical);
+        config->provider->close(config->provider->context, &span);
+        if (status != PW_OK)
+            goto done;
+    }
 
     /* Bind every loaded module's imports through one resolver. */
     status = pw_export_resolver_init(&runner->resolver, &runner->loader, 4u);
