@@ -146,7 +146,13 @@ int pw_wine_file_open(PwWineCallContext *calls,
     }
     PwNtObject handle_object;
 
-    if (pw_wine_handle_object(token, size, NULL, &handle_object) != PW_OK) {
+    /*
+     * The handle carries the canonical name the service resolved, because that
+     * is the file's identity this run can guarantee: one name inside the
+     * namespace the service owns names one file, and a handle keeps the name
+     * it was opened as for as long as it lives.
+     */
+    if (pw_wine_handle_object(token, size, name, &handle_object) != PW_OK) {
         calls->config->files->close(calls->config->files->context, token);
         *status = PW_NT_INVALID_PARAMETER;
         return PW_OK;
@@ -361,6 +367,94 @@ int pw_wine_file_query_volume_information(PwWineCallContext *calls,
     if (io_pointer != 0u)
         pw_wine_file_io_status(guest, context, io_pointer, PW_NT_SUCCESS,
                         sizeof(block));
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+
+/*
+ * NtFsControlFile for the one control code ntdll's own loader sends:
+ * FSCTL_GET_OBJECT_ID, which open_dll_file uses to recognise a file it has
+ * already mapped (dlls/ntdll/loader.c:2713-2725) - it asks for the file's
+ * identity, and if two handles answer with the same one it maps the file once.
+ *
+ * Wine answers with the host file's device and inode (dlls/ntdll/unix/file.c:
+ * 6800-6813: fstat, then st_dev and st_ino into ObjectId, the rest of the
+ * FILE_OBJECTID_BUFFER zeroed) because that is what the server can compare.
+ * This run's files live behind PwWineFileService, which resolves one
+ * canonical name inside its namespace to one file, and that name is the
+ * identity a handle carries - so the id here is the SHA-256 of the canonical
+ * name, truncated to the 16 bytes ObjectId has room for, and the three birth
+ * fields stay zero exactly as wine leaves them. The property the loader uses
+ * is the one that matters and it holds: the same file, opened any number of
+ * times, answers with the same id, and different names answer with different
+ * ones. A file handle always carries that name; a handle without one is a
+ * file this bridge cannot identify, and it says so instead of inventing an id.
+ */
+enum {
+    PW_WINE_FSCTL_GET_OBJECT_ID = 0x0009009cu,
+    PW_WINE_FILE_OBJECTID_BYTES = 64u,
+    PW_WINE_FILE_OBJECTID_ID_BYTES = 16u,
+};
+
+int pw_wine_file_fs_control(PwWineCallContext *calls,
+                            const PwUnixCallFrame *frame,
+                            PwUnixCallAccess guest, void *context,
+                            uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t handle = frame->args[0];
+    const uint32_t io_pointer = frame->args[4];
+    const uint32_t control_code = frame->args[5];
+    const uint32_t output_pointer = frame->args[8];
+    const uint32_t output_length = frame->args[9];
+    PwNtObject *object = NULL;
+    unsigned kind = PW_NT_HANDLE_NONE;
+    PwSha256 hash;
+    uint8_t digest[PW_SHA256_BYTES];
+    uint8_t block[PW_WINE_FILE_OBJECTID_BYTES];
+
+    if (pw_wine_handle_lookup(calls, handle, &object, &kind) != PW_OK) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    /* A directory or a key is not a file object, so no control code here
+     * describes it. */
+    if (kind != PW_NT_HANDLE_FILE) {
+        *status = PW_NT_INVALID_DEVICE_REQUEST;
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    if (control_code != PW_WINE_FSCTL_GET_OBJECT_ID) {
+        *status = PW_NT_INVALID_DEVICE_REQUEST;
+        if (io_pointer != 0u)
+            pw_wine_file_io_status(guest, context, io_pointer, *status, 0u);
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    if (output_pointer == 0u || output_length < PW_WINE_FILE_OBJECTID_BYTES) {
+        *status = PW_NT_BUFFER_TOO_SMALL;
+        if (io_pointer != 0u)
+            pw_wine_file_io_status(guest, context, io_pointer, *status, 0u);
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    if (object->path[0] == '\0') {
+        *status = PW_NT_NOT_SUPPORTED;
+        calls->report->file_refusals++;
+        return PW_OK;
+    }
+    pw_sha256_init(&hash);
+    pw_sha256_update(&hash, object->path, strlen(object->path));
+    pw_sha256_final(&hash, digest);
+    memset(block, 0, sizeof(block));
+    memcpy(block, digest, PW_WINE_FILE_OBJECTID_ID_BYTES);
+    if (guest(context, output_pointer, block, sizeof(block), 1) != PW_OK) {
+        *argument_index = 9u;
+        return PW_ERR_MALFORMED;
+    }
+    if (io_pointer != 0u)
+        pw_wine_file_io_status(guest, context, io_pointer, PW_NT_SUCCESS,
+                               sizeof(block));
+    calls->report->file_fs_controls++;
     *status = PW_NT_SUCCESS;
     return PW_OK;
 }

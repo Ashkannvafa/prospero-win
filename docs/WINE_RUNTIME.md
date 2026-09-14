@@ -514,6 +514,15 @@ NtReadFile                    (0x0006) handle, IO status, buffer, length,
                                        offset; a directory handle is refused
 NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
                                        and Directory for a directory object)
+NtFsControlFile               (0x0039) FSCTL_GET_OBJECT_ID only, answered
+                                       with the identity a handle carries: the
+                                       SHA-256 of the canonical name the file
+                                       service resolved, truncated to the 16
+                                       bytes ObjectId has room for, with the
+                                       three birth fields zeroed as Wine leaves
+                                       them - so the same file answers the same
+                                       id, which is what the loader's
+                                       deduplication compares
 NtQueryVolumeInformationFile  (0x0049) FileFsDeviceInformation only
 NtClose                       (0x000f) releases a gate-owned handle
 NtFreeVirtualMemory           (0x001e) returns a whole guest block that this

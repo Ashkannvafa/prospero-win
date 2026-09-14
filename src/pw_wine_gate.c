@@ -836,6 +836,8 @@ static const PwNtHandler dispatch_table[] = {
       pw_wine_query_process_image },
     { 0x0023u, { 0u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_virtual_memory.c",
       gate_nt_query_virtual_memory },
+    { 0x0039u, { 0x0009009cu, PW_NT_CLASS_NONE },
+      "tests/test_pw_wine_file_service.c", pw_wine_file_fs_control },
 };
 
 static const PwNtHandler *dispatch_find(uint32_t id)

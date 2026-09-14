@@ -352,6 +352,8 @@ typedef struct PwWineGateReport {
     uint64_t file_refusals;
     uint32_t file_handles;
     uint64_t file_directories;
+    /* NtFsControlFile answers this run gave (FSCTL_GET_OBJECT_ID). */
+    uint64_t file_fs_controls;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t key_opens;

@@ -52,6 +52,11 @@ enum {
     DEVICE_INFO_RVA = DATA_RVA + 0x270,     /* FILE_FS_DEVICE_INFORMATION */
     VOLUME_IO_RVA = DATA_RVA + 0x280,
     VOLUME_RESULT_RVA = DATA_RVA + 0x290,
+    FSCTL_IO_RVA = DATA_RVA + 0x2A0,        /* IoStatusBlock of the FSCTL */
+    OBJECTID_RVA = DATA_RVA + 0x2B0,        /* FILE_OBJECTID_BUFFER (64) */
+    FSCTL_RESULT_RVA = DATA_RVA + 0x300,    /* four FSCTL statuses */
+    ID_COPY_RVA = DATA_RVA + 0x310,         /* ObjectId the guest read back */
+    FSCTL_LEN_RVA = DATA_RVA + 0x314,       /* Information it read back */
     THUNK_RVA = TEXT_RVA + 0x200,
     STUB_OPEN_RVA = TEXT_RVA + 0x210,
     STUB_READ_RVA = TEXT_RVA + 0x220,
@@ -59,8 +64,11 @@ enum {
     STUB_VOLUME_RVA = TEXT_RVA + 0x240,     /* NtQueryVolumeInformationFile */
     STUB_INFO_RVA = TEXT_RVA + 0x250,       /* NtQueryInformationFile */
     STUB_ATTRS_RVA = TEXT_RVA + 0x260,      /* NtQueryAttributesFile: no handler */
+    STUB_FSCTL_RVA = TEXT_RVA + 0x270,      /* NtFsControlFile */
     CALLER_RVA = TEXT_RVA,
     FILE_BYTES = 16,
+    FILE_OBJECTID_BYTES = 64u,
+    FSCTL_GET_OBJECT_ID = 0x0009009cu,
 };
 
 static const uint8_t file_contents[FILE_BYTES] = {
@@ -239,6 +247,92 @@ static size_t build_module(void)
     emit_call(STUB_READ_RVA);
     emit_store_eax(IO_RVA + 4u);
 
+    /*
+     * The file's identity, which the loader asks for before it decides
+     * whether it has already mapped this file. The id and the length the
+     * guest reads back out of its own buffers travel as arguments of calls
+     * that are refused before they look at them, so the transcript - not this
+     * test - carries what the guest actually saw.
+     */
+    emit_push_imm8(0x00);                 /* OutputBufferLength slot */
+    emit_push_imm32(FILE_OBJECTID_BYTES); /* OutputBuffer length */
+    emit_push_absolute(OBJECTID_RVA);     /* OutputBuffer */
+    emit_push_imm8(0x00);                 /* InputBufferLength */
+    emit_push_imm8(0x00);                 /* InputBuffer */
+    emit_push_imm32(FSCTL_GET_OBJECT_ID); /* FsControlCode */
+    emit_push_absolute(FSCTL_IO_RVA);     /* IoStatusBlock */
+    emit_push_imm8(0x00);                 /* ApcContext */
+    emit_push_imm8(0x00);                 /* ApcRoutine */
+    emit_push_imm8(0x00);                 /* Event */
+    emit_byte(0xa1);                      /* mov eax, [HANDLE_RVA] */
+    emit_absolute(HANDLE_RVA);
+    emit_byte(0x50);                      /* push eax */
+    emit_call(STUB_FSCTL_RVA);
+    emit_store_eax(FSCTL_RESULT_RVA);
+    emit_byte(0xa1);                      /* the ObjectId the gate wrote */
+    emit_absolute(OBJECTID_RVA);
+    emit_store_eax(ID_COPY_RVA);
+    emit_byte(0xa1);                      /* and the length it reported */
+    emit_absolute(FSCTL_IO_RVA + 4u);
+    emit_store_eax(FSCTL_LEN_RVA);
+
+    /* A buffer that cannot hold a FILE_OBJECTID_BUFFER. */
+    emit_push_imm8(0x00);
+    emit_push_imm32(16u);
+    emit_push_absolute(OBJECTID_RVA);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_push_imm32(FSCTL_GET_OBJECT_ID);
+    emit_push_absolute(FSCTL_IO_RVA);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_byte(0xa1);
+    emit_absolute(HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_FSCTL_RVA);
+    emit_store_eax(FSCTL_RESULT_RVA + 4u);
+
+    /* A control code this bridge does not answer, carrying the id the guest
+     * just read as its output buffer. */
+    emit_push_imm8(0x00);
+    emit_push_imm32(FILE_OBJECTID_BYTES);
+    emit_byte(0xa1);                      /* mov eax, [ID_COPY_RVA] */
+    emit_absolute(ID_COPY_RVA);
+    emit_byte(0x50);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_push_imm32(0x0000deadu);         /* FsControlCode: not ours */
+    emit_push_absolute(FSCTL_IO_RVA);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_byte(0xa1);
+    emit_absolute(HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_FSCTL_RVA);
+    emit_store_eax(FSCTL_RESULT_RVA + 8u);
+
+    /* The length the guest read back, as the control code of one more
+     * refused call, so the transcript shows the io status it saw. */
+    emit_push_imm8(0x00);
+    emit_push_imm32(FILE_OBJECTID_BYTES);
+    emit_push_absolute(OBJECTID_RVA);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_byte(0xa1);                      /* mov eax, [FSCTL_LEN_RVA] */
+    emit_absolute(FSCTL_LEN_RVA);
+    emit_byte(0x50);
+    emit_push_absolute(FSCTL_IO_RVA);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_push_imm8(0x00);
+    emit_byte(0xa1);
+    emit_absolute(HANDLE_RVA);
+    emit_byte(0x50);
+    emit_call(STUB_FSCTL_RVA);
+    emit_store_eax(FSCTL_RESULT_RVA + 12u);
+
     emit_byte(0xa1);
     emit_absolute(HANDLE_RVA);
     emit_byte(0x50);
@@ -314,6 +408,7 @@ static size_t build_module(void)
     emit_stub(STUB_VOLUME_RVA, 0x0049u, 20u);   /* NtQueryVolumeInformationFile */
     emit_stub(STUB_INFO_RVA, 0x0011u, 20u);     /* NtQueryInformationFile */
     emit_stub(STUB_ATTRS_RVA, 0x003du, 8u);     /* NtQueryAttributesFile */
+    emit_stub(STUB_FSCTL_RVA, 0x0039u, 40u);    /* NtFsControlFile */
     emit_byte(0xc3);
 
     /*
@@ -489,9 +584,9 @@ int main(void)
      * guest has to deal with; what matters here is what the guest saw. */
     (void)pw_wine_gate_run(&config, &report);
     assert(report.files_configured == 1u);
-    /* open, read, close, refused open, directory open, directory query,
-     * directory volume query, directory close */
-    assert(report.calls_serviced == 8u);
+    /* open, read, four NtFsControlFile calls, close, refused open, directory
+     * open, directory query, directory volume query, directory close */
+    assert(report.calls_serviced == 12u);
     assert(report.file_opens == 2u);         /* the DLL and the directory */
     assert(report.file_directories == 1u);
     assert(report.file_reads == 1u);
@@ -499,7 +594,9 @@ int main(void)
     /* Both handles were closed by the guest, so cleanup released none. */
     assert(report.file_closes == 2u);
     assert(report.file_handles == 0u);
-    assert(report.file_refusals == 1u);      /* the escaping path */
+    /* The escaping path, the FSCTL with a buffer that cannot hold the answer,
+     * and the two FSCTL calls with control codes this bridge does not answer. */
+    assert(report.file_refusals == 4u);
     /*
      * The escaping path is refused by the gate's path translation, so the
      * platform service is never asked to open it at all: that is the
@@ -513,10 +610,60 @@ int main(void)
     assert(report.calls.sequence[0].status == PW_NT_SUCCESS);
     assert(report.calls.sequence[1].id == 0x0006u);
     assert(report.calls.sequence[1].status == PW_NT_SUCCESS);
-    assert(report.calls.sequence[2].id == 0x000fu);
-    assert(report.calls.sequence[2].status == PW_NT_SUCCESS);
-    assert(report.calls.sequence[3].id == 0x0033u);
-    assert(report.calls.sequence[3].status == PW_NT_OBJECT_NAME_NOT_FOUND);
+    {
+        uint32_t closes = 0u, refused_opens = 0u;
+
+        for (uint32_t index = 0; index < report.calls.records; ++index) {
+            const PwUnixCallRecord *record = &report.calls.sequence[index];
+
+            if (record->id == 0x000fu && record->status == PW_NT_SUCCESS)
+                closes++;
+            if (record->id == 0x0033u &&
+                record->status == PW_NT_OBJECT_NAME_NOT_FOUND)
+                refused_opens++;
+        }
+        /* One close for the DLL handle and one for the directory's. */
+        assert(closes == 2u);
+        assert(refused_opens == 1u);
+    }
+    /*
+     * The file's identity. The id the gate answers with is a function of the
+     * canonical name the service resolved - here "test.dll" - so two handles
+     * to the same file answer with the same id, which is the property the
+     * loader's deduplication compares. The statuses are the four shapes the
+     * call can take, and the last two records carry the id and the length the
+     * guest read out of its own buffer, so the answer can only be right if it
+     * really landed in guest memory.
+     */
+    {
+        PwSha256 hash;
+        uint8_t digest[PW_SHA256_BYTES];
+        uint32_t expected_id = 0u;
+        const PwUnixCallRecord *fsctl[4];
+        uint32_t found = 0u;
+
+        pw_sha256_init(&hash);
+        pw_sha256_update(&hash, "test.dll", strlen("test.dll"));
+        pw_sha256_final(&hash, digest);
+        memcpy(&expected_id, digest, 4u);
+        for (uint32_t index = 0; index < report.calls.records; ++index) {
+            const PwUnixCallRecord *record = &report.calls.sequence[index];
+
+            if (record->id != 0x0039u)
+                continue;
+            assert(found < 4u);
+            fsctl[found++] = record;
+        }
+        assert(found == 4u);
+        assert(report.file_fs_controls == 1u);
+        assert(fsctl[0]->status == PW_NT_SUCCESS);
+        assert(fsctl[1]->status == PW_NT_BUFFER_TOO_SMALL);
+        assert(fsctl[2]->status == PW_NT_INVALID_DEVICE_REQUEST);
+        assert(fsctl[3]->status == PW_NT_INVALID_DEVICE_REQUEST);
+        assert(fsctl[0]->args[5] == FSCTL_GET_OBJECT_ID);
+        assert(fsctl[2]->args[8] == expected_id);   /* read by the guest */
+        assert(fsctl[3]->args[5] == FILE_OBJECTID_BYTES);
+    }
     /* Every one of them was a handled call, not a refusal of the bridge. */
     /*
      * The directory case: NtOpenFile("C:\windows\system32") succeeds as a

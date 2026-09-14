@@ -43,4 +43,10 @@ int pw_wine_file_query_volume_information(struct PwWineCallContext *calls,
                                           uint32_t *status,
                                           uint32_t *argument_index);
 
+/* NtFsControlFile (0x0039), FSCTL_GET_OBJECT_ID only. */
+int pw_wine_file_fs_control(struct PwWineCallContext *calls,
+                            const PwUnixCallFrame *frame,
+                            PwUnixCallAccess guest, void *context,
+                            uint32_t *status, uint32_t *argument_index);
+
 #endif /* PROSPERO_WIN_PW_WINE_FILE_H */
