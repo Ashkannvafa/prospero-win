@@ -42,8 +42,9 @@ REQUIRED = {
     "modes": {"chaining", "residency", "lazy_flags"},
     "run": {"first_eip", "last_eip", "retired", "dispatches", "blocks",
             "bytes", "stop_address", "stop", "syscall", "host_calls"},
-    "cleanup": {"modules", "pending_modules", "pending_pages", "mappings",
-                "translations", "failures", "status"},
+    "cleanup": {"modules", "pending_modules", "pending_pages",
+                "pending_regions", "mappings", "translations",
+                "pending_translations", "failures", "status"},
     "verdict": {"accepted", "stop", "entry_id", "syscall", "retired"},
 }
 MODULE_FIELDS = {"name", "sha256", "size", "machine", "base", "image_bytes",
@@ -354,7 +355,8 @@ def validate(records: dict[str, list[dict[str, str]]],
     # The verdict is about what the releases did, not about what the run
     # mapped: a teardown action that failed leaves its owner in place, so a
     # transcript that reports one is not acceptance evidence.
-    for field in ("failures", "pending_modules", "pending_pages"):
+    for field in ("failures", "pending_modules", "pending_pages",
+                  "pending_regions", "pending_translations"):
         if number(cleanup, field, "cleanup") != 0:
             raise Failure(f"cleanup left {field}={cleanup[field]} behind")
     if number(cleanup, "modules", "cleanup") != len(modules):

@@ -589,22 +589,26 @@ int main(int argc, char **argv)
      * stops honestly without being a leak.
      *
      * The verdict comes from what the releases did, not from what the run
-     * mapped: `failures` counts teardown actions that failed, `pending` counts
-     * owners still held after the attempt (a process page or a module whose
-     * release failed is kept so the caller can retry). A transcript that says
-     * "ok" with a nonzero failures or pending field is rejected by the
-     * validator.
+     * mapped: `failures` counts teardown actions that failed and the pending
+     * fields identify every kind of owner left after the attempt. Unit-level
+     * owners can be retried; this one-shot gate propagates a persistent failure
+     * through gate_status. The validator rejects every incomplete transcript.
      */
     printf("kind=host-wine-cleanup modules=%u pending_modules=%u "
-           "pending_pages=%u mappings=%u translations=%u failures=%u "
+           "pending_pages=%u pending_regions=%u mappings=%u translations=%u "
+           "pending_translations=%u failures=%u "
            "status=%s gate_status=%s\n", report.cleanup_modules,
            report.cleanup_modules_pending,
            report.cleanup_process_pages_pending,
+           report.cleanup_call_regions_pending,
            report.cleanup_mappings, report.cleanup_translations,
+           report.cleanup_translations_pending,
            report.cleanup_failures,
            (report.cleanup_modules == report.module_count &&
             report.cleanup_modules_pending == 0u &&
             report.cleanup_process_pages_pending == 0u &&
+            report.cleanup_call_regions_pending == 0u &&
+            report.cleanup_translations_pending == 0u &&
             report.cleanup_failures == 0u &&
             report.cleanup_translations >= 1u &&
             report.cleanup_mappings >= report.module_count) ? "ok"

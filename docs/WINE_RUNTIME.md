@@ -713,7 +713,7 @@ retired 29336 instructions over 5987 dispatches and 890 translated blocks
   the release of the parameters block, the Wine version, the registry open
   and its two option queries, NtClose of that key, the token query, the
   user-key create, and the version-init registry reads
-cleanup modules=2 mappings=7 translations=1 status=ok
+cleanup modules=2 pending_modules=0 pending_pages=0 pending_regions=0 mappings=7 translations=1 pending_translations=0 failures=0 status=ok
 stop: unix-call-unimplemented, syscall 0x0058 = NtOpenDirectoryObject
 ```
 
@@ -777,7 +777,7 @@ Measured on the same pinned runtime with `--bridge 1`:
 ```text
 retired 29359 instructions over 5991 dispatches and 894 translated blocks
 18 calls handled, including NtOpenDirectoryObject("\KnownDlls") -> SUCCESS
-cleanup modules=2 mappings=7 translations=1 status=ok
+cleanup modules=2 pending_modules=0 pending_pages=0 pending_regions=0 mappings=7 translations=1 pending_translations=0 failures=0 status=ok
 stop: unix-call-unimplemented, syscall 0x0019 = NtQueryInformationProcess
 ```
 
@@ -900,6 +900,6 @@ Measured on the same pinned runtime with `--bridge 1`:
 retired 32544 instructions over 6869 dispatches and 968 translated blocks
 19 calls handled; the last is NtQueryInformationProcess ProcessImageInformation
   -> SUCCESS with image_characteristics=0x2106 (kernelbase's own)
-cleanup modules=2 mappings=7 translations=1 status=ok
+cleanup modules=2 pending_modules=0 pending_pages=0 pending_regions=0 mappings=7 translations=1 pending_translations=0 failures=0 status=ok
 stop: returned-to-caller at 0 - the unix-call dispatcher is not published
 ```

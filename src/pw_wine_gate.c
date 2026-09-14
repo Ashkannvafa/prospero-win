@@ -826,6 +826,7 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     char root_canonical[PW_MODULE_NAME_MAX + 1];
     uint32_t budget;
     int status;
+    int cleanup_status = PW_OK;
     int have_loader = 0;
     int have_engine = 0;
     int have_process = 0;
@@ -1211,28 +1212,44 @@ done:
          * Every teardown action is attempted even when an earlier one fails,
          * and every failure is counted into the evidence. The verdict has to
          * come from what the releases actually did: an action that fails
-         * keeps its owner in place (the page, the module, the region), so the
-         * caller can retry, and the report says the cleanup is not complete
-         * instead of counting what the run once mapped.
+         * keeps its unit-level owner in place. This orchestration function is
+         * one-shot, so it also propagates a persistent cleanup failure instead
+         * of returning a successful run after losing access to the owner.
          */
         for (uint32_t slot = 0u; slot < (uint32_t)PW_NT_HANDLE_MAX; ++slot) {
             const uint32_t value = pw_nt_handle_value_of(&calls.handles, slot);
 
-            if (value != 0u &&
-                pw_wine_handle_release(&calls, value) != PW_OK)
-                failures++;
+            if (value != 0u) {
+                const int release_status = pw_wine_handle_release(&calls, value);
+
+                if (release_status != PW_OK) {
+                    if (cleanup_status == PW_OK)
+                        cleanup_status = release_status;
+                    failures++;
+                }
+            }
         }
         if (have_engine) {
             const int engine_status = pw_x86_engine_destroy(&engine);
 
             if (engine_status == PW_OK)
                 report->cleanup_translations++;
-            else
+            else {
+                if (cleanup_status == PW_OK)
+                    cleanup_status = engine_status;
+                report->cleanup_translations_pending++;
                 failures++;
+            }
         }
         if (have_process) {
-            if (pw_guest_process_release(&process, config->backend) != PW_OK)
+            const int process_status =
+                pw_guest_process_release(&process, config->backend);
+
+            if (process_status != PW_OK) {
+                if (cleanup_status == PW_OK)
+                    cleanup_status = process_status;
                 failures++;
+            }
             report->cleanup_mappings += process.released;
             report->cleanup_process_pages_pending = process.mapped;
         }
@@ -1243,8 +1260,12 @@ done:
             if (calls.vm->base.release(calls.vm->base.context,
                                         &calls.regions[index]) == PW_OK)
                 report->cleanup_mappings++;
-            else
+            else {
+                if (cleanup_status == PW_OK)
+                    cleanup_status = PW_ERR_VM;
+                report->cleanup_call_regions_pending++;
                 failures++;
+            }
         }
         if (have_loader) {
             /* Counted before the release: a complete release zeroes the
@@ -1253,8 +1274,11 @@ done:
             const uint32_t owned = loader.module_count;
             const int loader_status = pw_loader_release(&loader);
 
-            if (loader_status != PW_OK)
+            if (loader_status != PW_OK) {
+                if (cleanup_status == PW_OK)
+                    cleanup_status = loader_status;
                 failures++;
+            }
             report->cleanup_modules = loader.released_modules;
             report->cleanup_modules_pending =
                 owned - loader.released_modules;
@@ -1264,7 +1288,9 @@ done:
     }
     if (root_span.bytes && config->provider->close)
         config->provider->close(config->provider->context, &root_span);
-    if (status == PW_OK)
+    if (cleanup_status != PW_OK)
+        status = cleanup_status;
+    else if (status == PW_OK)
         status = pw_wine_stop_is_acceptance(report->stop) ? PW_OK
                                                           : PW_ERR_UNSUPPORTED;
     report->low_exhausted = (uint32_t)pw_guest_vm_exhausted(&guest_vm);

@@ -67,8 +67,9 @@ def base_records() -> dict[str, list[dict[str, str]]]:
                  "stop": VALIDATOR.ACCEPTED_STOP, "syscall": "0x0000000f",
                  "host_calls": "0"}],
         "cleanup": [{"modules": "2", "pending_modules": "0",
-                     "pending_pages": "0", "mappings": "3",
-                     "translations": "1", "failures": "0",
+                     "pending_pages": "0", "pending_regions": "0",
+                     "mappings": "3", "translations": "1",
+                     "pending_translations": "0", "failures": "0",
                      "status": "ok"}],
         "verdict": [{"accepted": "1", "stop": VALIDATOR.ACCEPTED_STOP,
                      "entry_id": "0x0000000f", "syscall": "0x0000000f",
@@ -264,6 +265,17 @@ class Case(unittest.TestCase):
         def mutate(records):
             records["cleanup"][0]["pending_pages"] = "3"
         self.expect_failure("cleanup left pending_pages=3 behind", mutate)
+
+    def test_cleanup_pending_call_region(self) -> None:
+        def mutate(records):
+            records["cleanup"][0]["pending_regions"] = "1"
+        self.expect_failure("cleanup left pending_regions=1 behind", mutate)
+
+    def test_cleanup_pending_translation(self) -> None:
+        def mutate(records):
+            records["cleanup"][0]["pending_translations"] = "1"
+        self.expect_failure("cleanup left pending_translations=1 behind",
+                            mutate)
 
     def test_verdict_not_accepted(self) -> None:
         def mutate(records):

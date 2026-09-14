@@ -18,6 +18,9 @@
  */
 int pw_wine_path_registry_root(const char *canonical, const char *root)
 {
+    if (!canonical || !root)
+        return 0;
+
     const size_t length = strlen(root);
 
     return strncmp(canonical, root, length) == 0 &&

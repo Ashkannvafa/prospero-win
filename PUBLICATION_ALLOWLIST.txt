@@ -252,6 +252,7 @@ docs/WINE_RUNTIME_MANIFEST.schema.json
 tests/test_wine_gate_host.py
 tests/test_pw_guest_process.c
 tests/test_pw_nt_handle.c
+tests/test_pw_wine_handle.c
 tests/test_pw_wine_path.c
 tests/test_pw_wine_teardown.c
 tests/test_pw_sse_matrix.py

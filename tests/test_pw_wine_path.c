@@ -387,12 +387,14 @@ static void test_boundaries(void)
     assert(pw_wine_path_prefix("", "\\registry\\", &used) == 0);
     assert(pw_wine_path_prefix("C:\\wind", "C:\\windows\\system32",
                                &used) == 0);
+    assert(pw_wine_path_registry_root(NULL, "\\registry\\machine") == 0);
+    assert(pw_wine_path_registry_root("\\registry\\machine", NULL) == 0);
 
     /* The exact boundary fits; one byte less is refused rather than
      * truncated. "\\Registry\\Machine\\" is 18 bytes, so a 20-byte path needs
      * exactly 21 bytes with its terminator. */
     {
-        char path[32];
+        char path[32] = {0};
         char exact[21];
         char short_buffer[20];
 
@@ -418,7 +420,7 @@ static void test_boundaries(void)
     }
     /* A component of exactly the runtime buffer's size, and one over. */
     {
-        char path[32];
+        char path[32] = {0};
         char exact[8];
 
         memcpy(path, "C:\\windows\\abcdefg", 19);
@@ -426,6 +428,7 @@ static void test_boundaries(void)
                                     &status) == PW_OK);
         assert(strcmp(exact, "abcdefg") == 0 && directory == 0);
         path[18] = 'h';                       /* one byte longer than `exact` */
+        path[19] = '\0';
         assert(pw_wine_path_runtime(path, exact, sizeof(exact), &directory,
                                     &status) == PW_ERR_MALFORMED);
     }

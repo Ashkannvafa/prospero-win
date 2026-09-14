@@ -51,15 +51,9 @@ enum TestMode {
     MODE_COMMIT_FAIL = 2,
     MODE_RELEASE_FAIL = 3,
     MODE_CAPACITY = 4,
-    /* Teardown failures: the releases the gate performs at cleanup, which are
-     * the ones outside the guest's heap window. Ordinal 1 is the translation
-     * engine's own region, 2 is the first process page; ALL fails every one. */
-    /* Teardown failure: every release the gate performs at cleanup, which is
-     * what happens outside the guest's heap window. This fixture's run has no
-     * translation engine and no guest process (it stops before them), so the
-     * owner this mode exercises here is the loader's module; the process pages
-     * and the engine have their own fault injection in
-     * tests/test_pw_wine_teardown.c. */
+    /* Teardown failure: every release the gate performs outside the guest's
+     * heap window. The fixture reaches the engine and guest-process setup, so
+     * one run exposes every pending-owner class in the gate report. */
     MODE_CLEANUP_FAIL = 5,
 };
 
@@ -610,14 +604,21 @@ int main(void)
         assert(control.report.cleanup_modules == control.report.module_count);
         assert(injected.cleanup_releases >= 1u);
         assert(injected.cleanup_release_failed == injected.cleanup_releases);
-        assert(injected.report.cleanup_failures >= 1u);
+        assert(injected.report.cleanup_failures == 4u);
+        assert(injected.report.cleanup_translations == 0u);
+        assert(injected.report.cleanup_translations_pending == 1u);
+        assert(injected.report.cleanup_process_pages_pending == 3u);
+        assert(injected.report.cleanup_call_regions_pending == 1u);
         assert(injected.report.cleanup_modules == 0u);
         assert(injected.report.cleanup_modules_pending ==
                injected.report.module_count);
-        /* A cleanup failure is not a different execution. */
+        /* A cleanup failure is not a different guest execution, but it is a
+         * failed gate: callers must not accept a run that leaked an owner. */
         assert(injected.report.stop == control.report.stop);
         assert(injected.report.retired == control.report.retired);
-        assert(injected.status == control.status);
+        assert(control.status == PW_ERR_UNSUPPORTED);
+        assert(injected.status == PW_ERR_VM);
+        assert(injected.report.status == PW_ERR_VM);
     }
     return 0;
 }
