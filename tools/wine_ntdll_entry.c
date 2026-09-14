@@ -484,6 +484,12 @@ int main(int argc, char **argv)
     const char *entry_symbol = argument_value(argc, argv, "--entry-symbol",
                                               "NtClose");
     const char *root = argument_value(argc, argv, "--root", "kernelbase.dll");
+    /* The application namespace: the directory a Windows loader searches first.
+     * Defaults to the runtime directory, which is what the ntdll control wants;
+     * an application fixture lives elsewhere and is reached through
+     * PW_FILE_APPLICATION only. */
+    const char *application = argument_value(argc, argv, "--application",
+                                             runtime);
     const char *dlls = argument_value(argc, argv, "--modules",
                                       "ntdll.dll,kernelbase.dll");
     int status;
@@ -491,10 +497,11 @@ int main(int argc, char **argv)
     if (!runtime) {
         fprintf(stderr, "usage: wine_ntdll_entry [--runtime lib/i386-windows] "
                         "[--entry-module ntdll.dll] [--entry-symbol NtClose] "
-                        "[--root kernelbase.dll] [--budget N]\n");
+                        "[--root kernelbase.dll] [--application DIR] "
+                        "[--root-application 0|1] [--budget N]\n");
         return 2;
     }
-    if (pw_file_posix_init(&files, runtime) != PW_OK ||
+    if (pw_file_posix_init(&files, application) != PW_OK ||
         pw_file_posix_set_runtime_directory(&files, runtime) != PW_OK ||
         pw_file_posix_provider(&files, &provider) != PW_OK ||
         pw_vm_posix_backend(&vm) != PW_OK) {
@@ -504,6 +511,8 @@ int main(int argc, char **argv)
     memset(&config, 0, sizeof(config));
     pw_wine_runner_init(&gate_runner);
     config.runner = &gate_runner;
+    config.root_application =
+        (uint8_t)(argument_number(argc, argv, "--root-application", 0u) != 0u);
     config.provider = &provider;
     config.backend = &vm;
     {

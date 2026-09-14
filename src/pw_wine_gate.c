@@ -1029,7 +1029,8 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             const PwFileNamespace space =
                 (report->module_count == 1u && config->root_application)
                     ? PW_FILE_APPLICATION
-                    : PW_FILE_RUNTIME;
+                    : (pw_module_is_system(record->name) ? PW_FILE_RUNTIME
+                                                         : PW_FILE_APPLICATION);
 
             if (hash_module(config->provider, record->name, record, space) !=
                 PW_OK)

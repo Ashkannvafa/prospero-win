@@ -607,10 +607,15 @@ def main() -> int:
                         help="directory to write the sample chain into")
     parser.add_argument("--i386", action="store_true",
                         help="emit PE32/i386 instead of PE32+/amd64")
+    parser.add_argument("--application", action="store_true",
+                        help="emit the tranche-2 application diamond "
+                             "(app.exe plus two DLLs) instead of the sample "
+                             "chain")
     arguments = parser.parse_args()
 
     arguments.out_dir.mkdir(parents=True, exist_ok=True)
-    written = sample_chain(pe32plus=not arguments.i386)
+    written = (application_diamond() if arguments.application
+               else sample_chain(pe32plus=not arguments.i386))
     for name, data in written.items():
         path = arguments.out_dir / name
         path.write_bytes(data)
