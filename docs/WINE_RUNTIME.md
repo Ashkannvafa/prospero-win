@@ -550,7 +550,15 @@ NtProtectVirtualMemory        (0x0050) a range this run mapped - an NT
                                        around the range so the guard can never
                                        allow a write the host would fault on,
                                        and a range this run did not map is
-                                       STATUS_INVALID_PARAMETER
+                                       STATUS_INVALID_PARAMETER. The protection
+                                       it reports as the old one is the *union*
+                                       of the regions covering the range's first
+                                       page - what the guard actually allowed -
+                                       because the loader relocates an image by
+                                       protecting pages and putting that value
+                                       back, and answering with the first region
+                                       it happened to find restored read-only
+                                       over a page that was writable
 NtMapViewOfSection            (0x0028) the one view a loader maps: the
                                        section placed at its preferred base
                                        when this run can put it there and
@@ -559,9 +567,19 @@ NtMapViewOfSection            (0x0028) the one view a loader maps: the
                                        where the image's own section table says
                                        they belong, the protections the section
                                        table implies, and the whole view
-                                       declared to the guest - nothing is
-                                       relocated here, because a SEC_IMAGE view
-                                       is the image as the file holds it
+                                       declared to the guest as three regions -
+                                       the image readable, the union of its
+                                       executable sections executable and the
+                                       union of its writable sections writable,
+                                       which is how the loader's own module
+                                       graph is declared and what the guard's
+                                       union rule makes exact: the guest jumps
+                                       into a view it mapped itself (kernelbase's
+                                       entry points are the first such jump) and
+                                       writes into that image's data (the TLS
+                                       slot index). Nothing is relocated here,
+                                       because a SEC_IMAGE view is the image as
+                                       the file holds it
 NtCreateSection               (0x004a) an unnamed SEC_IMAGE section over an
                                        open file handle, described from the
                                        file's own headers; the section keeps
@@ -629,6 +647,25 @@ NtAreMappedFilesTheSame       (0x0072) two guest addresses, answered from the
                                        refused rather than guessed at, because
                                        the rest of the address space is not
                                        modelled here
+NtGetNextThread               (0x00a0) the next thread of this run's own list,
+                                       which holds the one thread the run
+                                       started: a handle to it, and
+                                       STATUS_NO_MORE_ENTRIES with a null
+                                       handle at the end. A handle this run did
+                                       not hand out, another process, an
+                                       attribute or a flag it cannot honour,
+                                       and an access it cannot grant are each
+                                       refused with their own status
+NtQueryInformationThread      (0x0025) ThreadBasicInformation only:
+                                       TebBaseAddress is the TEB this run
+                                       published (the one the guest runs on
+                                       through FS), ClientId is the pair this
+                                       run names for itself, and the exit
+                                       status of a thread that has not exited
+                                       is STATUS_PENDING. Another class is
+                                       refused, and a buffer shorter than the
+                                       structure is reported before anything is
+                                       written
 NtTerminateProcess            (0x002c) the current process only; the run stops
                                        with a classified stop instead of
                                        pretending a terminated process runs on

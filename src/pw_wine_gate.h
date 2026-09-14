@@ -410,6 +410,13 @@ typedef struct PwWineGateReport {
      * how many of those did not describe a file view this run owns. */
     uint64_t address_comparisons;
     uint64_t address_comparison_refusals;
+    /* The run's own thread list: how many times the loader asked for the next
+     * thread, how many handles that handed out, how many ThreadBasicInformation
+     * answers were given, and how many thread questions were refused. */
+    uint64_t thread_enumerations;
+    uint64_t thread_handles;
+    uint64_t thread_queries;
+    uint64_t thread_refusals;
     uint64_t object_opens;
     uint64_t object_refusals;
     uint32_t objects_configured;

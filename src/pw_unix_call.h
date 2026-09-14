@@ -160,6 +160,9 @@ enum {
     PW_NT_DLL_NOT_FOUND = 0xc0000135u,
     PW_NT_OBJECT_NAME_INVALID = 0xc0000033u,
     PW_NT_BUFFER_OVERFLOW = 0x80000005u,
+    /* What Wine's server returns when a thread enumeration reaches the end of
+     * its list (server/thread.c:2329 get_next_thread). */
+    PW_NT_NO_MORE_ENTRIES = 0x8000001au,
 };
 
 #endif

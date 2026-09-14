@@ -43,6 +43,7 @@ enum PwNtHandleKind {
     PW_NT_HANDLE_KEY = 3,
     PW_NT_HANDLE_OBJECT_DIRECTORY = 4,
     PW_NT_HANDLE_SECTION = 5,
+    PW_NT_HANDLE_THREAD = 6,
 };
 
 /* What a handle names. The token belongs to whichever service opened it. */

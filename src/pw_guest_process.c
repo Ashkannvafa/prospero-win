@@ -277,6 +277,19 @@ int pw_guest_process_create(PwGuestProcess *process,
         memcpy(teb + 0x18u, &self, 4u);                 /* Self */
         memcpy(teb + 0x2cu, &thread_local_storage, 4u); /* no TLS modules */
         memcpy(teb + 0x30u, &peb, 4u);                  /* PEB */
+        /*
+         * The thread names itself here, and the run answers the same pair
+         * wherever it is asked. The loader reads ClientId when it walks its
+         * own thread list, and this run models exactly one thread: the one it
+         * started.
+         */
+        {
+            const uint32_t process_id = PW_GUEST_PROCESS_ID;
+            const uint32_t thread_id = PW_GUEST_THREAD_ID;
+
+            memcpy(teb + PW_GUEST_PROCESS_TEB_CLIENT_ID, &process_id, 4u);
+            memcpy(teb + PW_GUEST_PROCESS_TEB_CLIENT_ID + 4u, &thread_id, 4u);
+        }
         memcpy(teb + PW_GUEST_PROCESS_TEB_ACTIVATION_POINTER,
                &activation_stack, 4u);                  /* ActivationContextStackPointer */
         if (dispatcher != 0u)

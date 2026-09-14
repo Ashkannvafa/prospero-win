@@ -23,6 +23,7 @@
 #include "pw_nt_handle.h"
 #include "pw_wine_gate.h"
 #include "pw_wine_section.h"
+#include "pw_wine_thread.h"
 #include "pe_image.h"
 
 /*
@@ -73,6 +74,13 @@ typedef struct PwWineCallContext {
      * benefit (0). Only the first kind counts against the live byte limit. */
     uint8_t region_owned[PW_WINE_GATE_MAX_CALL_REGIONS];
     uint32_t region_count;
+    /*
+     * The threads this run models. One, for now: the thread the run started.
+     * The loader enumerates it while it gives every module with a TLS
+     * directory its slot, which is why the table exists at all.
+     */
+    PwWineThread threads[PW_WINE_THREAD_MAX];
+    uint32_t thread_count;
     PwNtHandleTable handles;
     /*
      * The image sections this run created. A section outlives the file handle

@@ -267,20 +267,39 @@ static int apply_declared_permissions(PwX86State *state, uint32_t low,
     return PW_OK;
 }
 
-/* The permissions [low, high) has now, which is what a protect must report
- * back as the old protection. The first declared region covering the span
- * answers for it; a span that crosses two regions with different permissions
- * reports the first, and the gate does not model the rest. */
+/*
+ * The permissions the range has now, which is what a protect must report back
+ * as the old protection.
+ *
+ * Windows answers with the protection of the range's *first page*, and this
+ * run's page protection is what the guard allows on it - which is the union of
+ * every declared region covering that page, not the first region that happens
+ * to be listed. The two differ, and the difference is measured: a view is
+ * declared as the whole image readable plus the union of its writable sections
+ * writable, so its .data page is covered twice, and answering with the first
+ * region reported that page as read-only. The loader protects pages while it
+ * relocates an image and puts the old protection back afterwards, so it then
+ * restored read-only over a page that was writable and the next store into it
+ * - the TLS index slot, right after the thread list is walked - was refused by
+ * the guard.
+ */
 static unsigned declared_permissions_at(const PwX86State *state, uint32_t low,
                                         uint32_t high)
 {
+    const uint64_t page_high =
+        (uint64_t)low + PW_WINE_SECTION_PAGE_BYTES;
+    const uint64_t first_page_high =
+        page_high < (uint64_t)high ? page_high : (uint64_t)high;
+    unsigned permissions = 0u;
+
     for (uint32_t index = 0u; index < state->memory_count; ++index) {
         const PwX86Memory region = state->memory[index];
 
-        if ((uint64_t)region.low <= low && (uint64_t)region.high >= high)
-            return region.permissions;
+        if ((uint64_t)region.low <= low &&
+            (uint64_t)region.high >= first_page_high)
+            permissions |= region.permissions;
     }
-    return 0u;
+    return permissions;
 }
 
 /*
@@ -612,6 +631,8 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
     uint32_t bytes = 0u;
     uint32_t writable_low = 0u;
     uint32_t writable_high = 0u;
+    uint32_t code_low = 0u;
+    uint32_t code_high = 0u;
     void *span_handle = NULL;
     uint64_t span_size = 0u;
     uint32_t read_bytes = 0u;
@@ -693,6 +714,23 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
                 writable_low = low;
             if (high > writable_high)
                 writable_high = high;
+        }
+        /*
+         * The executable union too: the guest jumps into the image it mapped
+         * itself once the loader has fixed it up - kernelbase's own entry
+         * points are the first such jump - and the dispatcher refuses to
+         * fetch an instruction from a page it was not told is code. Measured:
+         * with a view declared readable only, the run stopped as non-code at
+         * kernelbase's view.
+         */
+        if ((entry->characteristics & PE_SCN_MEM_EXECUTE) != 0u) {
+            const uint32_t low = entry->virtual_address;
+            const uint32_t high = low + (uint32_t)span;
+
+            if (code_low == 0u || low < code_low)
+                code_low = low;
+            if (high > code_high)
+                code_high = high;
         }
     }
     if (calls->region_count >= PW_WINE_GATE_MAX_CALL_REGIONS ||
@@ -820,11 +858,15 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
     }
     /*
      * The guest's view of the same mapping: the whole image is readable, and
-     * the union of the writable sections is writable - the rule the process
-     * graph's own modules are declared by. A page becomes writable for the
-     * guest when NtProtectVirtualMemory says so.
+     * the unions of its executable and writable sections carry those
+     * permissions - the same shape the process graph's own modules are
+     * declared by, and the union rule the guard applies: an access is allowed
+     * when any declared region covering it grants the permission, so three
+     * regions describe an image whatever its section count is. A page becomes
+     * writable, or stops being executable, when NtProtectVirtualMemory says
+     * so.
      */
-    if (state->memory_count + 2u > PW_X86_MEMORY_REGIONS) {
+    if (state->memory_count + 3u > PW_X86_MEMORY_REGIONS) {
         (void)backend->release(backend->context, &region);
         *status = PW_NT_INVALID_PARAMETER;
         calls->report->section_view_refusals++;
@@ -835,6 +877,13 @@ int pw_wine_section_map_view(PwWineCallContext *calls,
         .high = (uint64_t)base + bytes,
         .permissions = PW_X86_READ,
     };
+    if (code_low != 0u && code_low < code_high) {
+        state->memory[state->memory_count++] = (PwX86Memory){
+            .low = base + code_low,
+            .high = (uint64_t)base + code_high,
+            .permissions = PW_X86_READ | PW_X86_EXEC,
+        };
+    }
     if (writable_low != 0u && writable_low < writable_high) {
         state->memory[state->memory_count++] = (PwX86Memory){
             .low = base + writable_low,

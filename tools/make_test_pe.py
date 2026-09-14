@@ -389,7 +389,20 @@ def build_pe(spec: Spec) -> bytes:
 
     if spec.relocate_data_pointer:
         kind = RELOC_DIR64 if spec.pe32plus else RELOC_HIGHLOW
-        blob = _build_reloc_blob([(data_rva, kind)], spec.section_alignment)
+        targets = [(data_rva, kind)]
+        if spec.tls is not None:
+            # The TLS directory's own fields are virtual addresses, and the
+            # loader dereferences two of them: it *writes* the module's slot
+            # index through AddressOfIndex and reads the callback list through
+            # AddressOfCallBacks. An image that carries them without a
+            # relocation writes to the address the linker baked in even when
+            # the loader placed the image somewhere else - measured: with the
+            # application's a.dll mapped away from its preferred base, ntdll's
+            # store to AddressOfIndex landed outside every mapping this run
+            # owns and the run stopped on the guard's classified write fault.
+            targets.append((tls_rva + 8, kind))
+            targets.append((tls_rva + 12, kind))
+        blob = _build_reloc_blob(targets, spec.section_alignment)
         placed.append({
             "name": ".reloc",
             "characteristics": SCN_CNT_INITIALIZED_DATA | SCN_MEM_READ |

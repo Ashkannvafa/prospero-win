@@ -28,6 +28,16 @@ enum {
      * an i386 thread. */
     PW_GUEST_PROCESS_TEB_ACTIVATION_STACK = 0x184u,
     PW_GUEST_PROCESS_TEB_ACTIVATION_POINTER = 0x1a8u,
+    /*
+     * The ids this run publishes for itself, in the TEB's ClientId and in
+     * every answer that names them. A real process gets them from the server;
+     * this run has none, so it names its one process and its one thread here.
+     * Non-zero, because zero is "no thread" everywhere in NT.
+     */
+    PW_GUEST_PROCESS_ID = 1u,
+    PW_GUEST_THREAD_ID = 1u,
+    /* Where the i386 TEB keeps its ClientId: { UniqueProcess, UniqueThread }. */
+    PW_GUEST_PROCESS_TEB_CLIENT_ID = 0x20u,
 };
 
 typedef struct PwGuestProcessLayout {

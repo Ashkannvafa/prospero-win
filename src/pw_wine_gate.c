@@ -17,6 +17,7 @@
 #include "pw_wine_object.h"
 #include "pw_wine_query.h"
 #include "pw_wine_section.h"
+#include "pw_wine_thread.h"
 #include "pw_wine_registry.h"
 #include "pw_wine_runner.h"
 #include "../include/prospero_win_vm.h"
@@ -94,11 +95,27 @@ static int hash_module(const PwFileProvider *provider, const char *name,
     return PW_OK;
 }
 
-/* Executable source span for the DBT: only bytes of mapped modules. */
+/*
+ * Executable source span for the DBT.
+ *
+ * The bytes a block is translated from have to be bytes of a mapped *image*,
+ * and the span stops at the end of the executable section that holds the
+ * program counter: a block must not run on into a data page that happens to
+ * follow in the same mapping.
+ *
+ * Two inventories hold images here, and both are real. The module graph holds
+ * the images this gate mapped before the run, which is where execution starts
+ * (ntdll). The section views hold the images the *guest* mapped itself while
+ * it ran, and execution reaches those as soon as fixed-up code in one image
+ * calls into another: measured, a run that had mapped kernelbase through
+ * NtMapViewOfSection stopped as non-code at kernelbase's own entry point
+ * because this callback only knew about the first inventory.
+ */
 static int gate_source_view(void *opaque, uint32_t pc, const uint8_t **source,
                             size_t *bytes)
 {
-    const PwLoader *loader = opaque;
+    const PwWineCallContext *calls = opaque;
+    const PwLoader *loader = calls->loader;
 
     for (uint32_t index = 0; index < loader->module_count; ++index) {
         const PwModule *module = &loader->modules[index];
@@ -112,6 +129,31 @@ static int gate_source_view(void *opaque, uint32_t pc, const uint8_t **source,
             const uint64_t end = start + entry->mapped_bytes;
 
             if ((entry->protection & PW_PROT_EXEC) == 0u)
+                continue;
+            if ((uint64_t)pc < start || (uint64_t)pc >= end)
+                continue;
+            *source = (const uint8_t *)(uintptr_t)pc;
+            *bytes = (size_t)(end - pc);
+            return PW_OK;
+        }
+    }
+    for (uint32_t index = 0u; index < calls->section_count; ++index) {
+        const PwWineSection *section = &calls->sections[index];
+        const PeImage *image = &section->image;
+        const uint64_t view_high = (uint64_t)section->view_base +
+                                   section->view_bytes;
+
+        if (section->view_base == 0u || (uint64_t)pc < section->view_base ||
+            (uint64_t)pc >= view_high)
+            continue;
+        for (uint32_t entry = 0u; entry < image->section_count; ++entry) {
+            const PeSection *mapped = &image->sections[entry];
+            const uint64_t span = mapped->virtual_size > mapped->raw_size
+                ? mapped->virtual_size : mapped->raw_size;
+            const uint64_t start = section->view_base + mapped->virtual_address;
+            const uint64_t end = start + span;
+
+            if ((mapped->characteristics & PE_SCN_MEM_EXECUTE) == 0u)
                 continue;
             if ((uint64_t)pc < start || (uint64_t)pc >= end)
                 continue;
@@ -981,6 +1023,10 @@ static const PwNtHandler dispatch_table[] = {
       gate_nt_query_virtual_memory },
     { 0x0072u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_virtual_memory.c",
       gate_nt_are_mapped_files_the_same },
+    { 0x00a0u, { PW_NT_CLASS_NONE }, "tests/test_pw_wine_thread.c",
+      pw_wine_thread_next },
+    { 0x0025u, { 0u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_thread.c",
+      pw_wine_thread_query },
     { 0x0039u, { 0x0009009cu, PW_NT_CLASS_NONE },
       "tests/test_pw_wine_file_service.c", pw_wine_file_fs_control },
     { 0x004au, { 0x01000000u, PW_NT_CLASS_NONE },
@@ -1623,6 +1669,18 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         report->stack_bytes = process.layout.stack_bytes;
         report->teb_base = process.layout.teb_base;
         report->teb_bytes = process.layout.teb_bytes;
+        /*
+         * The one thread this run models: the one it is executing on, running
+         * on the TEB the guest process unit just published. The loader walks
+         * this list while it gives every module with a TLS directory its slot
+         * (alloc_tls_slot, dlls/ntdll/loader.c:1331), so the run has to be
+         * able to name at least the thread it is running on.
+         */
+        memset(calls.threads, 0, sizeof(calls.threads));
+        calls.threads[0].id = PW_GUEST_THREAD_ID;
+        calls.threads[0].teb_base = process.layout.teb_base;
+        calls.threads[0].mine = 1u;
+        calls.thread_count = 1u;
         report->peb_base = process.layout.peb_base;
         report->parameters_base = process.layout.parameters_base;
         report->parameters_length = process.layout.parameters_length;
@@ -1739,14 +1797,6 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
         memcpy((void *)(uintptr_t)state.gpr[4], &token, 4u);
     }
 
-    stage = "engine";
-    status = pw_x86_engine_init(&engine, pw_guest_vm_backend(&guest_vm), runner->cache,
-                                PW_WINE_GATE_CACHE_ENTRIES,
-                                PW_WINE_GATE_ARENA_BYTES, 1u,
-                                gate_source_view, &runner->loader);
-    if (status != PW_OK)
-        goto done;
-    have_engine = 1;
     report->files_configured = config->files != NULL;
     report->registry_configured = config->registry != NULL;
     report->objects_configured = config->objects != NULL;
@@ -1755,6 +1805,20 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
     calls.report = report;
     calls.root = pw_loader_module(&runner->loader, 0u);
     calls.loader = &runner->loader;
+    /*
+     * The engine's source view is the run context, because the bytes a block
+     * can be translated from are bytes of a mapped image - and there are two
+     * inventories of those: the module graph this gate mapped before the run
+     * and the section views the guest maps during it.
+     */
+    stage = "engine";
+    status = pw_x86_engine_init(&engine, pw_guest_vm_backend(&guest_vm), runner->cache,
+                                PW_WINE_GATE_CACHE_ENTRIES,
+                                PW_WINE_GATE_ARENA_BYTES, 1u,
+                                gate_source_view, &calls);
+    if (status != PW_OK)
+        goto done;
+    have_engine = 1;
     calls.heap_cursor = PW_WINE_GATE_HEAP_BASE;
     calls.limit = config->allocation_limit != 0u ? config->allocation_limit
                                                  : PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT;
