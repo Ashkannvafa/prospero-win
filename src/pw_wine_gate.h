@@ -364,6 +364,8 @@ typedef struct PwWineGateReport {
     uint64_t section_refusals;
     uint64_t section_views;         /* views this run mapped from a section */
     uint64_t section_view_refusals;
+    uint64_t section_protects;      /* protections this run installed */
+    uint64_t section_protect_refusals;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t key_opens;

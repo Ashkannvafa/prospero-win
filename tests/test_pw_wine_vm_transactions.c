@@ -178,16 +178,13 @@ static void emit_release(uint32_t status_rva)
  * run observed and the two output variables as the guest can still read them:
  * a call that failed must not have written either of them.
  */
+/* The stop carries exactly the two arguments the unhandled call takes, so the
+ * transcript after the run ends holds the status the last call answered with
+ * and the size the guest read back out of its own slot. */
 static void emit_stop_with(uint32_t status_rva)
 {
-    emit_push_imm8(0x00);
-    emit_push_imm8(0x00);
-    emit_push_imm8(0x00);
     emit_byte(0xa1);
     emit_absolute(SIZE_SLOT_RVA);
-    emit_byte(0x50);
-    emit_byte(0xa1);
-    emit_absolute(BASE_SLOT_RVA);
     emit_byte(0x50);
     emit_byte(0xa1);
     emit_absolute(status_rva);
@@ -511,8 +508,7 @@ int main(void)
 
             assert(last->id == PW_TEST_UNHANDLED_CALL_ID);
             assert(last->args[0] == PW_NT_CONFLICTING_ADDRESSES);
-            assert(last->args[1] == 0u);
-            assert(last->args[2] == ALLOCATION_SIZE);
+            assert(last->args[1] == ALLOCATION_SIZE);
         }
     }
     /* The backend's commit fails: the reservation is given straight back. */
@@ -540,8 +536,7 @@ int main(void)
                 injected.report.calls.records - 1u];
 
             assert(last->args[0] == PW_NT_INVALID_PARAMETER);
-            assert(last->args[1] == 0u);
-            assert(last->args[2] == ALLOCATION_SIZE);
+            assert(last->args[1] == ALLOCATION_SIZE);
         }
     }
     /* The backend's release fails: the block stays live and accounted for. */
@@ -562,15 +557,14 @@ int main(void)
         assert(injected.heap_release_ok == 1u);       /* cleanup's, later */
         assert(control.heap_release_failed == 0u && control.heap_release_ok == 1u);
         assert(injected.heap_reserve_ok - injected.heap_release_ok == 0);
-        /* The failed call did not write the base back: the guest wrote zero
-         * into *RegionSize itself and the allocation's base is still there. */
+        /* The failed call wrote neither output: the guest still reads the
+         * size it wrote itself (zero) out of its own slot. */
         {
             const PwUnixCallRecord *last = &injected.report.calls.sequence[
                 injected.report.calls.records - 1u];
 
             assert(last->args[0] == PW_NT_INVALID_PARAMETER);
-            assert(last->args[1] != 0u);
-            assert(last->args[2] == 0u);
+            assert(last->args[1] == 0u);
         }
     }
     /* NT-region budget: the process-parameters block the run did not allocate

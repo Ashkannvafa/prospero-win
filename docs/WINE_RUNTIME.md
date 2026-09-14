@@ -514,6 +514,17 @@ NtReadFile                    (0x0006) handle, IO status, buffer, length,
                                        offset; a directory handle is refused
 NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
                                        and Directory for a directory object)
+NtProtectVirtualMemory        (0x0050) a range this run mapped - an NT
+                                       allocation or a section view - protected
+                                       to PAGE_NOACCESS, READONLY, READWRITE,
+                                       EXECUTE, EXECUTE_READ, EXECUTE_READWRITE
+                                       or their write-copy forms; the host
+                                       mapping and the dispatcher's view change
+                                       together, the declared regions are split
+                                       around the range so the guard can never
+                                       allow a write the host would fault on,
+                                       and a range this run did not map is
+                                       STATUS_INVALID_PARAMETER
 NtMapViewOfSection            (0x0028) the one view a loader maps: the
                                        section placed at its preferred base
                                        when this run can put it there and

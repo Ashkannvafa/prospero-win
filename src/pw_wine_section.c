@@ -170,6 +170,237 @@ int pw_wine_section_create(PwWineCallContext *calls,
 }
 
 /*
+ * The win32 protections and the dispatcher's permission bits say the same
+ * thing about a page, so one conversion each way keeps the two in step: the
+ * host mapping gets the protection the guest asked for, and the declared
+ * region gets the permissions a later NtProtectVirtualMemory has to report
+ * back as the old protection.
+ */
+static unsigned permissions_from_protect(uint32_t protect)
+{
+    switch (protect & 0xffu) {
+    case 0x01u: return 0u;                                      /* NOACCESS */
+    case 0x02u: return PW_X86_READ;                             /* READONLY */
+    case 0x04u: case 0x08u:                                     /* READWRITE, WRITECOPY */
+        return PW_X86_READ | PW_X86_WRITE;
+    case 0x10u: case 0x20u:                                     /* EXECUTE, EXECUTE_READ */
+        return PW_X86_READ | PW_X86_EXEC;
+    case 0x40u: case 0x80u:                                     /* EXECUTE_READWRITE, _WRITECOPY */
+        return PW_X86_READ | PW_X86_WRITE | PW_X86_EXEC;
+    default: return 0xffffffffu;
+    }
+}
+
+static uint32_t protect_from_permissions(unsigned permissions)
+{
+    const int writable = (permissions & PW_X86_WRITE) != 0u;
+    const int executable = (permissions & PW_X86_EXEC) != 0u;
+
+    if ((permissions & (PW_X86_READ | PW_X86_WRITE | PW_X86_EXEC)) == 0u)
+        return 0x01u;
+    if (executable)
+        return writable ? 0x40u : 0x20u;
+    return writable ? 0x04u : 0x02u;
+}
+
+static unsigned host_protection_from_permissions(unsigned permissions)
+{
+    unsigned protection = 0u;
+
+    if ((permissions & PW_X86_READ) != 0u)
+        protection |= PW_PROT_READ;
+    if ((permissions & PW_X86_WRITE) != 0u)
+        protection |= PW_PROT_WRITE;
+    if ((permissions & PW_X86_EXEC) != 0u)
+        protection |= PW_PROT_EXEC;
+    return protection;
+}
+
+/*
+ * Narrows the declared regions so [low, high) carries exactly the permissions
+ * the guest just asked for, with the parts before and after it keeping theirs.
+ * The guest must never be able to write a page the host still maps read-only:
+ * that is a host fault rather than a classified stop, so the two are narrowed
+ * together and a table that cannot hold the split refuses the call.
+ */
+static int apply_declared_permissions(PwX86State *state, uint32_t low,
+                                      uint32_t high, unsigned permissions)
+{
+    PwX86Memory out[PW_X86_MEMORY_REGIONS];
+    uint32_t count = 0u;
+
+    for (uint32_t index = 0u; index < state->memory_count; ++index) {
+        const PwX86Memory region = state->memory[index];
+        const uint64_t region_high = region.high;
+        uint32_t span_low;
+        uint64_t span_high;
+
+        if (region_high <= low || region.low >= high) {
+            if (count == PW_X86_MEMORY_REGIONS)
+                return PW_ERR_LIMIT;
+            out[count++] = region;
+            continue;
+        }
+        if (region.low < low) {
+            if (count == PW_X86_MEMORY_REGIONS)
+                return PW_ERR_LIMIT;
+            out[count++] = (PwX86Memory){ .low = region.low, .high = low,
+                                          .permissions = region.permissions };
+        }
+        span_low = region.low > low ? region.low : low;
+        span_high = region_high < high ? region_high : high;
+        if (count == PW_X86_MEMORY_REGIONS)
+            return PW_ERR_LIMIT;
+        out[count++] = (PwX86Memory){ .low = span_low, .high = span_high,
+                                      .permissions = permissions };
+        if (region_high > high) {
+            if (count == PW_X86_MEMORY_REGIONS)
+                return PW_ERR_LIMIT;
+            out[count++] = (PwX86Memory){ .low = high, .high = region_high,
+                                          .permissions = region.permissions };
+        }
+    }
+    memcpy(state->memory, out, count * sizeof(out[0]));
+    state->memory_count = count;
+    return PW_OK;
+}
+
+/* The permissions [low, high) has now, which is what a protect must report
+ * back as the old protection. The first declared region covering the span
+ * answers for it; a span that crosses two regions with different permissions
+ * reports the first, and the gate does not model the rest. */
+static unsigned declared_permissions_at(const PwX86State *state, uint32_t low,
+                                        uint32_t high)
+{
+    for (uint32_t index = 0u; index < state->memory_count; ++index) {
+        const PwX86Memory region = state->memory[index];
+
+        if ((uint64_t)region.low <= low && (uint64_t)region.high >= high)
+            return region.permissions;
+    }
+    return 0u;
+}
+
+/*
+ * NtProtectVirtualMemory for the ranges this run has mapped - the NT
+ * allocations and the section views it owns - which is what a loader changes
+ * when it relocates the image it just mapped: it makes the pages writable,
+ * writes, and puts the original protection back.
+ *
+ * The change is applied to the host mapping and to the dispatcher's view of it
+ * together, and the declared regions are split around the range so the guard
+ * never allows a write the host would fault on. A range this run did not map
+ * is answered with STATUS_INVALID_PARAMETER rather than accepted and ignored,
+ * and a protection this bridge cannot install (a guard or no-cache modifier)
+ * is STATUS_NOT_SUPPORTED.
+ */
+int pw_wine_section_protect(PwWineCallContext *calls,
+                            const PwUnixCallFrame *frame,
+                            PwUnixCallAccess guest, void *context,
+                            uint32_t *status, uint32_t *argument_index)
+{
+    const uint32_t process_handle = frame->args[0];
+    const uint32_t base_pointer = frame->args[1];
+    const uint32_t size_pointer = frame->args[2];
+    const uint32_t new_protect = frame->args[3];
+    const uint32_t old_pointer = frame->args[4];
+    PwX86State *state = context;
+    const PwVmBackend *backend = &calls->vm->base;
+    uint32_t base = 0u;
+    uint32_t size = 0u;
+    uint32_t low = 0u;
+    uint32_t high = 0u;
+    uint32_t written_base = 0u;
+    uint32_t written_size = 0u;
+    uint32_t old_protect = 0u;
+    unsigned permissions;
+    unsigned previous;
+    const PwVmRegion *region = NULL;
+    uint64_t region_base = 0u;
+    uint64_t region_high = 0u;
+    int result;
+
+    if (process_handle != 0xffffffffu) {
+        *status = PW_NT_INVALID_HANDLE;
+        return PW_OK;
+    }
+    if (base_pointer == 0u || size_pointer == 0u ||
+        guest(context, base_pointer, &base, 4u, 0) != PW_OK ||
+        guest(context, size_pointer, &size, 4u, 0) != PW_OK) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (size == 0u) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->section_protect_refusals++;
+        return PW_OK;
+    }
+    permissions = permissions_from_protect(new_protect);
+    if (permissions == 0xffffffffu) {
+        *status = PW_NT_NOT_SUPPORTED;
+        calls->report->section_protect_refusals++;
+        return PW_OK;
+    }
+    low = base & ~(PW_WINE_SECTION_PAGE_BYTES - 1u);
+    high = (uint32_t)(((uint64_t)base + size + PW_WINE_SECTION_PAGE_BYTES - 1u) &
+                      ~(uint64_t)(PW_WINE_SECTION_PAGE_BYTES - 1u));
+    if (high <= low) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->section_protect_refusals++;
+        return PW_OK;
+    }
+    for (uint32_t index = 0u; index < calls->region_count; ++index) {
+        const uint64_t candidate = (uint64_t)(uintptr_t)
+            calls->regions[index].exec_base;
+
+        if (candidate <= low &&
+            candidate + calls->regions[index].bytes >= high) {
+            region = &calls->regions[index];
+            region_base = candidate;
+            region_high = candidate + calls->regions[index].bytes;
+            break;
+        }
+    }
+    if (region == NULL) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->section_protect_refusals++;
+        return PW_OK;
+    }
+    previous = declared_permissions_at(state, low, high);
+    result = apply_declared_permissions(state, low, high, permissions);
+    if (result != PW_OK) {
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->section_protect_refusals++;
+        return PW_OK;
+    }
+    if (backend->protect(backend->context, (PwVmRegion *)region,
+                         (size_t)(low - region_base), (size_t)(high - low),
+                         host_protection_from_permissions(permissions))
+        != PW_OK) {
+        (void) apply_declared_permissions(state, low, high, previous);
+        *status = PW_NT_INVALID_PARAMETER;
+        calls->report->section_protect_refusals++;
+        return PW_OK;
+    }
+    written_base = low;
+    written_size = high - low;
+    old_protect = protect_from_permissions(previous);
+    if (guest(context, base_pointer, &written_base, 4u, 1) != PW_OK ||
+        guest(context, size_pointer, &written_size, 4u, 1) != PW_OK) {
+        *argument_index = 2u;
+        return PW_ERR_MALFORMED;
+    }
+    if (old_pointer != 0u &&
+        guest(context, old_pointer, &old_protect, 4u, 1) != PW_OK) {
+        *argument_index = 5u;
+        return PW_ERR_MALFORMED;
+    }
+    (void)region_high;
+    calls->report->section_protects++;
+    *status = PW_NT_SUCCESS;
+    return PW_OK;
+}
+/*
  * NtQuerySection. SectionImageInformation is the class the loader asks for and
  * the one is_valid_binary reads: TransferAddress is the image's own base plus
  * its entry point, exactly as wine fills it for a section that is not mapped

@@ -51,10 +51,18 @@ enum {
     VIEW_SIZE_RVA = DATA_RVA + 0x248,       /* the view size it reported */
     MAPPED_HEAD_RVA = DATA_RVA + 0x24C,     /* the image's first bytes, read at
                                              * the base the gate returned */
-    DIRECTORY_RVA = DATA_RVA + 0x250,       /* UNICODE_STRING of a directory */
-    DIRECTORY_TEXT_RVA = DATA_RVA + 0x260,
-    DIRECTORY_ATTRS_RVA = DATA_RVA + 0x2A0,
-    DIRECTORY_HANDLE_RVA = DATA_RVA + 0x2C0,
+    PROTECT_BASE_RVA = DATA_RVA + 0x250,    /* the range NtProtectVirtualMemory
+                                             * is called on */
+    PROTECT_SIZE_RVA = DATA_RVA + 0x254,
+    OLD_PROTECT_RVA = DATA_RVA + 0x258,     /* what it reports back */
+    OLD_FIRST_RVA = DATA_RVA + 0x25C,       /* the first one, kept for the
+                                             * transcript */
+    MARKER_RVA = DATA_RVA + 0x260,          /* what the guest wrote and read */
+    PROTECT_STATUS_RVA = DATA_RVA + 0x400,  /* the four protect/query statuses */
+    DIRECTORY_RVA = DATA_RVA + 0x280,       /* UNICODE_STRING of a directory */
+    DIRECTORY_TEXT_RVA = DATA_RVA + 0x290,
+    DIRECTORY_ATTRS_RVA = DATA_RVA + 0x2D0,
+    DIRECTORY_HANDLE_RVA = DATA_RVA + 0x2F0,
     THUNK_RVA = TEXT_RVA + 0x300,
     STUB_OPEN_RVA = TEXT_RVA + 0x310,       /* NtOpenFile, 0x33 */
     STUB_CREATE_RVA = TEXT_RVA + 0x320,     /* NtCreateSection, 0x4a */
@@ -62,6 +70,7 @@ enum {
     STUB_CLOSE_RVA = TEXT_RVA + 0x340,      /* NtClose, 0x0f */
     STUB_ATTRS_RVA = TEXT_RVA + 0x350,      /* NtQueryAttributesFile: none */
     STUB_MAP_RVA = TEXT_RVA + 0x360,        /* NtMapViewOfSection, 0x28 */
+    STUB_PROTECT_RVA = TEXT_RVA + 0x370,    /* NtProtectVirtualMemory, 0x50 */
     CALLER_RVA = TEXT_RVA,
     /* The shapes and classes the guest asks with. */
     SECTION_IMAGE_INFORMATION = 1u,
@@ -73,6 +82,11 @@ enum {
     SEC_IMAGE = 0x01000000u,
     SEC_COMMIT = 0x08000000u,
     PAGE_EXECUTE_READ = 0x20u,
+    PAGE_READWRITE = 0x04u,
+    PAGE_READONLY = 0x02u,
+    VIEW_PAGE_BYTES = 0x1000u,
+    MARKER_WRITTEN = 0x5a5a5a5au,
+    MARKER_REFUSED = 0x11111111u,
     SECTION_ALL_ACCESS = 0x000f000du,
     FILE_READ_DATA = 0x00100000u,
     CURRENTLY_OPEN_FILE = 0x100u,           /* not a handle this run issued */
@@ -159,6 +173,21 @@ static void emit_store_eax(uint32_t rva)
 static void emit_push_eax(void)
 {
     emit_byte(0x50);
+}
+
+/* "mov dword [abs], imm32" */
+static void emit_store_imm32(uint32_t rva, uint32_t value)
+{
+    emit_byte(0xc7); emit_byte(0x05);
+    emit_absolute(rva);
+    emit_u32(value);
+}
+
+/* "add eax, imm32" */
+static void emit_add_eax_imm32(uint32_t value)
+{
+    emit_byte(0x05);
+    emit_u32(value);
 }
 
 static void emit_stub(uint32_t index, uint32_t id, uint16_t arg_bytes)
@@ -337,9 +366,10 @@ static size_t build_module(void)
     emit_load_eax(VIEW_BASE_RVA);
     emit_byte(0x8b); emit_byte(0x00);         /* mov eax, [eax] */
     emit_store_eax(MAPPED_HEAD_RVA);
-    /* The view size the guest read, as the class of one more query. */
-    emit_push_imm8(0x00);
-    emit_push_imm32(IMAGE_INFORMATION_BYTES);
+    /* The view size the guest read, and the image's own first bytes read at the
+     * base the gate returned, on a query refused before it looks at either. */
+    emit_load_eax(MAPPED_HEAD_RVA);
+    emit_push_eax();
     emit_load_eax(VIEW_SIZE_RVA);
     emit_push_eax();
     emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
@@ -347,15 +377,66 @@ static size_t build_module(void)
     emit_push_eax();
     emit_call(STUB_QUERY_RVA);
     emit_store_eax(STATUS_RVA + 52u);
-    /* And end with two values the loader reads: the image's own bytes and the
-     * base they were mapped at, on a call this bridge has no handler for, so
-     * the run stops with them on the record. */
+    /*
+     * The protection a loader changes while it relocates: the range it mapped
+     * goes writable, the guest writes through it and reads its own write back,
+     * and then the original protection goes on again. The two old protections
+     * the gate reports are carried out by later calls, and the run ends on the
+     * write that must now be refused - the page is read-only again, on the host
+     * mapping and in the dispatcher's view of it at once.
+     */
+    emit_store_imm32(PROTECT_SIZE_RVA, VIEW_PAGE_BYTES);
     emit_load_eax(VIEW_BASE_RVA);
-    emit_push_eax();                          /* second argument */
-    emit_load_eax(MAPPED_HEAD_RVA);
-    emit_push_eax();                          /* first argument */
-    emit_call(STUB_ATTRS_RVA);
-    emit_store_eax(STATUS_RVA + 56u);
+    emit_add_eax_imm32(VIEW_PAGE_BYTES);
+    emit_store_eax(PROTECT_BASE_RVA);
+    emit_push_absolute(OLD_PROTECT_RVA);
+    emit_push_imm8(PAGE_READWRITE);
+    emit_push_absolute(PROTECT_SIZE_RVA);
+    emit_push_absolute(PROTECT_BASE_RVA);
+    emit_push_imm8(0xff);
+    emit_call(STUB_PROTECT_RVA);
+    emit_store_eax(PROTECT_STATUS_RVA + 0u);
+    emit_load_eax(OLD_PROTECT_RVA);
+    emit_store_eax(OLD_FIRST_RVA);
+    /* Through the new writable page: write, then read the same place back. */
+    emit_load_eax(PROTECT_BASE_RVA);
+    emit_byte(0xc7); emit_byte(0x00);             /* mov dword [eax], imm32 */
+    emit_u32(MARKER_WRITTEN);
+    emit_byte(0x8b); emit_byte(0x00);             /* mov eax, [eax] */
+    emit_store_eax(MARKER_RVA);
+    /* Put the loader's protection back. */
+    emit_push_absolute(OLD_PROTECT_RVA);
+    emit_push_imm8(PAGE_EXECUTE_READ);
+    emit_push_absolute(PROTECT_SIZE_RVA);
+    emit_push_absolute(PROTECT_BASE_RVA);
+    emit_push_imm8(0xff);
+    emit_call(STUB_PROTECT_RVA);
+    emit_store_eax(PROTECT_STATUS_RVA + 4u);
+    /* Carry the marker and the first old protection out on a refused class. */
+    emit_load_eax(OLD_FIRST_RVA);
+    emit_push_eax();                              /* length argument */
+    emit_load_eax(MARKER_RVA);
+    emit_push_eax();                              /* information pointer */
+    emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
+    emit_load_eax(SECTION_HANDLE_RVA);
+    emit_push_eax();
+    emit_call(STUB_QUERY_RVA);
+    emit_store_eax(PROTECT_STATUS_RVA + 8u);
+    /* And the second old protection, which must say the first one took, with
+     * the base the view was mapped at beside it. */
+    emit_load_eax(VIEW_BASE_RVA);
+    emit_push_eax();
+    emit_load_eax(OLD_PROTECT_RVA);
+    emit_push_eax();
+    emit_push_imm8((uint8_t)UNKNOWN_INFORMATION_CLASS);
+    emit_load_eax(SECTION_HANDLE_RVA);
+    emit_push_eax();
+    emit_call(STUB_QUERY_RVA);
+    emit_store_eax(PROTECT_STATUS_RVA + 12u);
+    /* The write that must now be refused: the page is read-only again. */
+    emit_load_eax(PROTECT_BASE_RVA);
+    emit_byte(0xc7); emit_byte(0x00);             /* mov dword [eax], imm32 */
+    emit_u32(MARKER_REFUSED);
 
     while (text_bytes < THUNK_RVA - TEXT_RVA)
         emit_byte(0x90);
@@ -367,6 +448,7 @@ static size_t build_module(void)
     emit_stub(STUB_CLOSE_RVA, 0x000fu, 4u);     /* NtClose */
     emit_stub(STUB_ATTRS_RVA, 0x003du, 8u);     /* NtQueryAttributesFile */
     emit_stub(STUB_MAP_RVA, 0x0028u, 40u);      /* NtMapViewOfSection */
+    emit_stub(STUB_PROTECT_RVA, 0x0050u, 20u);  /* NtProtectVirtualMemory */
     emit_byte(0xc3);
 
     emit_data_reloc(NAME_RVA + 4u);
@@ -550,7 +632,9 @@ int main(void)
      * mapped once, with no refusal. */
     assert(report.section_creates == 1u);
     assert(report.section_queries == 4u);
-    assert(report.section_refusals == 4u);
+    /* The short buffer, the unknown class, the data section, and the three
+     * unknown-class queries the guest uses to carry values out. */
+    assert(report.section_refusals == 6u);
     assert(report.section_views == 1u);
     assert(report.section_view_refusals == 0u);
     assert(report.calls.handled >= 10u);
@@ -587,23 +671,48 @@ int main(void)
     assert(record_with(&report, 11u)->args[0] == expected.size_of_image);
 
     /* The view was mapped, and the guest read the image's own first bytes at
-     * the base the gate returned. */
+     * the base the gate returned: the query refused before it looked at them
+     * carries both, so the mapped image is the file. */
     assert(record_with(&report, 12u)->id == 0x0028u);
     assert(record_with(&report, 12u)->status == PW_NT_SUCCESS);
-    assert(record_with(&report, 14u)->id == 0x003du);
-    assert(record_with(&report, 14u)->outcome == PW_UNIX_CALL_UNIMPLEMENTED);
+    assert(record_with(&report, 13u)->id == 0x0051u);
+    assert(record_with(&report, 13u)->status == PW_NT_INVALID_INFO_CLASS);
+    assert(record_with(&report, 13u)->args[2] == expected.size_of_image);
     {
         uint32_t head = 0u;
 
         memcpy(&head, image, 4u);
-        assert(record_with(&report, 14u)->args[0] == head);
-        assert(record_with(&report, 14u)->args[1] != 0u);
-        assert((record_with(&report, 14u)->args[1] & 0xfffu) == 0u);
+        assert(record_with(&report, 13u)->args[3] == head);
     }
-    /* The view size the guest read back is the image's own size. */
-    assert(record_with(&report, 13u)->id == 0x0051u);
-    assert(record_with(&report, 13u)->status == PW_NT_INVALID_INFO_CLASS);
-    assert(record_with(&report, 13u)->args[2] == expected.size_of_image);
+    /*
+     * The relocation's own sequence: the range goes writable, the guest writes
+     * through it and reads its own write back, and the loader's protection goes
+     * on again - each protect reporting the protection it replaced, which is
+     * the model the dispatcher keeps with the host mapping.
+     */
+    assert(record_with(&report, 14u)->id == 0x0050u);
+    assert(record_with(&report, 14u)->status == PW_NT_SUCCESS);
+    assert(record_with(&report, 15u)->id == 0x0050u);
+    assert(record_with(&report, 15u)->status == PW_NT_SUCCESS);
+    assert(record_with(&report, 16u)->id == 0x0051u);
+    assert(record_with(&report, 16u)->args[2] == MARKER_WRITTEN);
+    assert(record_with(&report, 16u)->args[3] == PAGE_READONLY);
+    assert(record_with(&report, 17u)->id == 0x0051u);
+    assert(record_with(&report, 17u)->args[2] == PAGE_READWRITE);
+    assert(record_with(&report, 17u)->args[3] != 0u);
+    assert((record_with(&report, 17u)->args[3] & 0xfffu) == 0u);
+    /*
+     * And the run ends on the write that must be refused now: the page is
+     * read-only again in the host mapping and in the dispatcher's view of it
+     * together, so this is the guard's own classified stop at the page the
+     * guest protected and restored - not a host fault.
+     */
+    assert(report.stop == PW_WINE_STOP_MEMORY_BOUNDS);
+    assert(report.fault_address ==
+           record_with(&report, 17u)->args[3] + VIEW_PAGE_BYTES);
+    assert(report.fault_write == 1u);
+    assert(report.section_protects == 2u);
+    assert(report.section_protect_refusals == 0u);
     /* The service was asked for the file twice - once by the loader's open and
      * once when the view was mapped, because the section re-opens the file by
      * the name it carries - and the section read it once to describe the image

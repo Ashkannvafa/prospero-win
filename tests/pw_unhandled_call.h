@@ -12,9 +12,10 @@
 #ifndef PROSPERO_WIN_TESTS_PW_UNHANDLED_CALL_H
 #define PROSPERO_WIN_TESTS_PW_UNHANDLED_CALL_H
 
-/* NtProtectVirtualMemory: on the loader's path, but not serviced yet. */
-#define PW_TEST_UNHANDLED_CALL_ID 0x0050u
-#define PW_TEST_UNHANDLED_CALL_NAME "NtProtectVirtualMemory"
-#define PW_TEST_UNHANDLED_CALL_ARGS 20u
+/* NtQueryAttributesFile: a call the pinned runtime's ntdll issues and this
+ * bridge does not service yet, which is all a test needs to stop a run. */
+#define PW_TEST_UNHANDLED_CALL_ID 0x003du
+#define PW_TEST_UNHANDLED_CALL_NAME "NtQueryAttributesFile"
+#define PW_TEST_UNHANDLED_CALL_ARGS 8u
 
 #endif /* PROSPERO_WIN_TESTS_PW_UNHANDLED_CALL_H */

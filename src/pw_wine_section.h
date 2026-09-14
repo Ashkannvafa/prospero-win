@@ -72,4 +72,12 @@ int pw_wine_section_map_view(struct PwWineCallContext *calls,
                              PwUnixCallAccess guest, void *context,
                              uint32_t *status, uint32_t *argument_index);
 
+/* NtProtectVirtualMemory (0x0050): the protection a loader changes while it
+ * relocates the image it mapped, applied to the host mapping and to the
+ * dispatcher's view of it together. */
+int pw_wine_section_protect(struct PwWineCallContext *calls,
+                            const PwUnixCallFrame *frame,
+                            PwUnixCallAccess guest, void *context,
+                            uint32_t *status, uint32_t *argument_index);
+
 #endif /* PROSPERO_WIN_PW_WINE_SECTION_H */
