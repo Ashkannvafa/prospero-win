@@ -1,9 +1,13 @@
 CC ?= cc
 CFLAGS ?= -O2 -std=c11 -Wall -Wextra -Werror
 BUILD := build/host
+# Where the pinned Wine checkout lives for the release-evidence target: the
+# conventional ignored location, overridable with
+# `make wine-check WINE_SOURCE=<checkout>`.
+WINE_SOURCE ?= .deps/wine/source
 HEADERS := $(wildcard include/*.h src/*.h native/*.h tests/*.h)
 
-.PHONY: all test sanitize audit inspect inspect-only sample native native-release clean
+.PHONY: all test wine-check sanitize audit inspect inspect-only sample native native-release clean
 
 all: test audit
 
@@ -105,6 +109,7 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_wine_ntdll_evidence.py
 	python3 tests/test_unix_call_table.py
 	python3 tests/test_nt_handler_ledger.py
+	python3 tests/test_reentrancy_contract.py
 	python3 tests/test_wine_gate_host.py
 	python3 tests/test_audit_wine_imports.py
 	python3 tests/test_win32_catalog.py
@@ -115,6 +120,23 @@ test: $(addprefix $(BUILD)/,$(TESTS)) $(BUILD)/inspect_pe $(BUILD)/trace_x86_ent
 	python3 tests/test_build_source_oracle.py
 	python3 tests/test_dynarec_bench.py
 	rm -rf build tools/__pycache__ tests/__pycache__
+
+# Release evidence. `make test` skips two checks when the pinned Wine checkout
+# or the staged runtime are absent, which is right on a machine that has
+# neither and wrong when a release's evidence is being produced: this target
+# fails instead of skipping, and re-runs the two suites that would have skipped
+# so their output is in the transcript.
+wine-check: test
+	@test -f "$(WINE_SOURCE)/dlls/ntdll/ntsyscalls.h" || \
+		{ echo "wine-check: no pinned Wine source at $(WINE_SOURCE)" >&2; exit 2; }
+	PROSPERO_WINE_SOURCE="$(WINE_SOURCE)" python3 tests/test_unix_call_table.py
+	@test -f .deps/wine-runtime/lib/i386-windows/ntdll.dll || \
+		{ echo "wine-check: no staged runtime (tools/build_wine_runtime.sh)" >&2; exit 2; }
+	python3 tests/test_wine_runtime_manifest.py
+	# `make test` cleans the build directory at the end, and the host gate is
+	# the runner binary, so it has to exist again before it can run.
+	$(MAKE) $(BUILD)/wine_ntdll_entry
+	python3 tests/test_wine_gate_host.py
 
 audit:
 	python3 tools/audit_publication.py

@@ -12,6 +12,35 @@ Wine 490f6d5dcbb2a5047345b8af88d114bbcaad69a8  (Wine version 11.17)
 
 ## What is staged
 
+## Current capability (evidence checkpoint)
+
+The measured state of this work, reproducible with the commands below. It is a
+bounded host gate, not a running Windows process.
+
+| Area | State |
+|---|---|
+| Runtime distribution | Three i386 PE modules (`ntdll`, `kernelbase`, `kernel32`) built reproducibly from the pinned revision; staged digest `e88025bbc00a1195ebdfd76589ae0fdeab3265158ea7e8af40fd398c1ec0673d` |
+| Module graph | `kernelbase`'s 428 imports bind against `ntdll`'s exports with zero failures, by name, ordinal and forwarder |
+| PE32 TLS | Parsed, with a process/thread owner and deterministic callback plans; the staged modules declare no TLS directory |
+| ntdll under the DBT | Real `LdrInitializeThunk` executes through the IA-32 translator: 32 544 retired instructions, 6869 dispatches, 968 translated blocks, `host_calls=0`, complete cleanup (`modules=2 mappings=7 translations=1`) |
+| Unix-call boundary | Found structurally (dispatcher slot plus its single `jmp dword ptr [slot]` thunk) and crossed: 19 calls serviced through 15 handlers, and both stub shapes Wine's build emits are bridged, including the `-syscall` ones that call through `TEB.WOW32Reserved` |
+| Platform services | Files (open/read/query/close, one gate-owned directory object), registry (open/create/query against a host profile), token (`TokenUser`), object namespace (`\KnownDlls` plus section lookups), system information (the Wine version class) and process information (the process image, from the module's own headers) |
+| Where it stops | The loader's own debug message calls `__wine_unix_call_dispatcher`, the **unix-call** dispatcher the gate does not publish yet, so the run ends with a classified null jump |
+| Not claimed | No Windows process starts, no application runs, no console or hardware evidence, and the registry/object profiles are the distribution's own, not a Wine prefix |
+
+Reproduce it:
+
+```sh
+tools/build_wine_runtime.sh --source <pinned-wine-checkout>   # stages .deps/wine-runtime
+make all                                                     # every suite + publication audit
+make sanitize                                                # clang ASan+UBSan
+make wine-check                                              # fails instead of skipping the
+                                                             # pinned-source and real-gate checks
+```
+
+The sections below are the discovery journal: each step, the measurement that
+justified it and the honest limits at that point.
+
 `tools/build_wine_runtime.sh` builds the selected i386 PE modules and stages
 them, with a manifest, into an ignored directory:
 
