@@ -204,12 +204,26 @@ int pw_guest_process_create(PwGuestProcess *process,
         const uint32_t peb = process->layout.peb_base;
         const uint32_t dispatcher = config->dispatcher_thunk;
         const uint32_t thread_local_storage = 0u;
+        /*
+         * A thread's activation context stack lives inside its own TEB and the
+         * TEB points at it; the Unix side sets that up for every real i386
+         * thread (dlls/ntdll/unix/virtual.c:4023) and ntdll dereferences the
+         * pointer before it checks whether any frame is active - a null there
+         * is a fault inside RtlFindActivationContextSectionString, which is
+         * how this field was found. The embedded stack stays all zero, which is
+         * exactly what a thread with no manifest has: no active frame, an
+         * empty frame-list cache and no cookie yet.
+         */
+        const uint32_t activation_stack =
+            self + PW_GUEST_PROCESS_TEB_ACTIVATION_STACK;
 
         memcpy(teb + 0x04u, &stack_high, 4u);           /* StackBase */
         memcpy(teb + 0x08u, &process->layout.stack_base, 4u); /* StackLimit */
         memcpy(teb + 0x18u, &self, 4u);                 /* Self */
         memcpy(teb + 0x2cu, &thread_local_storage, 4u); /* no TLS modules */
         memcpy(teb + 0x30u, &peb, 4u);                  /* PEB */
+        memcpy(teb + PW_GUEST_PROCESS_TEB_ACTIVATION_POINTER,
+               &activation_stack, 4u);                  /* ActivationContextStackPointer */
         if (dispatcher != 0u)
             memcpy(teb + 0xc0u, &dispatcher, 4u);       /* WOW32Reserved */
     }

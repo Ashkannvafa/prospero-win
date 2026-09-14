@@ -156,6 +156,21 @@ int main(void)
     assert(value == config.dispatcher_thunk);
     memcpy(&value, teb + 0x2cu, 4u);
     assert(value == 0u);
+    /*
+     * The activation context stack: the TEB points at the copy embedded in
+     * itself, exactly as the Unix side sets it up for a real i386 thread, and
+     * that copy starts empty (no active frame), because a thread with no
+     * manifest has none. ntdll dereferences the pointer before it looks at the
+     * frame, so an unset field here is a fault, not an empty answer.
+     */
+    memcpy(&value, teb + PW_GUEST_PROCESS_TEB_ACTIVATION_POINTER, 4u);
+    assert(value == PW_GUEST_PROCESS_TEB_BASE +
+                     PW_GUEST_PROCESS_TEB_ACTIVATION_STACK);
+    for (uint32_t offset = 0u; offset < 0x18u; offset += 4u) {
+        memcpy(&value, teb + PW_GUEST_PROCESS_TEB_ACTIVATION_STACK + offset,
+               4u);
+        assert(value == 0u);
+    }
 
     /* The PEB: the image it is running and the parameters behind it. */
     peb = process.pages[2].write_base;

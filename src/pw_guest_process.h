@@ -22,6 +22,12 @@ enum {
     PW_GUEST_PROCESS_PARAMETERS_BASE = 0x0c000000u,
     PW_GUEST_PROCESS_PAGE_BYTES = 64u * 1024u,
     PW_GUEST_PROCESS_PAGES = 4u,
+    /* Where the i386 TEB keeps its embedded ACTIVATION_CONTEXT_STACK. A real
+     * thread's TEB points at this field rather than at a page of its own:
+     * dlls/ntdll/unix/virtual.c:4023 is the Unix side doing exactly that for
+     * an i386 thread. */
+    PW_GUEST_PROCESS_TEB_ACTIVATION_STACK = 0x184u,
+    PW_GUEST_PROCESS_TEB_ACTIVATION_POINTER = 0x1a8u,
 };
 
 typedef struct PwGuestProcessLayout {
