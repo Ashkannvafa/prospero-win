@@ -23,6 +23,33 @@
 #include "pw_nt_handle.h"
 #include "pw_wine_gate.h"
 
+/*
+ * One image section: what NtQuerySection answers from, and the canonical name
+ * the view mapping re-opens the file by once the file handle is closed.
+ */
+typedef struct PwWineSection {
+    char name[PW_NT_HANDLE_PATH_MAX + 1];
+    uint64_t file_size;
+    uint64_t image_base;
+    uint32_t protection;
+    uint32_t attributes;
+    uint32_t image_size;
+    uint32_t entry_point;
+    uint32_t stack_reserve;
+    uint32_t stack_commit;
+    uint32_t checksum;
+    uint32_t subsystem;
+    uint16_t subsystem_version_minor;
+    uint16_t subsystem_version_major;
+    uint16_t os_version_major;
+    uint16_t os_version_minor;
+    uint16_t characteristics;
+    uint16_t dll_characteristics;
+    uint16_t machine;
+    uint8_t contains_code;
+    uint8_t image_flags;
+} PwWineSection;
+
 typedef struct PwWineCallContext {
     PwGuestVm *vm;
     const PwWineGateConfig *config;
@@ -46,6 +73,15 @@ typedef struct PwWineCallContext {
     uint8_t region_owned[PW_WINE_GATE_MAX_CALL_REGIONS];
     uint32_t region_count;
     PwNtHandleTable handles;
+    /*
+     * The image sections this run created. A section outlives the file handle
+     * it was created from - ntdll's loader closes that handle as soon as the
+     * section exists and maps a view from the section afterwards - so the
+     * section keeps its own description plus the canonical name it can re-open
+     * the file by, and the handle names an entry here rather than the file.
+     */
+    PwWineSection sections[PW_WINE_GATE_MAX_SECTIONS];
+    uint32_t section_count;
 } PwWineCallContext;
 
 #endif /* PROSPERO_WIN_PW_WINE_CONTEXT_H */

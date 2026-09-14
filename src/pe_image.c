@@ -101,7 +101,8 @@ static int parse_optional_header(PeImage *image, const uint8_t *optional,
     return PW_OK;
 }
 
-static int parse_sections(PeImage *image, const uint8_t *table)
+static int parse_sections(PeImage *image, const uint8_t *table,
+                          int require_raw)
 {
     for (uint16_t index = 0; index < image->section_count; ++index) {
         const uint8_t *entry = table + (size_t)index * PE_SECTION_HEADER_BYTES;
@@ -115,15 +116,17 @@ static int parse_sections(PeImage *image, const uint8_t *table)
         section->raw_offset = read_u32(entry + 20);
         section->characteristics = read_u32(entry + 36);
 
-        /* Raw bytes must exist in the span they claim. */
-        if (section->raw_size != 0u &&
+        /* Raw bytes must exist in the span they claim, unless the caller
+         * reads the image's data on demand instead of holding it here. */
+        if (require_raw && section->raw_size != 0u &&
             !span_ok(image->size, section->raw_offset, section->raw_size))
             return PW_ERR_TRUNCATED;
     }
     return PW_OK;
 }
 
-int pe_image_parse(PeImage *image, const void *bytes, size_t size)
+static int parse_image(PeImage *image, const void *bytes, size_t size,
+                       int require_raw)
 {
     const uint8_t *base = bytes;
     uint32_t optional_bytes;
@@ -178,7 +181,17 @@ int pe_image_parse(PeImage *image, const void *bytes, size_t size)
     if (table_offset + (uint64_t)image->section_count *
         PE_SECTION_HEADER_BYTES > image->size_of_headers)
         return PW_ERR_MALFORMED;
-    return parse_sections(image, base + table_offset);
+    return parse_sections(image, base + table_offset, require_raw);
+}
+
+int pe_image_parse(PeImage *image, const void *bytes, size_t size)
+{
+    return parse_image(image, bytes, size, 1);
+}
+
+int pe_image_parse_headers(PeImage *image, const void *bytes, size_t size)
+{
+    return parse_image(image, bytes, size, 0);
 }
 
 int pe_image_is_dll(const PeImage *image)

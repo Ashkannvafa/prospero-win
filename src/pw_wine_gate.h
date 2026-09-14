@@ -50,6 +50,10 @@ enum {
     PW_WINE_GATE_ARENA_BYTES = 4u * 1024u * 1024u,
     PW_WINE_GATE_DEFAULT_CALLS = 64,
     PW_WINE_GATE_MAX_CALL_REGIONS = 16,
+    /* Image sections one run may have alive at once. A process maps its
+     * modules one at a time and closes each section once its view exists, so
+     * this is a budget with room rather than a guess about the graph. */
+    PW_WINE_GATE_MAX_SECTIONS = 4,
     PW_WINE_GATE_DEFAULT_ALLOCATION_LIMIT = 4u * 1024u * 1024u,
     /* Where the NT allocator hands out guest memory that ntdll asks for. */
     PW_WINE_GATE_HEAP_BASE = 0x20000000u,
@@ -354,6 +358,10 @@ typedef struct PwWineGateReport {
     uint64_t file_directories;
     /* NtFsControlFile answers this run gave (FSCTL_GET_OBJECT_ID). */
     uint64_t file_fs_controls;
+    /* Image sections this run created, described and refused. */
+    uint64_t section_creates;
+    uint64_t section_queries;
+    uint64_t section_refusals;
     uint32_t files_configured;
     char last_file[PW_WINE_GATE_MAX_PATH + 1];
     uint64_t key_opens;

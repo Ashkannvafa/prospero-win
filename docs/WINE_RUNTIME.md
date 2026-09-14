@@ -514,6 +514,18 @@ NtReadFile                    (0x0006) handle, IO status, buffer, length,
                                        offset; a directory handle is refused
 NtQueryInformationFile        (0x0011) FileStandardInformation only (sizes,
                                        and Directory for a directory object)
+NtCreateSection               (0x004a) an unnamed SEC_IMAGE section over an
+                                       open file handle, described from the
+                                       file's own headers; the section keeps
+                                       the canonical name it can re-open the
+                                       file by, because the loader closes that
+                                       handle as soon as the section exists
+NtQuerySection                (0x0051) SectionBasicInformation and
+                                       SectionImageInformation, answered from
+                                       the section's description - the
+                                       transfer address is the image's own base
+                                       plus its entry point, as Wine fills it
+                                       for a section that is not mapped yet
 NtFsControlFile               (0x0039) FSCTL_GET_OBJECT_ID only, answered
                                        with the identity a handle carries: the
                                        SHA-256 of the canonical name the file

@@ -7,6 +7,8 @@
  */
 #include "pw_wine_query.h"
 
+#include "pw_wine_section.h"
+
 #include "pw_wine_context.h"
 #include "pw_wine_path.h"
 
@@ -153,11 +155,6 @@ int pw_wine_query_token(PwWineCallContext *calls,
  * loader asks about the image the process is running. */
 enum {
     PW_WINE_PROCESS_IMAGE_INFORMATION = 0x25u,
-    PW_WINE_SECTION_IMAGE_BYTES = 48u,
-    /* ImageFlags: the image was relocated when it was mapped, and it lives
-     * below 4 GiB. Nothing else applies to a native i386 PE. */
-    PW_WINE_IMAGE_FLAG_DYNAMICALLY_RELOCATED = 0x04u,
-    PW_WINE_IMAGE_FLAG_BASE_BELOW_4GB = 0x10u,
     PW_NT_CURRENT_PROCESS = 0xffffffffu,
 };
 

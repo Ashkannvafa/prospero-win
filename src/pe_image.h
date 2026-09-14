@@ -118,6 +118,16 @@ typedef struct PeImage {
 
 int pe_image_parse(PeImage *image, const void *bytes, size_t size);
 
+/*
+ * The same parse for a caller that holds only an image's headers and reads its
+ * data on demand - a file-backed section, whose bytes come from a service when
+ * they are mapped rather than from the span being parsed. Every check
+ * pe_image_parse makes on the headers and the section table still applies; only
+ * the requirement that each section's raw bytes be present in the span is
+ * dropped, and the summary it produces is the same.
+ */
+int pe_image_parse_headers(PeImage *image, const void *bytes, size_t size);
+
 int pe_image_is_dll(const PeImage *image);
 
 /*

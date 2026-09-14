@@ -143,6 +143,54 @@ static void test_rejects_truncated_section_bytes(void)
     assert(pe_image_parse(&image, buffer, size - 1u) == PW_ERR_TRUNCATED);
 }
 
+/*
+ * A caller that holds only the headers and reads the image's data on demand -
+ * a file-backed section - gets the same summary from the same bytes, and the
+ * strict parse still refuses the span for the rest of the tree. Both are about
+ * the same file, so the two must agree on everything the headers carry.
+ */
+static void test_parses_headers_without_section_bytes(void)
+{
+    const size_t size = build_basic(1, 0);
+    PeImage strict;
+    PeImage headers;
+    size_t header_bytes;
+    const PeSection *section;
+
+    assert(size != 0u);
+    assert(pe_image_parse(&strict, buffer, size) == PW_OK);
+    header_bytes = strict.size_of_headers;
+    assert(header_bytes < size);
+    /* The strict parse wants the sections' bytes and refuses the headers
+     * alone; the header-only parse accepts exactly those bytes. */
+    assert(pe_image_parse(&headers, buffer, header_bytes) == PW_ERR_TRUNCATED);
+    assert(pe_image_parse_headers(&headers, buffer, header_bytes) == PW_OK);
+    assert(headers.machine == strict.machine);
+    assert(headers.characteristics == strict.characteristics);
+    assert(headers.dll_characteristics == strict.dll_characteristics);
+    assert(headers.subsystem == strict.subsystem);
+    assert(headers.size_of_image == strict.size_of_image);
+    assert(headers.image_base == strict.image_base);
+    assert(headers.entry_point == strict.entry_point);
+    assert(headers.checksum == strict.checksum);
+    assert(headers.section_count == strict.section_count);
+    for (uint16_t index = 0u; index < strict.section_count; ++index) {
+        const PeSection *left = &strict.sections[index];
+        const PeSection *right = &headers.sections[index];
+
+        assert(strcmp(left->name, right->name) == 0);
+        assert(left->virtual_address == right->virtual_address);
+        assert(left->virtual_size == right->virtual_size);
+        assert(left->raw_offset == right->raw_offset);
+        assert(left->raw_size == right->raw_size);
+        assert(left->characteristics == right->characteristics);
+    }
+    /* And the helpers that read the span still work on the header span, which
+     * is what a caller that re-reads the data separately needs. */
+    section = pe_image_section_for_rva(&headers, strict.sections[0].virtual_address);
+    assert(section != NULL);
+}
+
 static void test_rva_translation(void)
 {
     const size_t size = build_basic(1, 0);
@@ -238,6 +286,7 @@ int main(void)
     test_rejects_foreign_machine();
     test_rejects_zero_sections();
     test_rejects_truncated_section_bytes();
+    test_parses_headers_without_section_bytes();
     test_rva_translation();
     test_reads_names();
     test_result_names();

@@ -16,6 +16,7 @@
 #include "pw_wine_handle.h"
 #include "pw_wine_object.h"
 #include "pw_wine_query.h"
+#include "pw_wine_section.h"
 #include "pw_wine_registry.h"
 #include "pw_wine_runner.h"
 #include "../include/prospero_win_vm.h"
@@ -838,6 +839,10 @@ static const PwNtHandler dispatch_table[] = {
       gate_nt_query_virtual_memory },
     { 0x0039u, { 0x0009009cu, PW_NT_CLASS_NONE },
       "tests/test_pw_wine_file_service.c", pw_wine_file_fs_control },
+    { 0x004au, { 0x01000000u, PW_NT_CLASS_NONE },
+      "tests/test_pw_wine_section.c", pw_wine_section_create },
+    { 0x0051u, { 0u, 1u, PW_NT_CLASS_NONE }, "tests/test_pw_wine_section.c",
+      pw_wine_section_query },
 };
 
 static const PwNtHandler *dispatch_find(uint32_t id)

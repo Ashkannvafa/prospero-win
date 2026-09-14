@@ -155,6 +155,7 @@ sources=(
     src/pw_wine_file.c
     src/pw_wine_registry.c
     src/pw_wine_query.c
+    src/pw_wine_section.c
     src/pw_wine_object.c
     src/pw_unix_call.c
     src/pw_compat32.c src/pw_gate.c src/pw_loader.c src/pw_map.c
