@@ -623,9 +623,15 @@ int main(int argc, char **argv)
            (unsigned long long)report.translated_bytes,
            report.stop_address, pw_wine_stop_name(report.stop),
            report.observed_syscall_id, (unsigned long long)report.host_calls);
-    if (report.stop == PW_WINE_STOP_MEMORY_BOUNDS)
-        printf("kind=host-wine-fault address=0x%08x width=%u write=%u\n",
+    if (report.stop == PW_WINE_STOP_MEMORY_BOUNDS) {
+        uint32_t index;
+
+        printf("kind=host-wine-fault address=0x%08x width=%u write=%u recent=",
                report.fault_address, report.fault_width, report.fault_write);
+        for (index = 0u; index < report.recent_count; ++index)
+            printf("%s0x%08x", index ? "," : "", report.recent_pcs[index]);
+        printf("\n");
+    }
     /*
      * The cleanup verdict is about releasing what this run mapped and
      * translated; the run's own result is already carried by the stop kind,

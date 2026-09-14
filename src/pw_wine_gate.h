@@ -381,6 +381,13 @@ typedef struct PwWineGateReport {
     uint32_t cleanup_failures;
     /* The pipeline stage that was executing when the run stopped. */
     const char *gate_stage;
+    /*
+     * The last dispatched guest PCs, newest last, bounded. A fault has to be
+     * explainable without guessing a stack frame: this is the engine's own
+     * provenance, and it names the code that reached the failing instruction.
+     */
+    uint32_t recent_pcs[16];
+    uint32_t recent_count;
     PwWineStop stop;
     int status;
 } PwWineGateReport;

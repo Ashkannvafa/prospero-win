@@ -1468,6 +1468,17 @@ int pw_wine_gate_run(const PwWineGateConfig *config, PwWineGateReport *report)
             report->stop_address = state.eip;
             break;
         }
+        {
+            /* Engine provenance: the ring keeps the last sixteen dispatched
+             * PCs so a stop can name the code around it. */
+            if (report->recent_count < 16u)
+                report->recent_pcs[report->recent_count++] = state.eip;
+            else {
+                memmove(report->recent_pcs, report->recent_pcs + 1,
+                        15u * sizeof(report->recent_pcs[0]));
+                report->recent_pcs[15] = state.eip;
+            }
+        }
         status = pw_x86_engine_step(&engine, &state, &progress);
         report->dispatches++;
         report->retired += progress.retired;
