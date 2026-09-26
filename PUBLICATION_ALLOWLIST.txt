@@ -317,6 +317,8 @@ tests/test_pw_wine_thread.c
 tests/test_pw_wine_continue.c
 tests/test_pw_wine_vm_transactions.c
 tools/stage_app_files.py
+assets/prospero-win-logo.svg
+assets/prospero-win-banner.svg
 tests/test_wowprospero_contract.py
 wine/wowprospero/cpu.c
 wine/wowprospero/unix.c
