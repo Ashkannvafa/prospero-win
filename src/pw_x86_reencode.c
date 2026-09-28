@@ -154,15 +154,15 @@ static void ea_lea(Out *o, unsigned dst, const Ea *e)
 typedef enum Kind {
     K_RM = 1, K_PLAIN, K_INCDEC, K_MOVIMM, K_XCHGA, K_BSWAP, K_NOP, K_LEA,
     K_PUSH, K_PUSHIMM, K_PUSHRM, K_POP, K_LEAVE, K_CALL, K_CALLRM, K_RET,
-    K_JMP, K_JMPRM, K_JCC,
+    K_JMP, K_JMPRM, K_JCC, K_STR,
 } Kind;
 enum { REG8 = 1, REG32, EXT };      /* what the ModRM reg field names */
-enum { RM8 = 1, RMW };              /* what a register-form rm names */
+enum { RM8 = 1, RMW, RMRAW };       /* what a register-form rm names (RMRAW: xmm, mm, st, as is) */
 
 typedef struct Inst {
     Kind kind;
     uint8_t len, opsize16;
-    uint8_t op[2], op_len;
+    uint8_t op[3], op_len;
     uint8_t mod, reg, rm, reg_kind, rm_kind;
     Ea ea;
     uint8_t imm[4], imm_len;
@@ -171,6 +171,7 @@ typedef struct Inst {
     uint32_t target, imm_value;
     uint8_t cond;
     uint8_t lock, fs;               /* prefixes */
+    uint8_t rep;                    /* 0xf2 or 0xf3: an SSE instruction's mandatory prefix, or 0 */
     const uint8_t *bytes;
 } Inst;
 
@@ -250,11 +251,11 @@ static int lockable(const Inst *in)
 }
 
 /* Decode one instruction this backend takes; 0 for anything else. */
-static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in)
+static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in, unsigned native_fp)
 {
     size_t i = 0, m;
     uint8_t op;
-    unsigned z;
+    unsigned z, rep_ok = 0;
 
     memset(in, 0, sizeof(*in));
     in->bytes = s;
@@ -264,6 +265,7 @@ static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in)
         if (s[i] == 0x66 && !in->opsize16) in->opsize16 = 1;
         else if (s[i] == 0xf0 && !in->lock) in->lock = 1;
         else if (s[i] == 0x64 && !in->fs) in->fs = 1;
+        else if ((s[i] == 0xf2 || s[i] == 0xf3) && !in->rep) in->rep = s[i];
         else if (s[i] != 0x2e && s[i] != 0x3e && s[i] != 0x26 && s[i] != 0x36) break;
     }
     if (i >= avail) return 0;
@@ -333,11 +335,30 @@ static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in)
         if (in->mod != 3 || in->reg || in->opsize16) return 0;
         in->kind = K_POP; in->reg = in->rm;
     } else if (op == 0x90) {
-        in->kind = K_NOP;
+        in->kind = in->rep == 0xf3 ? K_PLAIN : K_NOP;   /* pause */
+        rep_ok = in->rep == 0xf3;
     } else if (op >= 0x91 && op <= 0x97) {
         in->kind = K_XCHGA; in->reg = op & 7;
     } else if (op == 0x98 || op == 0x99) {
         in->kind = K_PLAIN;
+    } else if ((op >= 0xa4 && op <= 0xa7) || (op >= 0xaa && op <= 0xaf)) {
+        /* movs cmps stos lods scas, with rep/repe/repne: the host's own on
+         * the guest's esi, edi and ecx (emit_string). */
+        const unsigned compares = op == 0xa6 || op == 0xa7 || op == 0xae || op == 0xaf;
+        if (in->fs || in->lock) return 0;
+        in->kind = K_STR;
+        in->op[0] = op; in->op_len = 1;
+        in->width = (uint8_t)(!(op & 1) ? 1 : in->opsize16 ? 2 : 4);
+        if (compares) {
+            in->def = ALL_FLAGS;
+            if (in->rep) in->use = ALL_FLAGS;     /* a zero count leaves them */
+        }
+        rep_ok = 1;
+    } else if (op == 0x9e || op == 0x9f) {
+        in->kind = K_PLAIN;                       /* sahf, lahf: ah is the guest's */
+        if (op == 0x9e) in->def = 0x0d5; else in->use = 0x0d5;
+    } else if (op == 0x9b && native_fp) {
+        in->kind = K_PLAIN;                       /* fwait, as in fstsw = fwait; fnstsw */
     } else if (op >= 0xa0 && op <= 0xa3) {
         static const uint8_t as[4] = { 0x8a, 0x8b, 0x88, 0x89 };
         NEED(4);
@@ -366,6 +387,7 @@ static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in)
         if (count) in->def = in->reg < 4 ? 0x801 : ALL_FLAGS;
     } else if (op == 0xc2 || op == 0xc3) {
         if (in->opsize16) return 0;
+        rep_ok = in->rep == 0xf3;                 /* rep ret */
         in->kind = K_RET;
         if (op == 0xc2) { NEED(2); in->imm_value = (uint32_t)s[i] | (uint32_t)s[i + 1] << 8; i += 2; }
     } else if (op == 0xc6 || op == 0xc7) {
@@ -449,7 +471,114 @@ static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in)
         } else if (x >= 0xc8 && x <= 0xcf) {
             if (in->opsize16) return 0;
             in->kind = K_BSWAP; in->reg = x & 7;
-        } else return 0;
+        } else if (x == 0x31 || x == 0xa2) {
+            in->kind = K_PLAIN;                       /* rdtsc, cpuid: as the host's */
+        } else if (x == 0x0d || x == 0x18) {
+            in->kind = K_RM; in->reg_kind = EXT; in->rm_kind = RMRAW; MODRM();
+            if (in->mod == 3) return 0;
+            in->width = 1;                            /* prefetch: never faults */
+        } else {
+            /* MMX, SSE to SSE4.1 on the guest's own registers: xmm0-7 and
+             * mm0-7 are the host's while re-encoded code runs (native FP). */
+            if (!native_fp) return 0;
+            const unsigned p = in->rep ? in->rep : in->opsize16 ? 0x66 : 0;
+            unsigned regk = EXT, rmk = RMRAW, imm = 0, store = 0, width = 16, def = 0, mem_only = 0, reg_only = 0;
+            if (x == 0x38 || x == 0x3a) {
+                NEED(1);
+                in->op[2] = s[i++]; in->op_len = 3;
+                if (x == 0x3a) imm = 1;
+                if (x == 0x38 && in->op[2] >= 0xf0) return 0;          /* movbe, crc32 */
+                if (x == 0x3a && (in->op[2] >= 0x14 && in->op[2] <= 0x17)) { rmk = RMW; store = 1; width = 4; }
+                if (x == 0x3a && (in->op[2] == 0x20 || in->op[2] == 0x22)) { rmk = RMW; width = 4; }
+            } else if (x >= 0x10 && x <= 0x17) {
+                store = x == 0x11 || x == 0x13 || x == 0x17;
+                if (x == 0x13 || x == 0x17) mem_only = 1;
+                width = p == 0xf3 && x <= 0x11 ? 4 : p == 0xf2 && x <= 0x11 ? 8 : x >= 0x12 && x != 0x14 && x != 0x15 ? 8 : 16;
+            } else if (x == 0x28 || x == 0x29 || x == 0x2b) {
+                store = x != 0x28; if (x == 0x2b) mem_only = 1;
+            } else if (x == 0x2a) {
+                if (p == 0xf2 || p == 0xf3) { rmk = RMW; width = 4; } else width = 8;
+            } else if (x == 0x2c || x == 0x2d) {
+                if (p == 0xf2 || p == 0xf3) { regk = REG32; width = p == 0xf2 ? 8 : 4; } else width = 8;
+            } else if (x == 0x2e || x == 0x2f) {
+                def = ALL_FLAGS; width = p == 0x66 ? 8 : 4;
+            } else if (x == 0x50 || x == 0xd7) {
+                regk = REG32; reg_only = 1;
+            } else if ((x >= 0x51 && x <= 0x6d) || x == 0x6f || (x >= 0x74 && x <= 0x76) ||
+                       x == 0x7c || x == 0x7d || (x >= 0xd0 && x <= 0xd5) || (x >= 0xd8 && x <= 0xe6) ||
+                       (x >= 0xe8 && x <= 0xef) || (x >= 0xf1 && x <= 0xf6) || (x >= 0xf8 && x <= 0xfe)) {
+                if ((p == 0xf3 || p == 0xf2) && ((x >= 0x51 && x <= 0x5f && x != 0x5b) || x == 0xe6))
+                    width = p == 0xf3 ? 4 : 8;
+            } else if (x == 0x6e || (x == 0x7e && p != 0xf3)) {
+                rmk = RMW; width = 4; store = x == 0x7e;
+            } else if (x == 0x7e) {
+                width = 8;                                             /* movq xmm, xmm/m64 */
+            } else if (x == 0x7f || x == 0xd6 || x == 0xe7) {
+                store = 1; if (x == 0xe7) mem_only = 1;
+                if (x == 0xd6) width = 8;
+            } else if (x == 0x70 || x == 0xc2 || x == 0xc6) {
+                imm = 1;
+            } else if (x >= 0x71 && x <= 0x73) {
+                imm = 1; reg_only = 1;
+            } else if (x == 0xc4) {
+                rmk = RMW; imm = 1; width = 2;
+            } else if (x == 0xc5) {
+                regk = REG32; imm = 1; reg_only = 1;
+            } else if (x == 0xc3) {
+                regk = REG32; rmk = RMW; store = 1; width = 4; mem_only = 1;   /* movnti */
+            } else if (x == 0xf0 && p == 0xf2) {
+                mem_only = 1;                                          /* lddqu */
+            } else if (x == 0x77) {
+                in->kind = K_PLAIN; rep_ok = 1;                        /* emms */
+                goto done;
+            } else if (x == 0xae) {
+                MODRM();
+                if (in->mod == 3) {
+                    if (in->reg < 5) return 0;
+                    in->kind = K_PLAIN;                                /* lfence mfence sfence */
+                } else {
+                    if (in->reg < 2 || in->reg == 4 || in->reg == 6) return 0;   /* fxsave, fxrstor, xsave */
+                    in->kind = K_RM; in->reg_kind = EXT; in->rm_kind = RMRAW;
+                    in->width = in->reg == 7 ? 1 : 4; in->write = in->reg == 3;  /* ldmxcsr stmxcsr clflush */
+                }
+                goto done;
+            } else return 0;
+            in->kind = K_RM; in->reg_kind = (uint8_t)regk; in->rm_kind = (uint8_t)rmk;
+            MODRM();
+            if ((mem_only && in->mod == 3) || (reg_only && in->mod != 3)) return 0;
+            if (imm) IMM(1);
+            in->width = (uint8_t)width;
+            in->write = (uint8_t)(in->mod != 3 && store);
+            in->def = def;
+            rep_ok = 1;
+        done:;
+        }
+    } else if (op >= 0xd8 && op <= 0xdf && native_fp) {
+        /* x87 on the guest's own stack (native FP): register forms as they
+         * are, memory forms with the guest's address. */
+        static const uint8_t widths[8][8] = {
+            { 4, 4, 4, 4, 4, 4, 4, 4 }, { 4, 0, 4, 4, 28, 2, 28, 2 },
+            { 4, 4, 4, 4, 4, 4, 4, 4 }, { 4, 4, 4, 4, 0, 10, 0, 10 },
+            { 8, 8, 8, 8, 8, 8, 8, 8 }, { 8, 8, 8, 8, 108, 0, 108, 2 },
+            { 2, 2, 2, 2, 2, 2, 2, 2 }, { 2, 2, 2, 2, 10, 8, 10, 8 },
+        };
+        static const uint8_t stores[8] = { 0x00, 0xcc, 0x00, 0x8e, 0x00, 0xce, 0x00, 0xce };
+        MODRM();
+        if (in->mod == 3) {
+            const unsigned r = s[i - 1];
+            in->kind = K_PLAIN;
+            if ((op == 0xdb || op == 0xdf) && r >= 0xe8 && r <= 0xf7) in->def = ALL_FLAGS;   /* fcomi, fucomi */
+            if ((op == 0xda || op == 0xdb) && r < 0xe0) {                                      /* fcmovcc */
+                static const uint32_t use[4] = { 0x001, 0x040, 0x041, 0x004 };
+                in->use = use[(r >> 3) & 3];
+            }
+        } else {
+            const unsigned w = widths[op - 0xd8][in->reg];
+            if (!w) return 0;
+            in->kind = K_RM; in->op[0] = op; in->op_len = 1; in->reg_kind = EXT; in->rm_kind = RMRAW;
+            in->width = (uint8_t)(w > 255 ? 255 : w);
+            in->write = (uint8_t)((stores[op - 0xd8] >> in->reg) & 1);
+        }
     } else {
         return 0;
     }
@@ -458,6 +587,7 @@ static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in)
 #undef IMM
 #undef NEED
     if (i > 15) return 0;
+    if (in->rep && !rep_ok) return 0;
     in->len = (uint8_t)i;
     /* fs only on a memory operand; lock only on a read-modify-write of one. */
     if (in->fs && !(in->kind == K_RM && in->mod != 3)) return 0;
@@ -561,6 +691,7 @@ static void emit_rm(Ctx *c, const Inst *in)
 
     if (in->lock) b(o, 0xf0);
     if (in->opsize16) b(o, 0x66);
+    if (in->rep) b(o, in->rep);
     if (in->reg_kind == REG32 && host_of[in->reg] >= 8) rex |= 4;
     if (in->reg_kind == REG32) regf = host_of[in->reg] & 7;
     if (in->mod == 3) {
@@ -600,6 +731,7 @@ static void emit_rm_direct(Ctx *c, const Inst *in)
 
     if (in->lock) b(o, 0xf0);
     if (in->opsize16) b(o, 0x66);
+    if (in->rep) b(o, in->rep);
     b(o, 0x67);
     if (in->reg_kind == REG32) {
         if (host_of[in->reg] >= 8) rex |= 4;
@@ -883,6 +1015,46 @@ static void emit_call(Ctx *c, PwX86Block *block, uint32_t next, uint32_t target,
     block->exit.fallthrough_direct_offset = rest.direct;
 }
 
+/* 1 for each value of eflags' second byte whose DF bit (bit 10) is set. */
+static const uint8_t df_set[256] = {
+#define DF4(n) (((n) >> 2) & 1), ((((n) + 1) >> 2) & 1), ((((n) + 2) >> 2) & 1), ((((n) + 3) >> 2) & 1)
+#define DF16(n) DF4(n), DF4((n) + 4), DF4((n) + 8), DF4((n) + 12)
+#define DF64(n) DF16(n), DF16((n) + 16), DF16((n) + 32), DF16((n) + 48)
+    DF64(0), DF64(64), DF64(128), DF64(192)
+#undef DF64
+#undef DF16
+#undef DF4
+};
+
+/* A string instruction as the host's: rdi holds the state and edi is r13,
+ * so the two swap around it, and a 0x67 prefix makes it use esi, edi and
+ * ecx, the guest's own. Re-encoded code never changes DF, so the guest's is
+ * PwX86State.eflags': std before it when set (found without flags through
+ * df_set and jrcxz, the count kept in r9), cld after it, since the host
+ * runs with DF clear. A fault outside the guest range inside it is not
+ * redirected (rdi is swapped); one Wine resolves restarts it as usual. */
+static void emit_string(Ctx *c, const Inst *in)
+{
+    Out *o = &c->o;
+    size_t to_forward;
+
+    mov_r9_rcx(o);
+    b(o, 0x49); b(o, 0xbb); w64(o, (uint64_t)(uintptr_t)df_set);   /* movabs r11, df_set */
+    b(o, 0x0f); b(o, 0xb6); b(o, 0x8f); w32(o, (uint32_t)offsetof(PwX86State, eflags) + 1);  /* movzx ecx, byte [rdi+eflags+1] */
+    b(o, 0x41); b(o, 0x0f); b(o, 0xb6); b(o, 0x0c); b(o, 0x0b);    /* movzx ecx, byte [r11+rcx] */
+    to_forward = jump8(o, 0xe3);                                    /* jrcxz forward */
+    b(o, 0xfd);                                                     /* std */
+    land8(o, to_forward);
+    mov_rcx_r9(o);
+    b(o, 0x4c); b(o, 0x87); b(o, 0xef);                             /* xchg rdi, r13 */
+    if (in->rep) b(o, in->rep);
+    if (in->opsize16) b(o, 0x66);
+    b(o, 0x67);
+    b(o, in->op[0]);
+    b(o, 0x4c); b(o, 0x87); b(o, 0xef);                             /* xchg rdi, r13 */
+    b(o, 0xfc);                                                     /* cld */
+}
+
 /* The side exits: each loads its target into r10d and the address of its
  * jcc's rel32 into r8, then all share one lookup of r10d in the chain
  * table. A hit rewrites that rel32 to the target's chain entry (r11 - (r8 +
@@ -993,7 +1165,7 @@ int pw_x86_reencode(const uint8_t *source, size_t bytes, uint32_t pc,
     while (count < MAX_INSTS && cursor < bytes) {
         Inst *in = &insts[count];
         int terminal = 0;
-        if (!decode(source + cursor, bytes - cursor, pc + (uint32_t)cursor, in)) break;
+        if (!decode(source + cursor, bytes - cursor, pc + (uint32_t)cursor, in, options->native_fp)) break;
         cursor += in->len;
         count++;
         for (unsigned k = 0; k < sizeof(terminals) / sizeof(terminals[0]); k++)
@@ -1014,7 +1186,9 @@ int pw_x86_reencode(const uint8_t *source, size_t bytes, uint32_t pc,
     c.flat_low = options->flat_low;
     c.flat_span = options->flat_high - options->flat_low;
     c.fault_markers = options->fault_markers;
-    c.table = options->indirect_targets;
+    /* With native FP the indirect table leads only to emitted blocks, which
+     * re-encoded code reaches through C. */
+    c.table = options->native_fp ? NULL : options->indirect_targets;
     c.chain_table = options->indirect_targets ? options->chain_targets : NULL;
     c.mask = options->indirect_mask;
     c.block_pc = pc;
@@ -1083,6 +1257,9 @@ int pw_x86_reencode(const uint8_t *source, size_t bytes, uint32_t pc,
             break;
         }
         case K_NOP:
+            break;
+        case K_STR:
+            emit_string(&c, in);
             break;
         case K_LEA:
             ea_lea(o, host_of[in->reg], &in->ea);
@@ -1242,7 +1419,7 @@ size_t pw_x86_reencode_return_stub(uint8_t *output, size_t capacity, const PwX86
         return 0;
     memset(&c, 0, sizeof(c));
     c.o.p = output; c.o.cap = capacity;
-    c.table = options->indirect_targets;
+    c.table = options->native_fp ? NULL : options->indirect_targets;
     c.chain_table = options->chain_targets;
     c.mask = options->indirect_mask;
     c.call_stack = 1;
