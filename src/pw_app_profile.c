@@ -120,6 +120,89 @@ static int valid_dll_overrides(const char *text)
     return 1;
 }
 
+/* 1 if an explicit builtin opengl32 entry is present, 0 if absent, -1 if an
+ * OpenGL profile explicitly selects another load order. */
+static int opengl32_override(const char *text)
+{
+    const char *entry = text;
+    int builtin = 0;
+
+    while (*entry) {
+        const char *entry_end = strchr(entry, ';');
+        const char *equals;
+        const char *name;
+        const char *names_end;
+        const char *value_end;
+        if (!entry_end)
+            entry_end = entry + strlen(entry);
+        equals = memchr(entry, '=', (size_t)(entry_end - entry));
+        if (!equals) {
+            entry = *entry_end ? entry_end + 1 : entry_end;
+            continue;
+        }
+        name = entry;
+        names_end = equals;
+        while (name < names_end) {
+            const char *name_end = memchr(name, ',', (size_t)(names_end - name));
+            if (!name_end)
+                name_end = names_end;
+            size_t name_length = (size_t)(name_end - name);
+            int is_opengl32 = equal_ascii((const uint8_t *)name, name_length, "opengl32") ||
+                              equal_ascii((const uint8_t *)name, name_length, "opengl32.dll");
+            if (is_opengl32) {
+                value_end = entry_end;
+                if ((size_t)(value_end - (equals + 1)) != 1u ||
+                    (equals[1] != 'b' && equals[1] != 'B'))
+                    return -1;
+                builtin = 1;
+            }
+            name = *name_end ? name_end + 1 : name_end;
+        }
+        entry = *entry_end ? entry_end + 1 : entry_end;
+    }
+    return builtin;
+}
+
+int pw_app_profile_effective_dll_overrides(const PwAppProfile *profile,
+                                           char *text, size_t capacity)
+{
+    static const char suffix[] = "opengl32=b";
+    size_t base_length, append_length, suffix_length;
+    int has_opengl32;
+
+    if (!profile || !text || capacity == 0u)
+        return PW_ERR_PRECONDITION;
+    base_length = strlen(profile->dll_overrides);
+    if (profile->graphics != PW_APP_GRAPHICS_OPENGL) {
+        if (base_length >= capacity)
+            return PW_ERR_LIMIT;
+        memcpy(text, profile->dll_overrides, base_length + 1u);
+        return PW_OK;
+    }
+    has_opengl32 = opengl32_override(profile->dll_overrides);
+    if (has_opengl32 < 0)
+        return PW_ERR_MALFORMED;
+    if (has_opengl32) {
+        if (base_length >= capacity)
+            return PW_ERR_LIMIT;
+        memcpy(text, profile->dll_overrides, base_length + 1u);
+        return PW_OK;
+    }
+    /* A profile checker may accept a trailing separator; reuse it instead of
+     * emitting an empty entry when appending Wine's builtin opengl32 rule. */
+    append_length = base_length;
+    if (append_length && profile->dll_overrides[append_length - 1u] == ';')
+        --append_length;
+    suffix_length = sizeof(suffix) - 1u;
+    if (append_length + (append_length != 0u) + suffix_length >= capacity)
+        return PW_ERR_LIMIT;
+    memcpy(text, profile->dll_overrides, append_length);
+    if (append_length)
+        text[append_length++] = ';';
+    memcpy(text + append_length, suffix, suffix_length + 1u);
+    return PW_OK;
+}
+
 static int parse_command_id(const uint8_t *value, size_t length,
                             uint32_t *command_id)
 {
@@ -234,6 +317,9 @@ static int parse_field(PwAppProfile *profile, uint32_t *fields,
         } else if (equal_ascii(value, (size_t)(value_end - value), "dxvk")) {
             profile->graphics = PW_APP_GRAPHICS_DXVK;
             status = PW_OK;
+        } else if (equal_ascii(value, (size_t)(value_end - value), "opengl")) {
+            profile->graphics = PW_APP_GRAPHICS_OPENGL;
+            status = PW_OK;
         } else {
             status = PW_ERR_UNSUPPORTED;
         }
@@ -314,6 +400,9 @@ int pw_app_profile_parse(const uint8_t *bytes, size_t length,
         !valid_windows_path(parsed.executable) ||
         !valid_windows_path(parsed.working_directory) ||
         !has_exe_extension(parsed.executable))
+        return PW_ERR_MALFORMED;
+    if (parsed.graphics == PW_APP_GRAPHICS_OPENGL &&
+        opengl32_override(parsed.dll_overrides) < 0)
         return PW_ERR_MALFORMED;
     *profile = parsed;
     return PW_OK;

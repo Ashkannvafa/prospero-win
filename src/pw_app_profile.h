@@ -25,6 +25,7 @@ typedef enum PwAppGraphics {
     PW_APP_GRAPHICS_AUTO = 0,
     PW_APP_GRAPHICS_GDI = 1,
     PW_APP_GRAPHICS_DXVK = 2,
+    PW_APP_GRAPHICS_OPENGL = 3,
 } PwAppGraphics;
 
 /* Stable, allocation-free description of one Windows application. Paths are
@@ -53,5 +54,10 @@ typedef struct PwAppProfile {
  * are rejected so profile typos cannot silently launch with defaults. */
 int pw_app_profile_parse(const uint8_t *bytes, size_t length,
                          PwAppProfile *profile);
+
+/* Return the per-game Wine overrides selected by this graphics mode. OpenGL
+ * profiles force Wine's builtin opengl32 so WGL reaches the PS5 EGL backend. */
+int pw_app_profile_effective_dll_overrides(const PwAppProfile *profile,
+                                           char *text, size_t capacity);
 
 #endif

@@ -38,11 +38,17 @@
 # AMD driver, MIT) instead: DIR is a PS5_Vulkan checkout whose
 # tools/build-radv.sh release has built its pinned PS5_Mesa revision, linked
 # by tools/link_radv_prx.sh. The two options are exclusive.
+# OpenGL (patch 0660): --ps5-opengl-sdk names an installed
+# installed ps5-opengl SDK prefix. Its GPL-3.0-or-later static archive is linked into
+# win32u.prx; distributed builds must preserve the SDK's source and license
+# obligations. SDK 0.6.0 provides a tested OpenGL compatibility profile for
+# legacy WGL contexts, as well as the OpenGL 4.6 Core profile.
 #
 # Usage:
 #   tools/build_wine_ps5.sh [--check-patches] [--patches DIR] [--work DIR]
 #       [--source DIR] [--host-tools DIR] [--foundation DIR] [--sdk DIR]
-#       [--prx-foundation DIR] [--ps5vk-sdk DIR | --radv DIR] [--jobs N]
+#       [--prx-foundation DIR] [--ps5vk-sdk DIR | --radv DIR]
+#       [--ps5-opengl-sdk DIR] [--jobs N]
 set -eu
 
 WINE_COMMIT=490f6d5dcbb2a5047345b8af88d114bbcaad69a8
@@ -96,6 +102,8 @@ foundation=${PS5_NATIVE_FOUNDATION:-$root/.deps/ps5-native-app-boilerplate}
 sdk=${PS5_PAYLOAD_SDK:-}
 prx_foundation=${PS5_PRX_FOUNDATION:-}
 ps5vk_sdk=${PS5VK_SDK:-}
+ps5opengl_sdk=${PS5_OPENGL_SDK:-}
+ps5opengl_lib=
 radv=${PROSPERO_RADV:-}
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 check_only=0
@@ -112,6 +120,7 @@ while [ $# -gt 0 ]; do
     --sdk) sdk=$2; shift ;;
     --prx-foundation) prx_foundation=$2; shift ;;
     --ps5vk-sdk) ps5vk_sdk=$2; shift ;;
+    --ps5-opengl-sdk) ps5opengl_sdk=$2; shift ;;
     --radv) radv=$2; shift ;;
     --jobs) jobs=$2; shift ;;
     *) fail "unknown argument $1" ;;
@@ -120,6 +129,21 @@ while [ $# -gt 0 ]; do
 done
 
 [ -z "$ps5vk_sdk" ] || [ -z "$radv" ] || fail "--ps5vk-sdk and --radv both name libvulkan.prx; give one"
+[ -z "$ps5opengl_sdk" ] || [ -f "$ps5opengl_sdk/lib/libPS5OpenGL.a" ] ||
+    [ -f "$ps5opengl_sdk/lib/libPS5OpenGLCore33.a" ] ||
+    fail "no PS5 OpenGL SDK archive at $ps5opengl_sdk"
+[ -z "$ps5opengl_sdk" ] || [ -f "$ps5opengl_sdk/manifest.sha256" ] ||
+    fail "PS5 OpenGL SDK is missing manifest.sha256"
+if [ -n "$ps5opengl_sdk" ]; then
+    if [ -f "$ps5opengl_sdk/lib/libPS5OpenGL.a" ]; then
+        ps5opengl_lib=PS5OpenGL
+    else
+        ps5opengl_lib=PS5OpenGLCore33
+    fi
+fi
+[ -z "$ps5opengl_sdk" ] ||
+    (cd "$ps5opengl_sdk" && sha256sum --status --check manifest.sha256) ||
+    fail "PS5 OpenGL SDK does not match its SHA-256 manifest"
 
 # The series: NNNN-lower-case-name.patch, unique numbers below 0900, each a
 # mail-formatted patch with a subject. Printed in the order it is applied.
@@ -207,9 +231,16 @@ for patch in $ordered; do
     echo "applied $patch"
 done
 
+# The PS5 OpenGL SDK is optional. When supplied, Wine's generic EGL/WGL
+# frontend binds directly to its static EGL symbols and the win32u PRX links
+# the SDK into the runtime.
+opengl_cflags=${CFLAGS:--g -O2}
+if [ -n "$ps5opengl_sdk" ]; then opengl_cflags="$opengl_cflags -DWINE_PS5_OPENGL"; fi
+
 # Reconfigure whenever the patches or the arguments change.
 stamp=$(
-    { printf '%s\n' "$WINE_COMMIT" "$CONFIGURE_ARGS" "$sdk" "$FREETYPE_SHA256"
+    { printf '%s\n' "$WINE_COMMIT" "$CONFIGURE_ARGS" "$sdk" "$FREETYPE_SHA256" \
+        "$ps5opengl_sdk" "$opengl_cflags"
       for patch in $ordered; do cat "$patches/$patch"; done; } | sha256sum | cut -c1-64)
 build=$work/build
 if [ ! -f "$build/Makefile" ] || [ "$(cat "$build/.prospero-stamp" 2>/dev/null)" != "$stamp" ]; then
@@ -219,6 +250,7 @@ if [ ! -f "$build/Makefile" ] || [ "$(cat "$build/.prospero-stamp" 2>/dev/null)"
     # FreeType is found by its flags; its soname is the name Wine dlopens,
     # which pw_wine_dl turns into libfreetype.prx beside ntdll.prx.
     (cd "$build" && "$tree/configure" $CONFIGURE_ARGS CC="$sdk/bin/prospero-clang" \
+        CFLAGS="$opengl_cflags" \
         FREETYPE_CFLAGS="-I$ft/src/include" FREETYPE_LIBS="$ft/libfreetype.a" \
         ac_cv_lib_soname_freetype=libfreetype.so ac_cv_lib_soname_vulkan=libvulkan.so \
         --with-wine-tools="$host_tools" > "$work/configure.log" 2>&1) ||
@@ -308,13 +340,48 @@ link_prx() {
     [ "$2" = - ] || objects=$(link_objects "$2")
     log=$prx/$name.link.log
     [ -n "$objects$3" ] || { echo "no ELF link of $2 in make.log" > "$log"; prx_status=1; return; }
-    # shellcheck disable=SC2086
-    (cd "$build" && "$sdk/bin/prospero-lld" --shared -Bsymbolic -T "$pie" \
-        -T "$root/wine/ps5/prx_eh_frame.ld" --eh-frame-hdr -soname "$name.prx" -z defs \
-        --warn-unresolved-symbols -L"$work/ps5lib" -o "$prx/$name.shared.elf" $objects $3 ${4:-} \
-        "$sdk/target/lib/libunwind.a" --as-needed "${5:-$sdk/target/lib}"/*.so) > "$log" 2>&1 &&
+    if [ "$name" = win32u ] && [ -n "$ps5opengl_sdk" ]; then
+        opengl_stubs=$prx/opengl-stubs
+        mkdir -p "$opengl_stubs"
+        cp "$sdk"/target/lib/*.so "$opengl_stubs/"
+        # A title has libkernel and libSceLibcInternal, not the WebKit
+        # process's libkernel_web and libScePosixForWebKit: symbols bound to
+        # those resolve to NULL in the title (pthread_getspecific in
+        # win32u's first call). Leave them out so everything binds to the
+        # title's own libraries, and a symbol only they have stays unresolved.
+        rm -f "$opengl_stubs/libkernel_web.so" "$opengl_stubs/libScePosixForWebKit.so"
+        for import in "$ps5opengl_sdk"/lib/*.so; do
+            [ -e "$import" ] || continue
+            [ -e "$opengl_stubs/$(basename "$import")" ] || cp "$import" "$opengl_stubs/"
+        done
+        # The OpenGL SDK's consumer graph includes C++ objects. Use the SDK's
+        # C++ runtime archives, but do not pull a second copy of libc into
+        # win32u: its allocator and system imports belong to the existing Wine
+        # PRX/module contracts, and the SDK payload libc adds raw syscalls.
+        # shellcheck disable=SC2086
+        # Match the upstream Core33 link options: force its weak AGC Gate2
+        # entry point into the archive so the draw submit path is available.
+        (cd "$build" && "$sdk/bin/prospero-clang++" -shared -nodefaultlibs \
+            -Wl,-Bsymbolic -Wl,-T,"$pie" -Wl,-T,"$root/wine/ps5/prx_eh_frame.ld" \
+            -Wl,--eh-frame-hdr -Wl,-soname,"$name.prx" -Wl,-z,defs \
+            -Wl,--warn-unresolved-symbols -L"$work/ps5lib" -L"$ps5opengl_sdk/lib" \
+            -Wl,-u,ps5_agc_gate2_run -o "$prx/$name.shared.elf" $objects $3 ${4:-} \
+            -Wl,--start-group -l"$ps5opengl_lib" -Wl,--end-group \
+            -Wl,--start-group "$sdk/target/lib/libunwind.a" \
+            "$sdk/target/lib/libc++abi.a" "$sdk/target/lib/libc++.a" -Wl,--end-group \
+            -lSceAgc -lSceAgcDriver -lSceVideoOut -lkernel -lSceSystemService \
+            -Wl,--as-needed "$opengl_stubs"/*.so) > "$log" 2>&1 &&
+        stubs_dir=$opengl_stubs
+    else
+        # shellcheck disable=SC2086
+        (cd "$build" && "$sdk/bin/prospero-lld" --shared -Bsymbolic -T "$pie" \
+            -T "$root/wine/ps5/prx_eh_frame.ld" --eh-frame-hdr -soname "$name.prx" -z defs \
+            --warn-unresolved-symbols -L"$work/ps5lib" -o "$prx/$name.shared.elf" $objects $3 ${4:-} \
+            "$sdk/target/lib/libunwind.a" --as-needed "${5:-$sdk/target/lib}"/*.so) > "$log" 2>&1
+        stubs_dir=${5:-$sdk/target/lib}
+    fi &&
     "$tool" link --module --in "$prx/$name.shared.elf" --out "$prx/$name.elf" \
-        --stub-dir "${5:-$sdk/target/lib}" $stubs --module-sdk 0x02000009 \
+        --stub-dir "$stubs_dir" $stubs --module-sdk 0x02000009 \
         --companion-sdk 0x08050001 --file-name "$name.prx" >> "$log" 2>&1 &&
     "$tool" self --sign --in "$prx/$name.elf" --out "$prx/sce_module/$name.prx" >> "$log" 2>&1 ||
         prx_status=1
@@ -375,7 +442,70 @@ if [ "$prx_status" = 0 ]; then
             -c "$prx/obj/$unit.c" -o "$prx/obj/$unit.o" || fail "cannot compile $unit.c"
     done
     link_prx ntdll dlls/ntdll/ntdll.so "$heap $dmem $shims $prx/obj/ntdll_desc.o $cwd_wraps"
-    link_prx win32u dlls/win32u/win32u.so "$prx/obj/win32u_desc.o" "$prx/ntdll.shared.elf"
+    if [ -n "$ps5opengl_sdk" ]; then
+        # Mesa's embedded diagnostics name these libc APIs, but a title has no
+        # process launcher or syslog daemon. Keep those paths inert and supply
+        # only the SDK's TLS helper; do not pull its syscall-bearing libc.a.
+        cat > "$prx/obj/pw_opengl_libc.c" <<'EOF'
+#include <errno.h>
+#include <stdio.h>
+#include <syslog.h>
+#include <unistd.h>
+
+int mkstemp(char *template)
+{
+    (void)template;
+    errno = ENOSYS;
+    return -1;
+}
+
+int mkstemps(char *template, int suffix_length)
+{
+    (void)template;
+    (void)suffix_length;
+    errno = ENOSYS;
+    return -1;
+}
+
+void openlog(const char *ident, int option, int facility)
+{
+    (void)ident;
+    (void)option;
+    (void)facility;
+}
+
+FILE *popen(const char *command, const char *mode)
+{
+    (void)command;
+    (void)mode;
+    errno = ENOSYS;
+    return NULL;
+}
+
+int pclose(FILE *stream)
+{
+    (void)stream;
+    errno = ECHILD;
+    return -1;
+}
+
+/* Mesa's C++ users observe this zero-initialized emulated-TLS pointer. */
+void mesa_glapi_tls_context_init(void) __asm__("_ZTH23_mesa_glapi_tls_Context");
+void mesa_glapi_tls_context_init(void)
+{
+}
+EOF
+        "$sdk/bin/prospero-clang" -std=c11 -O2 -Wall -Wextra -Werror -fPIC \
+            -c "$prx/obj/pw_opengl_libc.c" -o "$prx/obj/pw_opengl_libc.o" ||
+            fail "cannot compile OpenGL libc shims"
+        (cd "$prx/obj" && "$sdk/bin/llvm-ar" x "$sdk/target/lib/libc.a" emutls.o) ||
+            fail "no emutls.o in the payload SDK's libc.a"
+        link_prx win32u dlls/win32u/win32u.so \
+            "$prx/obj/win32u_desc.o $prx/obj/pw_opengl_libc.o $prx/obj/emutls.o" \
+            "$prx/ntdll.shared.elf"
+    else
+        link_prx win32u dlls/win32u/win32u.so "$prx/obj/win32u_desc.o" "$prx/ntdll.shared.elf"
+    fi
     # ntdll loads it with its own dlopen; it has its own heap, needs no
     # dlfcn of its own, and signals threads through the registry ntdll fills.
     link_prx wineserver server/wineserver "$heap $prx/obj/pw_wine_compat.o \

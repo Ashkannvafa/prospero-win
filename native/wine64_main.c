@@ -463,12 +463,14 @@ static void open_library(void)
         if (game->display.width)
             snprintf(catalog_detail[catalog_count], sizeof(catalog_detail[0]), "%s  %s  %ux%u",
                      game->app.architecture == PW_APP_ARCH_PE64 ? "pe64" : "pe32",
-                     game->app.graphics == PW_APP_GRAPHICS_DXVK ? "dxvk" : "gdi",
+                     game->app.graphics == PW_APP_GRAPHICS_DXVK ? "dxvk" :
+                     game->app.graphics == PW_APP_GRAPHICS_OPENGL ? "opengl" : "gdi",
                      (unsigned)game->display.width, (unsigned)game->display.height);
         else
             snprintf(catalog_detail[catalog_count], sizeof(catalog_detail[0]), "%s  %s",
                      game->app.architecture == PW_APP_ARCH_PE64 ? "pe64" : "pe32",
-                     game->app.graphics == PW_APP_GRAPHICS_DXVK ? "dxvk" : "gdi");
+                     game->app.graphics == PW_APP_GRAPHICS_DXVK ? "dxvk" :
+                     game->app.graphics == PW_APP_GRAPHICS_OPENGL ? "opengl" : "gdi");
         catalog[catalog_count] = (PwWineApp){ game->app.id, game->app.name,
                                               catalog_detail[catalog_count], game->app.executable };
         catalog_count++;
@@ -675,7 +677,8 @@ static int start_thread(void (*entry)(void *), void *arg, size_t stack_bytes)
 int main(int argc, char **argv)
 {
     static char prefix[PW_WINE_LIBRARY_PATH + PW_APP_ID_CAPACITY], desktop[24], view[8] = "window";
-    static PwWineStartEnv extra[] = {
+    enum { WINE64_FIXED_ENV_COUNT = 6, WINE64_PROFILE_ENV_CAPACITY = 3 };
+    static PwWineStartEnv extra[WINE64_FIXED_ENV_COUNT + WINE64_PROFILE_ENV_CAPACITY] = {
         { "WINEDEBUG", PW_WINE64_DEBUG },
         /* the i386 exe runs in this process through WoW64; otherwise Wine
          * starts it from start.exe in a new process, which a title cannot */
@@ -684,11 +687,15 @@ int main(int argc, char **argv)
         { "USER", "prospero" },
         { "WINE_PS5_TRACE_STARTUP", "1" },  /* patch 0560: name startup steps */
         { "WINE_PS5_VIEW", view },          /* patch 0430: the game's windows, or the desktop */
-        { NULL, NULL }, { NULL, NULL },     /* WINE_PS5_DESKTOP, WINEDLLOVERRIDES: as the profile sets */
+        { NULL, NULL }, { NULL, NULL }, { NULL, NULL }, /* profile-specific environment */
     };
+    _Static_assert(sizeof(extra) / sizeof(extra[0]) ==
+                   WINE64_FIXED_ENV_COUNT + WINE64_PROFILE_ENV_CAPACITY,
+                   "profile environment capacity changed");
     /* wine, the executable, the profile's argument words, NULL */
     static const char *wine_argv[2 + PW_WINE_LAUNCH_WORDS + 1] = { "wine" };
     static char argument_words[PW_APP_ARGUMENTS_CAPACITY];
+    static char effective_dll_overrides[PW_APP_DLL_OVERRIDES_CAPACITY + sizeof(";opengl32=b")];
     static char ntdll_dir[256], ntdll_path[288];
     static const PwWineStartOps ops = {
         sceKernelLoadStartModule, sceKernelGetModuleInfo, set_env, start_thread };
@@ -696,7 +703,7 @@ int main(int argc, char **argv)
         .ntdll_path = ntdll_path,
         .ntdll_dir = ntdll_dir,
         .prefix = prefix,
-        .extra_env = extra, .extra_env_count = sizeof(extra) / sizeof(extra[0]) - 2,
+        .extra_env = extra, .extra_env_count = WINE64_FIXED_ENV_COUNT,
         .argc = 2, .argv = wine_argv, .stack_bytes = 16u << 20,
     };
     static PwWineStart start;
@@ -748,9 +755,16 @@ int main(int argc, char **argv)
                      (unsigned)game->display.height);
             extra[config.extra_env_count++] = (PwWineStartEnv){ "WINE_PS5_DESKTOP", desktop };
         }
-        /* The game's own DLLs over Wine's builtins, e.g. DXVK's d3d11 and dxgi. */
-        if (game->app.dll_overrides[0])
-            extra[config.extra_env_count++] = (PwWineStartEnv){ "WINEDLLOVERRIDES", game->app.dll_overrides };
+        /* Profile graphics mode selects Wine's builtin WGL implementation;
+         * preserve other per-game overrides such as DXVK when composing it. */
+        int overrides_status = pw_app_profile_effective_dll_overrides(
+            &game->app, effective_dll_overrides, sizeof(effective_dll_overrides));
+        if (overrides_status == PW_OK && effective_dll_overrides[0])
+            extra[config.extra_env_count++] = (PwWineStartEnv){ "WINEDLLOVERRIDES", effective_dll_overrides };
+        else if (overrides_status != PW_OK)
+            PS5LOG_LOG("PW_WINE64 DLL overrides refused: %s", game->app.id);
+        if (game->app.graphics == PW_APP_GRAPHICS_OPENGL)
+            extra[config.extra_env_count++] = (PwWineStartEnv){ "WINE_PS5_OPENGL", "1" };
         /* [debug] winedebug: this game's channels in place of the title's. */
         if (game->winedebug[0]) {
             extra[0].value = game->winedebug;
@@ -762,7 +776,7 @@ int main(int argc, char **argv)
                    scaling, view, pw_result_name(input_status),
                    game->input.preset[0] ? game->input.preset : "-",
                    game_input.mode == PW_GAME_INPUT_XINPUT ? "xinput" : "keyboard", (int)game_input.mouse,
-                   game->app.dll_overrides[0] ? game->app.dll_overrides : "-");
+                   effective_dll_overrides[0] ? effective_dll_overrides : "-");
         /* What Wine gives the game as NumberOfProcessors. */
         PS5LOG_LOG("PW_WINE64 cpus online=%ld", sysconf(_SC_NPROCESSORS_ONLN));
         if (PW_WINE64_WAIT_WATCHDOG) setenv("WINE_PS5_WAIT_WATCHDOG", "1", 1);
