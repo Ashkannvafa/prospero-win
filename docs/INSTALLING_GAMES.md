@@ -118,6 +118,9 @@ prospero:
   input: {preset: warcraft3}
 ```
 
+`display` also takes `view`, and `show_fps: false` to hide the frame-rate
+counter a game shows in the top-left corner by default.
+
 The profile's `[application]` section comes from the script's `game` section:
 the executable, its arguments and its working folder.
 
