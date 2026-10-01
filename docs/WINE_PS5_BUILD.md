@@ -725,6 +725,12 @@ The title runs one game per process (`src/pw_wine_launch.h`):
     paced at 60 Hz, which looks like variable refresh. A display without
     120 Hz keeps presenting at 60. The default is 60. Half-Life at 1080p ran
     at 93–98 fps with `refresh = 120`;
+  - `[display] opengl_thread = true` sets `PS5_GLTHREAD=1` for a
+    `graphics = opengl` game: Mesa's glthread then runs the game's OpenGL
+    calls on a worker thread, so the driver's per-draw work overlaps the
+    game's own. Counter-Strike 1.6 with nine bots kept more of each frame
+    free with it (the game thread waited 44–55% of the time at 60 fps,
+    against 11–25% without). It's off by default;
   - `[input]` binds each DualSense button to a key or a mouse button, and a
     stick moves the pointer. `preset = <name>` shares a mapping from
     `<root>/input/<name>.input`.
@@ -757,6 +763,12 @@ The title runs one game per process (`src/pw_wine_launch.h`):
   cycle is two sandbox escapes, the game and the launcher).
   `-DPW_WINE64_SECONDS=<s>` closes each game after that long; the default, 0,
   lets a game run until it is closed.
+  A script build also presses keys in the game when
+  `/data/prospero-win/pw_script_keys` exists: one
+  `<milliseconds after the game starts> <Windows virtual-key code>` per line,
+  each sent as a press and a release. For example, `30000 0x0d` presses
+  ENTER 30 seconds in, which lets an unattended run get past a game's menus
+  and into gameplay.
 
 In a game, the title works as follows:
 

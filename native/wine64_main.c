@@ -85,6 +85,33 @@ static const char *const runtime_roots[] = { "/app0", PW_SANDBOX_APP0 };
 #define PW_WINE64_SCRIPT_CYCLES 2
 #endif
 
+#if PW_WINE64_SCRIPT
+/* Unattended runs may also press keys in the game, from <root>/pw_script_keys:
+ * one "<milliseconds after the game starts> <virtual-key code>" per line, for
+ * instance "45000 0x0d" for ENTER. Each is posted as a press and release. */
+#define PW_WINE64_SCRIPT_KEYS_MAX 64
+static struct { uint64_t at_ns; uint32_t vk; } script_keys[PW_WINE64_SCRIPT_KEYS_MAX];
+static size_t script_key_count, script_key_next;
+
+static void script_keys_load(const char *root)
+{
+    char path[512];
+    FILE *file;
+    unsigned long ms, vk;
+
+    script_key_count = script_key_next = 0;
+    snprintf(path, sizeof(path), "%s/pw_script_keys", root);
+    if (!(file = fopen(path, "r"))) return;
+    while (script_key_count < PW_WINE64_SCRIPT_KEYS_MAX && fscanf(file, "%lu %li", &ms, (long *)&vk) == 2) {
+        script_keys[script_key_count].at_ns = (uint64_t)ms * 1000000u;
+        script_keys[script_key_count].vk = (uint32_t)vk;
+        script_key_count++;
+    }
+    fclose(file);
+    PS5LOG_LOG("PW_WINE64 script keys=%u", (unsigned)script_key_count);
+}
+#endif
+
 /* The games, from <root>/profiles (native/pw_wine_library.h); nothing is
  * built in. catalog holds the valid ones for pw_wine_launch. */
 static PwWineLibrary library;
@@ -678,7 +705,7 @@ static int start_thread(void (*entry)(void *), void *arg, size_t stack_bytes)
 int main(int argc, char **argv)
 {
     static char prefix[PW_WINE_LIBRARY_PATH + PW_APP_ID_CAPACITY], desktop[24], view[8] = "window";
-    enum { WINE64_FIXED_ENV_COUNT = 6, WINE64_PROFILE_ENV_CAPACITY = 6 };
+    enum { WINE64_FIXED_ENV_COUNT = 6, WINE64_PROFILE_ENV_CAPACITY = 7 };
     static PwWineStartEnv extra[WINE64_FIXED_ENV_COUNT + WINE64_PROFILE_ENV_CAPACITY] = {
         { "WINEDEBUG", PW_WINE64_DEBUG },
         /* the i386 exe runs in this process through WoW64; otherwise Wine
@@ -776,6 +803,10 @@ int main(int argc, char **argv)
          * param.json; a display without 120 Hz keeps presenting at 60. */
         if (game->app.graphics == PW_APP_GRAPHICS_OPENGL && game->display.refresh == 120)
             extra[config.extra_env_count++] = (PwWineStartEnv){ "WINE_PS5_GL_REFRESH", "120" };
+        /* [display] opengl_thread: Mesa's glthread runs the game's OpenGL
+         * calls on a worker thread, so the driver's work overlaps the game's. */
+        if (game->app.graphics == PW_APP_GRAPHICS_OPENGL && game->display.opengl_thread)
+            extra[config.extra_env_count++] = (PwWineStartEnv){ "PS5_GLTHREAD", "1" };
         /* xinput mode: SDL2 games (Half-Life) look for controllers through
          * raw input first, which Wine on the PS5 has none of, and then skip
          * XInput; this hint makes them read controller 0 through XInput. */
@@ -786,10 +817,11 @@ int main(int argc, char **argv)
             extra[0].value = game->winedebug;
             PS5LOG_LOG("PW_WINE64 winedebug=%s", game->winedebug);
         }
-        PS5LOG_LOG("PW_WINE64 profile id=%s prefix=%s desktop=%s scaling=%d view=%s show_fps=%d refresh=%u input=%s "
+        PS5LOG_LOG("PW_WINE64 profile id=%s prefix=%s desktop=%s scaling=%d view=%s show_fps=%d refresh=%u gl_thread=%d input=%s "
                    "preset=%s mode=%s mouse=%d dll_overrides=%s", game->app.id, prefix,
                    desktop[0] ? desktop : "default",
-                   scaling, view, game->display.show_fps, (unsigned)game->display.refresh, pw_result_name(input_status),
+                   scaling, view, game->display.show_fps, (unsigned)game->display.refresh,
+                   game->display.opengl_thread, pw_result_name(input_status),
                    game->input.preset[0] ? game->input.preset : "-",
                    game_input.mode == PW_GAME_INPUT_XINPUT ? "xinput" : "keyboard", (int)game_input.mouse,
                    effective_dll_overrides[0] ? effective_dll_overrides : "-");
@@ -916,6 +948,10 @@ int main(int argc, char **argv)
         status = pw_wine_start_run(&start, &config, &ops);
         PS5LOG_LOG("PW_WINE64 run status=%d", status);
     }
+#if PW_WINE64_SCRIPT
+    const uint64_t script_start_ns = now_ns();
+    script_keys_load(library_root);
+#endif
     for (uint64_t tick = 1; status == PW_OK; tick++) {
         uint64_t now = now_ns();
         PwPresentView view;
@@ -945,6 +981,17 @@ int main(int argc, char **argv)
                 else refused++;
             }
         }
+#if PW_WINE64_SCRIPT
+        while (post_input && script_key_next < script_key_count &&
+               now - script_start_ns >= script_keys[script_key_next].at_ns) {
+            PwWineInput press = { PW_WINE_INPUT_KEY, script_keys[script_key_next].vk, 0, 0, 1 };
+            PwWineInput release = press;
+            release.down = 0;
+            int pressed = post_input(&press), released = post_input(&release);
+            PS5LOG_LOG("PW_WINE64 script key=%#x status=%d/%d", (unsigned)press.code, pressed, released);
+            script_key_next++;
+        }
+#endif
         if (pad_status == PW_OK && post_input && pw_pad_ps5_read(&pad) == PW_OK) {
             size_t count = pw_wine_game_inputs(&game_input, pad.core.pressed_edges,
                                                pad.core.released_edges, events,
