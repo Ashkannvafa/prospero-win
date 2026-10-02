@@ -671,6 +671,14 @@ dispatch:;
     state->call_stack_top = engine->call_stack_top;
     void *code_entry=(uint8_t *)engine->code.exec_base+entry->code_offset+entry->canonical_entry_offset;
     int invoked;
+    uint64_t execution_begin=0;
+    unsigned timed=0;
+    if(engine->execution_clock) {
+        engine->execution_calls++;
+        engine->execution_random=engine->execution_random*1664525u+1013904223u;
+        timed=engine->execution_stride==1 ||
+              engine->execution_random<=UINT32_MAX/engine->execution_stride;
+    }
     if(engine->native_fp && pw_x86_reencoded(&entry->entry_contract)) {
         /* The guest's x87, MMX and SSE state in the host FPU for the chain;
          * it stays in the image afterwards (pw_x86_engine_fp_sync). */
@@ -679,11 +687,21 @@ dispatch:;
             pw_guest_fp_to_fxsave(&state->fp,image);
             engine->fp_image_live=1;
         }
+        if(timed)
+            execution_begin=engine->execution_clock(engine->execution_clock_opaque);
         invoked=pw_x86_run_block_fp(state,code_entry,image);
     } else {
         /* Emitter blocks work on state->fp. */
         pw_x86_engine_fp_sync(engine,state);
+        if(timed)
+            execution_begin=engine->execution_clock(engine->execution_clock_opaque);
         invoked=invoke(code_entry,state);
+    }
+    if(timed) {
+        uint64_t end=engine->execution_clock(engine->execution_clock_opaque);
+        engine->execution_samples++;
+        if(!execution_begin || !end || end<execution_begin)engine->execution_clock_errors++;
+        else engine->execution_ns+=end-execution_begin;
     }
 
     /* The block a failed step entered, for the fault report. Taken only on
@@ -727,6 +745,39 @@ dispatch:;
     }
     engine->retired_instructions+=report->retired;
     return invoked==PW_ERR_X87_TRAP?PW_ERR_X87_TRAP:invoked?PW_ERR_VM:PW_OK;
+}
+
+int pw_x86_execution_clock_batch(PwX86ExecutionClock clock, void *opaque, uint64_t *mean_ns)
+{
+    if(!clock || !mean_ns)return PW_ERR_PRECONDITION;
+    *mean_ns=0;
+    uint64_t means[8];
+    for(unsigned i=0;i<8;i++) {
+        uint64_t begin=clock(opaque),last=begin;
+        if(!begin)return PW_ERR_VM;
+        for(unsigned read=0;read<1024;read++) {
+            uint64_t now=clock(opaque);
+            if(!now || now<last)return PW_ERR_VM;
+            last=now;
+        }
+        uint64_t elapsed=last-begin;
+        means[i]=elapsed/1024+(elapsed%1024>=512);
+        for(unsigned j=i;j && means[j]<means[j-1];j--) {
+            uint64_t temporary=means[j];means[j]=means[j-1];means[j-1]=temporary;
+        }
+    }
+    *mean_ns=means[4];
+    return PW_OK; /* A valid fast/quantized clock can have a zero batch mean. */
+}
+
+int pw_x86_engine_set_execution_clock(PwX86Engine *engine, PwX86ExecutionClock clock, void *opaque, uint32_t stride)
+{
+    if(!engine || !engine->initialized || (clock && !stride))return PW_ERR_PRECONDITION;
+    engine->execution_clock=clock;
+    engine->execution_clock_opaque=opaque;
+    engine->execution_stride=stride;
+    engine->execution_random=0x9e3779b9u;
+    return PW_OK;
 }
 
 int pw_x86_engine_reset(PwX86Engine *engine,uint32_t generation)
