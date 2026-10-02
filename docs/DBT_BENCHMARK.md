@@ -584,6 +584,67 @@ clean shutdown remains unverified. Console measurements remain pending.
 
 [b]: https://box86.org/2022/03/box86-box64-vs-qemu-vs-fex-vs-rosetta2/
 
+## Thread-owned hotspot sampling
+
+On Linux, set `PW_WOW_PROFILE=1` to log each thread's top 20 translated
+blocks every five seconds. A filename instead writes `<filename>.<thread-id>`
+for each thread, replacing its previous window. `PW_WOW_TIMING=1` supplies
+the separate run/Unix/system-call timing split. The default fault-marker
+mode supplies the arena block map; sampling with fault markers disabled is
+refused explicitly.
+
+`wowprospero profile` reports the window duration, translated-arena samples,
+stub samples and histogram overflow. `wowprospero hotspot` names the guest
+PC and samples in re-encoded entry, body and exit code, or older emitted
+code. The process CPU timer fires every millisecond; these counts are
+statistical samples, not instruction counts or exact per-block timings.
+Per-thread histograms ignore signals outside translated arenas; cumulative
+`profile_process` tick and unattributed counts retain the process denominator.
+The per-thread `outside=0` does not imply
+that the process spent no time in native code. Compare identical workloads
+and use the timing split alongside these records.
+
+Each thread owns a bounded 4096-slot histogram. The signal handler resolves
+the interrupted PC immediately, before an arena reset can reuse its address.
+It uses no compiler TLS access, allocation, formatting or source-byte reads.
+Reporting snapshots and clears that thread's histogram with SIGPROF blocked;
+it does not scan another thread's cache. Overflow is reported without evicting
+rows, and makes the top-block list incomplete. Logs contain addresses and
+counts only; the former binary block dumps are no longer produced.
+
+The sample-aggregation code is portable and host-tested, including collisions,
+full capacity, arena boundaries and cache resets. On the console, create
+`/data/prospero-win/pw_wow_profile` before launching a fresh game process;
+remove it to disable sampling for subsequent processes. Records use Wine's
+normal output sink, and a timer installation failure disables sampling with
+a diagnostic. The pinned SDK exports `setitimer`. The exact f7ff5244 build produced nonzero
+main-thread samples on the PS5, completed route v6 and exited cleanly through
+the Kleiner lab with corrected-unmap PE4c8f7118. That validates the observed
+sampling and shutdown path; a console report with zero samples still cannot
+be used as a performance result. Updated cap builds require their own receipt.
+
+`wowprospero native` supplements translated-block records with a bounded,
+atomic process-wide histogram of PCs sampled outside translated arenas.
+These counts are cumulative, and `native_summary` reports overflow. Linux
+reports the current module/symbol when `dladdr` resolves the address; console
+addresses can be resolved against the exact linked ELF. Module attribution
+may change after an unload, so retain exact artifacts and loader records.
+No raw guest code is dumped. Use these records to distinguish translation
+or cache-reset work from execution of translated instructions.
+
+## Reset poisoning extent
+
+The engine now poisons only the published code extent when discarding its
+cache, and clears the corresponding block-map prefix. Previously every reset
+wrote `0xcc` across the entire reserved arena (128 MiB for the first WoW64
+thread), even when a loader flush had discarded only a few blocks. Native-PC
+sampling during HL2 with DXVK identified these writes as the dominant startup
+cost. Generation changes, cache metadata clearing, indirect-target clearing
+and poisoning of discarded instructions are preserved. Tests check that old
+code becomes traps, unused arena bytes remain untouched and execution after
+reset recompiles correctly. This removes reset overhead; the separate
+steady-workload HL2 translated-time target still requires measurement.
+
 ## Empty chain-table targets
 
 An all-zero re-encoder chain table treated guest PC zero as a tag hit and
