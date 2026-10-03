@@ -771,3 +771,37 @@ not a performance result.
 PR288 is independent of the touched-slot reset trial (#287); its console
 baseline retains the merged occupancy cap, profiler and null-target fix.
 Use identical timing code on both sides of each speedup comparison.
+
+## HL2 shutdown padding instruction
+
+A cache-disabled HL2 comparison reached shutdown and reported an
+untranslatable instruction at `steam_api.dll + 0x2051`. The exact bytes were
+`66 66 66 66 66 66 2e 0f 1f 84 00 00 00 00 00`, a 15-byte NOP padding form.
+This was discovered after the measured demo completed; the earlier forced
+shutdowns did not exercise the same path.
+
+The emitter and reencoder now share a bounded padding recognizer for `90`
+and `0f 1f /0` with operand-size, address-size and segment prefixes. It parses
+the address encoding for instruction length only: NOP neither evaluates a
+memory operand nor changes guest registers or flags. It rejects overlong
+instructions, invalid sub-opcodes and incomplete encodings. LOCK/REP and
+other instructions retain their existing decoding paths. The instruction
+semantics follow Intel's [NOP instruction reference](https://cdrdv2-public.intel.com/835752/253667-sdm-vol-2b.pdf).
+
+Regressions execute the exact form and address-size/segment variations in
+all four emitter residency/flag modes, ordinary reencoding and superblocks.
+They include native execution of the exact padding form, unchanged flags,
+unmapped nominal operands, every truncation boundary, invalid sub-opcodes
+and a 16-byte encoding. Full HL2 startup and shutdown validation on PC and
+console remains required before declaring this correctness issue resolved.
+
+PC validation subsequently completed three full 5,182-frame demos without
+DBT or guest-exception diagnostics. Two close requests timed out; capturing
+the owned game window identified a Source assertion at `threadtools.cpp:1667`
+about illegal worker-thread termination. On the third run, acknowledging
+that single recorded assertion let HL2 exit with status zero and without
+forced cleanup or an unsupported-instruction message. The original prefix
+DLL/config were restored after each run. This is exit after an assertion
+acknowledgement, not unattended clean shutdown; the assertion's cause and
+console startup/shutdown validation remain outstanding. Normal/sanitizer
+test suites and all three differential modes pass (zero mismatches).
