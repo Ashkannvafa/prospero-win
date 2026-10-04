@@ -52,6 +52,14 @@ carries the math functions, so the build supplies an empty `libm.a` for the
 `git apply` in numeric order. Numbers are owned by range so the two halves
 of the port never collide:
 
+When relinking from an older build cache, verify the complete module input
+set against the current patch series, including files the new patch does not
+touch. In particular, the server still needs patch 0730's shared-memory
+backing for anonymous mappings. Checking only the modified helpers can miss
+an older cached `mapping.c`. Preserve the accepted source-path remapping,
+compiler and link inputs, and reproduce the accepted baseline module hashes
+before evaluating a candidate built from that cache.
+
 | Range | Area |
 | --- | --- |
 | 0100–0499 | Unix services: unixlib loading as PRX, allocator, in-process wineserver transport, user driver, build |
@@ -89,6 +97,7 @@ of the port never collide:
 | 0601 | `ntdll`: an i386 image is never mapped above 4 GiB, so a relocatable exe whose preferred base is taken stays in the low reserved areas instead of the high one |
 | 0610 | `ntdll`: `__wine_ps5_set_segv_hook` lets `wowprospero` resume its own faults (fault markers) from inside Wine's SIGSEGV handler, instead of a second handler chaining to the action `sigaction` reports |
 | 0770 | `server`, `ntdll`: on PS5, the client thread runs sync-object and handle requests itself under a server lock instead of waking the server thread twice through the pipes; see [Sync requests on the client threads](#sync-requests-on-the-client-threads) |
+| 0790 | `server`, `ntdll`: opt-in immediate mutex acquire/release using the authoritative server object without request marshalling or waiter allocation; see [Immediate mutex calls](#immediate-mutex-calls) |
 
 ## Allocator
 
@@ -302,6 +311,60 @@ threads: on`. `WINE_PS5_SERVER_DIRECT=0` sends every request through the
 pipes again. An older `wineserver.prx` without the export works with the new
 `ntdll.prx` and vice versa, so swapping one module is enough to compare the
 two paths.
+
+## Immediate mutex calls
+
+Patch 0790 adds a candidate path for ordinary server mutexes that are ready
+immediately. It is **off by default**. With client-thread requests enabled,
+set `WINE_PS5_MUTEX_FAST=1`, or put `1` (optionally followed by one newline)
+in `<Wine prefix>/pw_mutex_fast`, to bind `pw_wineserver_try_fast_mutex`; ntdll
+logs `wine-ps5: immediate mutex calls: on`. `WINE_PS5_SERVER_DIRECT=0`, an
+older module without the export, or any other value of the new variable
+leaves the ordinary request path in use. An explicitly set variable takes
+precedence over the file; otherwise a missing/unreadable file or any other
+contents disables the candidate. The file is read once at connection time,
+so switch it before launching. Use `0` or remove it for the console OFF arm.
+
+This path tries the existing server lock once, resolves the live handle with
+the ordinary access check, and calls Wine's existing mutex ownership/refcount
+functions. There is no second ownership state or retained handle/object. Recursion,
+duplicate handles, closing an owned handle, numeric handle reuse and
+thread-exit abandonment remain represented by the server's mutex object and
+the owner's mutex list. Acquire is limited to nonalertable single-object
+waits; release returns the same previous-count value as the ordinary path.
+The input timeout is read before acquisition and an output pointer is written
+after the lock and native signal mask have been restored.
+
+An advisory hint records a full handle observed to have another object type.
+For the next 63 matching single-object waits, it skips this optimization and
+uses the ordinary Wine wait, then probes again. This avoids repeated signal
+masking, locking and lookup on event/semaphore waits. Hints never answer a
+syscall, store ownership or retain an object; concurrent stale hints can only
+lose optimization until rechecked. Create/open mutex and close clear the
+bucket; duplication clears all buckets, including access-rewrite cases.
+The immediate path takes only a monotonic watchdog timestamp. Wine's main
+loop still updates shared time at its existing 16 ms cadence; queued waits,
+timeouts and their clock updates stay on the ordinary path.
+
+Contention, queued waiters, abandonment, recursion overflow, APCs, suspension,
+pending contexts, nested waits, nonordinary synchronization objects, debug
+tracing and unavailable/busy server state all fall back without changing
+mutex state. Wait-all, alertable waits, deadlines, waiter wakeups and error
+delivery remain on Wine's existing path. Patch 0770's lock, startup gate,
+poll epoch and timeout wake protocol are unchanged.
+
+`python3 tests/test_wine_mutex_fast.py` compiles the actual new helpers with
+explicit native object/handle/module mocks and public Wine authority-function
+excerpts. It checks ownership, recursion, reference lifetime, aliases, close
+and reuse, abandonment, access, fallback eligibility and bounded exclusion
+with 2–16 threads, plus hint expiry, full keys and harmless stale reuse.
+This model executes neither Wine nor guest programs and
+does not establish real wait delivery, startup safety or PS5 performance.
+The console owner must run complete Wine semantics, then syncbench, HL2
+startup/timedemo, the fixed city route, load and 30-minute stability gates.
+The target remains the complete 1080p/60 Hz city route at average at least
+58 FPS and minimum at least 50 FPS, with profiling off and the accepted
+regressions preserved. No speed gain or merge acceptance is claimed here.
 
 ## User driver
 
