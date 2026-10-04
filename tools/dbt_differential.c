@@ -3,8 +3,9 @@
  * Translator-versus-host differential over single instructions.
  *
  * Reads one hex instruction encoding per line (an optional second column is
- * ignored). For each encoding that both the translator and the host-executed
- * fallback accept, it runs a few randomized trials: the same initial guest
+ * ignored). For each encoding that both the translator (with "reencode", the
+ * emitter or the re-encoder) and the host-executed fallback accept, it runs a
+ * few randomized trials: the same initial guest
  * state and memory window are executed once as a one-instruction translated
  * block and once natively through pw_x86_hostexec, and the resulting GPRs,
  * EIP, arithmetic flags, memory window, x87 and SSE state are compared.
@@ -16,6 +17,7 @@
 #define _GNU_SOURCE
 #include "../src/pw_x86_engine.h"
 #include "../src/pw_x86_hostexec.h"
+#include "../src/pw_x86_reencode.h"
 #include "../src/pw_vm_posix.h"
 #include "../include/prospero_win.h"
 #include <setjmp.h>
@@ -207,6 +209,8 @@ int main(int argc, char **argv)
     char line[128];
     uint64_t tested = 0, skipped = 0, mismatched = 0, faults = 0;
     uint32_t generation = 1;
+    /* With "reencode", what the re-encoder alone takes is tested too. */
+    PwX86TranslateOptions reencode = { 0 };
 
     window = mmap(NULL, WINDOW, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
     snapshot = malloc(WINDOW);
@@ -235,6 +239,9 @@ int main(int argc, char **argv)
             pw_x86_engine_set_counters(&engine, 0) != PW_OK ||
             pw_x86_engine_set_flat_memory(&engine, base + 0x1000, base + WINDOW - 0x2000) != PW_OK)
             return 2;
+        reencode.flat_low = base + 0x1000;
+        reencode.flat_high = base + WINDOW - 0x2000;
+        reencode.no_counters = 1;
     }
 
     while (fgets(line, sizeof(line), stdin)) {
@@ -250,8 +257,13 @@ int main(int argc, char **argv)
         {
             uint8_t out[8192];
             PwX86Block block;
-            if (pw_x86_translate(code, len, initial.eip, out, sizeof(out), &block) != PW_OK ||
-                block.source_bytes != len || pw_x86_hostexec_plan(&initial, code, len, &plan) != PW_OK ||
+            const int translated =
+                (pw_x86_translate(code, len, initial.eip, out, sizeof(out), &block) == PW_OK &&
+                 block.source_bytes == len) ||
+                (reencode.no_counters &&
+                 pw_x86_reencode(code, len, initial.eip, out, sizeof(out), &block, &reencode) == PW_OK &&
+                 block.source_bytes == len);
+            if (!translated || pw_x86_hostexec_plan(&initial, code, len, &plan) != PW_OK ||
                 plan.length != len) {
                 skipped++;
                 continue;
