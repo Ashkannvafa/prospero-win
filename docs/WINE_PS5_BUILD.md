@@ -986,6 +986,29 @@ Host tests verify the operation reduction; console benefit remains unmeasured.
 `PROSPERO_WINE_SOURCE=/path/to/pinned/wine python3 tests/test_ws2_fqdn.py`
 also executes the actual ANSI/wide registry functions from that source.
 
+Patch 0780 keeps that name between calls, but only while a registry change
+notification on `HKLM\System` (where `GetComputerNameExW` reads it) has not
+fired. The watch covers the whole subtree, names and values, and is armed
+before the name is read, so any change after a read makes the next call read
+the registry again. A failed address lookup uses the name to determine
+whether the requested host is this machine. With 0780, repeated calls check
+the watch with one zero-timeout wait instead of rereading the registry.
+If the watch cannot be armed, each call reads the registry normally. Failed
+name reads are retried; the ANSI conversion still runs on each call, and
+unloading the DLL releases the cached name, registry key and event. Resolver
+results and the "Failed to resolve your host name IP" diagnostic are unchanged.
+`tests/test_ws2_fqdn_cache.py` executes the patched function against a model
+of registry notifications, changes during a read, allocation/API failures
+and cleanup. Like 0760, the patch requires rebuilt Windows `ws2_32.dll`
+files for both architectures.
+
+The console owner reports about 52 FPS for a configuration combining 0780
+with high-byte translator changes, versus 48.6 FPS for the control. This
+comparison does not isolate either change's contribution; a second control
+attempt failed during loading. Matching DLL source identities are audited,
+but the combined configuration's stability and regression gates remain
+pending. This is not evidence that the full 58/50 FPS target has been met.
+
 ## Console bring-up
 
 The runtime and the prefix used for the integrated runs:
