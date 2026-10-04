@@ -27,7 +27,10 @@
  * - a fault reports the incoming arithmetic flags exactly only when a later
  *   instruction reads them; when every flag is redefined before any read,
  *   the reported flags are whatever the guard left, which re-execution of
- *   the faulting instruction never observes;
+ *   the faulting instruction never observes. TZCNT/LZCNT memory forms are
+ *   an explicit exception: their refused reads retain the incoming flags
+ *   to match the older emitter's fault context. Other flag-defining memory
+ *   forms retain the existing relaxation;
  * - step_retired is not counted (as with no_counters).
  */
 #include "pw_x86_block.h"

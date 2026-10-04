@@ -1220,6 +1220,43 @@ static void test_prefixed_padding(void)
     }
 }
 
+/* A refused bit-count source read preserves the faulting EIP, GPRs and flags. */
+static void test_refused_bit_count_reads(void)
+{
+    static const unsigned opcodes[] = {0xbc, 0xbd};
+    for (unsigned op = 0; op < 2; ++op)
+        for (unsigned width = 2; width <= 4; width += 2)
+            for (unsigned fs = 0; fs < 2; ++fs)
+            {
+                uint8_t code[6]; size_t bytes = 0;
+                if (fs) code[bytes++] = 0x64;
+                if (width == 2) code[bytes++] = 0x66;
+                code[bytes++] = 0xf3; code[bytes++] = 0x0f;
+                code[bytes++] = (uint8_t)opcodes[op]; code[bytes++] = 0x06;
+                PwVmBackend vm; PwX86Engine engine; PwX86CacheEntry entries[16];
+                memset(guest + CODE, 0xcc, DATA - CODE);
+                memcpy(guest + CODE, code, bytes);
+                assert(pw_vm_posix_backend(&vm) == PW_OK);
+                assert(pw_x86_engine_init(&engine, &vm, entries, 16, 16384, 1, view, NULL) == PW_OK);
+                assert(pw_x86_engine_set_counters(&engine, 0) == PW_OK);
+                assert(pw_x86_engine_set_flat_memory(&engine, low, low + SPAN) == PW_OK);
+                assert(pw_x86_engine_set_reencode(&engine, 1) == PW_OK);
+                PwX86State state; PwX86StepReport report;
+                initial(&state);
+                state.eflags = 0x2 | 0x8d5;
+                state.fs_base = fs ? low : 0;
+                state.gpr[6] = (fs ? 0 : low) + SPAN - width + 1;
+                PwX86State before = state;
+                assert(pw_x86_engine_step(&engine, &state, &report) == PW_ERR_VM);
+                assert(state.eip == before.eip && state.eflags == before.eflags);
+                assert(!memcmp(state.gpr, before.gpr, sizeof(state.gpr)));
+                assert(state.fault_address == low + SPAN - width + 1);
+                assert(state.fault_width == width && !state.fault_write);
+                assert(engine.reencoded_blocks == 1);
+                assert(pw_x86_engine_destroy(&engine) == PW_OK);
+            }
+}
+
 int main(void)
 {
     guest = mmap(NULL, SPAN, PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -1270,6 +1307,7 @@ int main(void)
     test_native_fp_forms();
     test_native_fp_gpr();
     test_native_fp_emitter();
+    test_refused_bit_count_reads();
     test_fault();
     printf("reencode passed: options, register remapping, xchg, atomics and segments, memory operands, flags across links, "
            "stack and calls, emitter hand-over, indirect targets, pinned returns, unbounded chains, call stack, superblocks, predicted calls, strings, native FP, fault state\n");

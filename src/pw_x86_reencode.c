@@ -464,6 +464,7 @@ static int decode(const uint8_t *s, size_t avail, uint32_t pc, Inst *in, unsigne
             /* F3 makes bsf/bsr TZCNT/LZCNT, which the host has (BMI1, ABM):
              * DXVK walks its dirty masks with TZCNT. */
             rep_ok = x != 0xaf && in->rep == 0xf3;
+            if (rep_ok && in->mod != 3) in->use = ALL_FLAGS; /* refused read keeps original flags */
         } else if (x == 0xb6 || x == 0xbe || x == 0xb7 || x == 0xbf) {
             in->kind = K_RM; in->reg_kind = REG32; MODRM();
             in->rm_kind = (x & 1) ? RMW : RM8;
