@@ -1,5 +1,48 @@
 # Shared mutex backend
 
+## Event and semaphore extension under development
+
+Patch 0885 adds atomic state primitives for a subsequent event/semaphore
+backend. It activates no runtime path, exports no function and changes no
+mutex ABI or default. It is the first dependency of the extension, rather
+than evidence of an event/semaphore performance improvement.
+
+Each aligned cell has an immutable kind and maximum, a count/state, and a
+SLOW bit. An auto-reset event consumes its signaled state on a successful
+wait; a manual-reset event keeps it. Even the manual event's unchanged state
+requires a compare-and-swap, so a concurrent server freeze rejects the fast
+operation. Event set/reset and semaphore release return their previous state
+only on success. Semaphore release respects the maximum without arithmetic
+overflow. Empty waits, invalid requests, maximum violations, contention and
+SLOW state fall back without changing the caller-local output.
+
+Successful waits use acquire ordering; set/release operations use release
+ordering. Freeze adopts exactly one atomic snapshot. Recursive slow entry
+preserves the legacy state, and invalid legacy values remain slow. A native
+hot operation attempts one strong compare-and-swap, with ordinary server
+fallback on a race. These primitives accept native cells and local outputs;
+they do not validate application pointers or handle permissions.
+
+`python3 tests/test_wine_shared_sync_word.py` compiles the exact header from
+the patch. Its bounded native fixture checks an independent transition
+matrix for both event kinds and semaphore maxima 1–7, the maximum count
+boundary, unchanged failure outputs, recursive freeze, stale CAS rejection,
+four-thread count conservation across 3,000 server authority transfers, and
+2,000 payload handoffs through auto-reset events. It does not start Wine or
+exercise real handles, waits, APCs or object lifetime.
+
+Server integration still needs freeze/adopt hooks for queue insertion and
+removal, signaled/satisfied callbacks, queries, event set/reset/pulse and
+semaphore release. Publication must occur only after the outermost server
+operation, with no remaining waiters or slow dependencies. Named,
+inheritable, aliased, global and retired handles require ordinary server
+authority. Retired cells must remain addressable and permanently slow for
+stale native cache entries. A separate versioned ABI and client cache must
+preserve access, alertable waits, multiwait and SignalObjectAndWait semantics.
+Activation remains pending that source integration, complete SDK builds and
+the ordinary real-Wine console matrix plus matched performance/regression
+gates.
+
 Status: experimental Unix client/server backend implemented, build-tested
 and measured on the console. Patch 0880 selects it by default for compatible
 direct-call modules after console acceptance of the combined runtime pair.
