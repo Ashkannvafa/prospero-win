@@ -1044,3 +1044,41 @@ The [shared-mutex acceptance receipt](SHARED_MUTEX_BACKEND.md) records the
 configuration and regression checks; the
 [image-view lifetime contract](IMAGE_VIEW_FD_LIFETIME.md) describes the
 descriptor policy and its retained debugger limitation.
+
+## FS memory pushes, byte-table lookup and direction flags
+
+Both translators take 32-bit memory pushes with an FS override, including
+absolute, base/displacement and SIB operands. FS applies to the source read;
+the destination stays on the ordinary guest stack. The source address uses
+the original ESP, and a refused source or stack access leaves ESP unchanged.
+
+XLAT uses the unsigned byte in AL to index the table at EBX (plus the guest
+FS base when present), updates only AL, and preserves flags. STD and CLD
+update the guest DF bit in state. The host DF stays clear outside the native
+string instruction so returns to C obey the host ABI; string operations use
+the guest direction and clear host DF again afterwards.
+
+Tests compare FS pushes with the existing native fallback and XLAT with the
+native instruction, check register preservation, byte indices, flags, guarded
+faults, marked accesses and warm-cache reuse. The older emitter also runs the
+cases in all residency/lazy-flag combinations. These checks establish host
+correctness and coverage; a console comparison of the same workload is
+required to establish a game performance benefit.
+
+Native-fault checks also exercise refused FS source reads, FS-push stack
+writes and flat/FS XLAT reads with guest DF set, both with and without the
+host call stack. Marker recovery must match the guarded EIP, registers,
+arithmetic flags and access metadata, preserve guest DF, and leave host DF
+clear when control returns to C.
+
+The console owner reports two alternating 480-second comparisons at the goal
+settings on 2026-10-05, with sync disabled and enabled. Coverage wins three
+of four matched pairs, averaging about 1.3 approximate FPS above its controls.
+The owner then accepted HL2 at 59.38 FPS with Wine-exit and a 600-second city
+run with sync v3 enabled. An independent full-stream audit of that longer run
+finds 53.19 mean approximate FPS / 42.41 sampled minimum over 200–440 seconds,
+and 51.09 / 48.97 over 460–600 seconds, with no recorded file-limit failure or
+fault. The run ends by the normal GTA IV close-timeout; that is a transport
+completion rather than Wine-exit. The 58-mean/50-minimum city target remains
+unmet, and these limited alternating pairs do not establish statistical
+significance or attribute the complete runtime gain to coverage alone.
